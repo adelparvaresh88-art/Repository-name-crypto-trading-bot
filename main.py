@@ -2,7 +2,7 @@ import urllib.request
 import json
 from datetime import datetime
 
-URL = "https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT"
+URL = "https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=5m&limit=30"
 
 print("================================")
 print("       ATI CRYPTO BOT")
@@ -18,15 +18,18 @@ try:
     )
 
     with urllib.request.urlopen(request, timeout=10) as response:
-        data = json.loads(response.read().decode())
+        candles = json.loads(response.read().decode())
 
-    price = float(data["price"])
+    closes = [float(candle[4]) for candle in candles]
 
     print("--------------------------------")
     print("SYMBOL: BTCUSDT")
-    print("CURRENT PRICE:", price)
+    print("TIMEFRAME: 5m")
+    print("CANDLES:", len(closes))
+    print("CURRENT PRICE:", closes[-1])
+    print("PREVIOUS PRICE:", closes[-2])
     print("--------------------------------")
-    print("PRICE CONNECTION: OK")
+    print("CANDLE CONNECTION: OK")
     print("NO REAL TRADE")
     print("================================")
 
