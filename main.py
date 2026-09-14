@@ -53,8 +53,8 @@ try:
     print("No real trade was placed.")
     print("================================")
 
-except Exception as e:
+except Exception except Exception as e:
     print("================================")
     print("ERROR TYPE:", type(e).__name__)
-    print("ERROR DETAILS:", repr(e))
+    print("ERROR DETAILS:", str(e))
     print("================================")
