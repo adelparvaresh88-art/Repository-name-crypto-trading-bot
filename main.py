@@ -11,13 +11,21 @@ URL = (
     f"?symbol={SYMBOL}&interval={INTERVAL}&limit={LIMIT}"
 )
 
-print("================================")
-print("        ATI CRYPTO BOT")
-print("================================")
-print("MODE: PAPER / TEST")
-print("TRADING: DISABLED")
-print("TIME:", datetime.now())
-print("--------------------------------")
+output = []
+
+
+def log(text=""):
+    print(text)
+    output.append(str(text))
+
+
+log("================================")
+log("        ATI CRYPTO BOT")
+log("================================")
+log("MODE: PAPER / TEST")
+log("TRADING: DISABLED")
+log("TIME: " + str(datetime.now()))
+log("--------------------------------")
 
 try:
     request = urllib.request.Request(
@@ -30,12 +38,12 @@ try:
 
     data = []
 
-    for c in candles:
+    for candle in candles:
         data.append({
-            "open": float(c[1]),
-            "high": float(c[2]),
-            "low": float(c[3]),
-            "close": float(c[4])
+            "open": float(candle[1]),
+            "high": float(candle[2]),
+            "low": float(candle[3]),
+            "close": float(candle[4])
         })
 
     # آخرین کندل بسته‌شده
@@ -46,7 +54,7 @@ try:
     price = c["close"]
 
     # -----------------------------
-    # تشخیص کف اصلی
+    # تشخیص کف
     # -----------------------------
     main_bottom = (
         p2["low"] > p1["low"]
@@ -55,7 +63,7 @@ try:
     )
 
     # -----------------------------
-    # تشخیص سقف اصلی
+    # تشخیص سقف
     # -----------------------------
     main_top = (
         p2["high"] < p1["high"]
@@ -67,7 +75,9 @@ try:
     stop_loss = None
     take_profit = None
 
-    # BUY بعد از تشکیل کف و تأیید کندل صعودی
+    # -----------------------------
+    # BUY
+    # -----------------------------
     if main_bottom:
         signal = "BUY"
 
@@ -77,7 +87,9 @@ try:
         if risk > 0:
             take_profit = price + (risk * 2)
 
-    # SELL بعد از تشکیل سقف و تأیید کندل نزولی
+    # -----------------------------
+    # SELL
+    # -----------------------------
     elif main_top:
         signal = "SELL"
 
@@ -87,26 +99,39 @@ try:
         if risk > 0:
             take_profit = price - (risk * 2)
 
-    print("SYMBOL:", SYMBOL)
-    print("TIMEFRAME:", INTERVAL)
-    print("CANDLES:", len(data))
-    print("CURRENT CLOSED PRICE:", price)
-
-    print("--------------------------------")
-    print("SIGNAL:", signal)
+    log("SYMBOL: " + SYMBOL)
+    log("TIMEFRAME: " + INTERVAL)
+    log("CANDLES: " + str(len(data)))
+    log("CURRENT CLOSED PRICE: " + str(price))
+    log("--------------------------------")
+    log("SIGNAL: " + signal)
 
     if signal != "NO SIGNAL":
-        print("ENTRY:", price)
-        print("STOP LOSS:", stop_loss)
-        print("TAKE PROFIT:", take_profit)
+        log("ENTRY: " + str(price))
+        log("STOP LOSS: " + str(stop_loss))
+        log("TAKE PROFIT: " + str(take_profit))
 
-    print("--------------------------------")
-    print("CANDLE CONNECTION: OK")
-    print("REAL TRADING: DISABLED")
-    print("================================")
+    log("--------------------------------")
+    log("CANDLE CONNECTION: OK")
+    log("REAL TRADING: DISABLED")
+    log("================================")
 
 except Exception as e:
-    print("--------------------------------")
-    print("ERROR TYPE:", type(e).__name__)
-    print("ERROR DETAILS:", str(e))
-    print("================================")
+    log("--------------------------------")
+    log("ERROR TYPE: " + type(e).__name__)
+    log("ERROR DETAILS: " + str(e))
+    log("================================")
+
+
+# ---------------------------------
+# ذخیره آخرین نتیجه در signal.txt
+# ---------------------------------
+try:
+    with open("signal.txt", "w", encoding="utf-8") as file:
+        file.write("\n".join(output))
+
+    print("signal.txt UPDATED")
+
+except Exception as e:
+    print("SIGNAL FILE ERROR:", type(e).__name__)
+    print("SIGNAL FILE DETAILS:", str(e))
