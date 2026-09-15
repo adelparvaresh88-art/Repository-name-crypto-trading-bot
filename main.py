@@ -1,21 +1,19 @@
 import os
 import json
 import urllib.request
-import urllib.parse
-from datetime import datetime, timezone
+from datetime import datetime
 
 SYMBOL = "BTCUSDT"
-INTERVAL = "5m"
 LIMIT = 30
 
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 
 def get_klines():
     url = (
         f"https://api.binance.com/api/v3/klines"
-        f"?symbol={SYMBOL}&interval={INTERVAL}&limit={LIMIT}"
+        f"?symbol={SYMBOL}&interval=5m&limit={LIMIT}"
     )
 
     with urllib.request.urlopen(url, timeout=15) as response:
@@ -23,61 +21,81 @@ def get_klines():
 
 
 def send_telegram(message):
-    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         print("Telegram settings are missing.")
-        return
+        return False
 
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
 
-    data = urllib.parse.urlencode({
+    data = json.dumps({
         "chat_id": TELEGRAM_CHAT_ID,
         "text": message
-    }).encode()
+    }).encode("utf-8")
 
-    with urllib.request.urlopen(url, data=data, timeout=15) as response:
-        print("Telegram:", response.read().decode())
+    request = urllib.request.Request(
+        url,
+        data=data,
+        headers={"Content-Type": "application/json"},
+        method="POST"
+    )
+
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            result = json.loads(response.read().decode())
+
+        print("Telegram message sent:", result.get("ok"))
+        return result.get("ok", False)
+
+    except Exception as e:
+        print("Telegram error:", str(e))
+        return False
 
 
 def main():
-    candles = get_klines()
+    print("================================")
+    print("ATI CRYPTO BOT")
+    print("MODE: PAPER / TEST")
+    print("REAL TRADING: DISABLED")
+    print("================================")
 
-    closes = [float(candle[4]) for candle in candles]
+    try:
+        candles = get_klines()
 
-    current = closes[-1]
-    previous = closes[-2]
+        closes = [float(candle[4]) for candle in candles]
 
-    short_avg = sum(closes[-5:]) / 5
-    long_avg = sum(closes[-15:]) / 15
+        current = closes[-1]
+        previous = closes[-2]
 
-    if short_avg > long_avg and current > previous:
-        signal = "🟢 BUY"
-    elif short_avg < long_avg and current < previous:
-        signal = "🔴 SELL"
-    else:
-        signal = "⚪ HOLD"
+        short_avg = sum(closes[-5:]) / 5
+        long_avg = sum(closes[-15:]) / 15
 
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        if short_avg > long_avg and current > previous:
+            signal = "BUY"
+        elif short_avg < long_avg and current < previous:
+            signal = "SELL"
+        else:
+            signal = "HOLD"
 
-    message = f"""🤖 ATI CRYPTO BOT
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-🪙 {SYMBOL}
-⏱ Timeframe: {INTERVAL}
+        message = (
+            "🤖 ATI CRYPTO BOT\n\n"
+            f"Symbol: {SYMBOL}\n"
+            f"Time: {now}\n"
+            f"Price: {current}\n"
+            f"Signal: {signal}\n\n"
+            "MODE: PAPER / TEST\n"
+            "REAL TRADING: DISABLED"
+        )
 
-💰 Price: {current:.4f}
+        print(message)
 
-📊 Signal: {signal}
+        if signal in ("BUY", "SELL"):
+            send_telegram(message)
 
-📈 Short Avg: {short_avg:.4f}
-📉 Long Avg: {long_avg:.4f}
-
-🕐 {now}
-
-⚠️ PAPER / TEST MODE
-Trading is DISABLED.
-"""
-
-    print(message)
-    send_telegram(message)
+    except Exception as e:
+        print("BOT ERROR:", str(e))
+        raise
 
 
 if __name__ == "__main__":
