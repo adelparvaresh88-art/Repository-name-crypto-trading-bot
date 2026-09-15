@@ -1,137 +1,84 @@
-import urllib.request
+import os
 import json
-from datetime import datetime
+import urllib.request
+import urllib.parse
+from datetime import datetime, timezone
 
 SYMBOL = "BTCUSDT"
 INTERVAL = "5m"
-LIMIT = 50
+LIMIT = 30
 
-URL = (
-    f"https://api.binance.com/api/v3/klines"
-    f"?symbol={SYMBOL}&interval={INTERVAL}&limit={LIMIT}"
-)
-
-output = []
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
 
-def log(text=""):
-    print(text)
-    output.append(str(text))
-
-
-log("================================")
-log("        ATI CRYPTO BOT")
-log("================================")
-log("MODE: PAPER / TEST")
-log("TRADING: DISABLED")
-log("TIME: " + str(datetime.now()))
-log("--------------------------------")
-
-try:
-    request = urllib.request.Request(
-        URL,
-        headers={"User-Agent": "Mozilla/5.0"}
+def get_klines():
+    url = (
+        f"https://api.binance.com/api/v3/klines"
+        f"?symbol={SYMBOL}&interval={INTERVAL}&limit={LIMIT}"
     )
 
-    with urllib.request.urlopen(request, timeout=10) as response:
-        candles = json.loads(response.read().decode())
-
-    data = []
-
-    for candle in candles:
-        data.append({
-            "open": float(candle[1]),
-            "high": float(candle[2]),
-            "low": float(candle[3]),
-            "close": float(candle[4])
-        })
-
-    # آخرین کندل بسته‌شده
-    c = data[-2]
-    p1 = data[-3]
-    p2 = data[-4]
-
-    price = c["close"]
-
-    # -----------------------------
-    # تشخیص کف
-    # -----------------------------
-    main_bottom = (
-        p2["low"] > p1["low"]
-        and c["low"] > p1["low"]
-        and c["close"] > c["open"]
-    )
-
-    # -----------------------------
-    # تشخیص سقف
-    # -----------------------------
-    main_top = (
-        p2["high"] < p1["high"]
-        and c["high"] < p1["high"]
-        and c["close"] < c["open"]
-    )
-
-    signal = "NO SIGNAL"
-    stop_loss = None
-    take_profit = None
-
-    # -----------------------------
-    # BUY
-    # -----------------------------
-    if main_bottom:
-        signal = "BUY"
-
-        stop_loss = p1["low"]
-        risk = price - stop_loss
-
-        if risk > 0:
-            take_profit = price + (risk * 2)
-
-    # -----------------------------
-    # SELL
-    # -----------------------------
-    elif main_top:
-        signal = "SELL"
-
-        stop_loss = p1["high"]
-        risk = stop_loss - price
-
-        if risk > 0:
-            take_profit = price - (risk * 2)
-
-    log("SYMBOL: " + SYMBOL)
-    log("TIMEFRAME: " + INTERVAL)
-    log("CANDLES: " + str(len(data)))
-    log("CURRENT CLOSED PRICE: " + str(price))
-    log("--------------------------------")
-    log("SIGNAL: " + signal)
-
-    if signal != "NO SIGNAL":
-        log("ENTRY: " + str(price))
-        log("STOP LOSS: " + str(stop_loss))
-        log("TAKE PROFIT: " + str(take_profit))
-
-    log("--------------------------------")
-    log("CANDLE CONNECTION: OK")
-    log("REAL TRADING: DISABLED")
-    log("================================")
-
-except Exception as e:
-    log("--------------------------------")
-    log("ERROR TYPE: " + type(e).__name__)
-    log("ERROR DETAILS: " + str(e))
-    log("================================")
+    with urllib.request.urlopen(url, timeout=15) as response:
+        return json.loads(response.read().decode())
 
 
-# ---------------------------------
-# ذخیره آخرین نتیجه در signal.txt
-# ---------------------------------
-try:
-    with open("signal.txt", "w", encoding="utf-8") as file:
-        file.write("\n".join(output))
+def send_telegram(message):
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+        print("Telegram settings are missing.")
+        return
 
-    print("signal.txt UPDATED")
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
 
-except Exception as e:
-    print("SIGNAL FILE ERROR:", type(e).__name__)
-    print("SIGNAL FILE DETAILS:", str(e))
+    data = urllib.parse.urlencode({
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": message
+    }).encode()
+
+    with urllib.request.urlopen(url, data=data, timeout=15) as response:
+        print("Telegram:", response.read().decode())
+
+
+def main():
+    candles = get_klines()
+
+    closes = [float(candle[4]) for candle in candles]
+
+    current = closes[-1]
+    previous = closes[-2]
+
+    short_avg = sum(closes[-5:]) / 5
+    long_avg = sum(closes[-15:]) / 15
+
+    if short_avg > long_avg and current > previous:
+        signal = "🟢 BUY"
+    elif short_avg < long_avg and current < previous:
+        signal = "🔴 SELL"
+    else:
+        signal = "⚪ HOLD"
+
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+    message = f"""🤖 ATI CRYPTO BOT
+
+🪙 {SYMBOL}
+⏱ Timeframe: {INTERVAL}
+
+💰 Price: {current:.4f}
+
+📊 Signal: {signal}
+
+📈 Short Avg: {short_avg:.4f}
+📉 Long Avg: {long_avg:.4f}
+
+🕐 {now}
+
+⚠️ PAPER / TEST MODE
+Trading is DISABLED.
+"""
+
+    print(message)
+    send_telegram(message)
+
+
+if __name__ == "__main__":
+    main()
