@@ -1,10 +1,12 @@
 import os
 import json
 import urllib.request
+import urllib.error
 from datetime import datetime
 
 SYMBOL = "BTCUSDT"
 LIMIT = 30
+INTERVAL = "5m"
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
@@ -13,56 +15,71 @@ CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 def get_price_data():
     url = (
         "https://api.binance.com/api/v3/klines"
-        f"?symbol={SYMBOL}&interval=5m&limit={LIMIT}"
+        f"?symbol={SYMBOL}&interval={INTERVAL}&limit={LIMIT}"
     )
 
     request = urllib.request.Request(
         url,
-        headers={"User-Agent": "ATI-Crypto-Bot"}
+        headers={
+            "User-Agent": "Mozilla/5.0",
+            "Accept": "application/json"
+        }
     )
 
-    with urllib.request.urlopen(request, timeout=20) as response:
-        return json.loads(response.read().decode())
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            data = json.loads(response.read().decode("utf-8"))
+
+        if not data:
+            raise Exception("No price data received")
+
+        return data
+
+    except urllib.error.HTTPError as e:
+        raise Exception(f"Binance HTTP Error {e.code}")
+
+    except Exception as e:
+        raise Exception(f"Price data error: {e}")
 
 
 def send_telegram(message):
     if not BOT_TOKEN or not CHAT_ID:
-        print("TELEGRAM SETTINGS NOT FOUND")
+        print("Telegram is not configured.")
         return
 
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
 
-    data = json.dumps({
+    payload = json.dumps({
         "chat_id": CHAT_ID,
         "text": message
     }).encode("utf-8")
 
     request = urllib.request.Request(
         url,
-        data=data,
-        headers={"Content-Type": "application/json"},
+        data=payload,
+        headers={
+            "Content-Type": "application/json",
+            "User-Agent": "Mozilla/5.0"
+        },
         method="POST"
     )
 
     try:
-        with urllib.request.urlopen(request, timeout=20) as response:
-            result = json.loads(response.read().decode())
+        with urllib.request.urlopen(request, timeout=15) as response:
+            result = response.read().decode("utf-8")
+            print("Telegram:", result)
 
-        if result.get("ok"):
-            print("TELEGRAM: MESSAGE SENT")
-        else:
-            print("TELEGRAM ERROR:", result)
-
-    except Exception as error:
-        print("TELEGRAM ERROR:", error)
+    except Exception as e:
+        print("Telegram error:", e)
 
 
 def main():
-    print("================================")
+    print("=" * 40)
     print("ATI CRYPTO BOT")
+    print("=" * 40)
     print("MODE: PAPER / TEST")
-    print("REAL TRADING: DISABLED")
-    print("================================")
+    print("TRADING: DISABLED")
+    print("TIME:", datetime.utcnow())
 
     candles = get_price_data()
 
@@ -71,26 +88,25 @@ def main():
     current_price = closes[-1]
     previous_price = closes[-2]
 
-    short_average = sum(closes[-5:]) / 5
-    long_average = sum(closes[-15:]) / 15
+    short_avg = sum(closes[-5:]) / 5
+    long_avg = sum(closes[-15:]) / 15
 
-    if short_average > long_average and current_price > previous_price:
+    if short_avg > long_avg and current_price > previous_price:
         signal = "BUY"
-    elif short_average < long_average and current_price < previous_price:
+
+    elif short_avg < long_avg and current_price < previous_price:
         signal = "SELL"
+
     else:
         signal = "HOLD"
 
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
     message = (
-        "🤖 ATI CRYPTO BOT\n\n"
+        f"ATI CRYPTO BOT\n\n"
         f"Symbol: {SYMBOL}\n"
-        f"Time: {now}\n"
-        f"Price: {current_price:.2f}\n"
-        f"Signal: {signal}\n\n"
-        "MODE: PAPER / TEST\n"
-        "REAL TRADING: DISABLED"
+        f"Price: {current_price}\n"
+        f"Signal: {signal}\n"
+        f"Mode: PAPER / TEST\n"
+        f"Trading: DISABLED"
     )
 
     print(message)
