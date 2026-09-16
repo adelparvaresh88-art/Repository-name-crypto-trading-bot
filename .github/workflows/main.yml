@@ -18,8 +18,12 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Run bot
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python main.py
+      - name: Check Python
+        run: python --version
+
+      - name: Run bot and show errors
+        run: |
+          python main.py
+          EXIT_CODE=$?
+          echo "BOT EXIT CODE: $EXIT_CODE"
+          exit $EXIT_CODE
