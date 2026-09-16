@@ -31,6 +31,10 @@ def main():
     try:
         candles = get_data()
 
+        if not candles or len(candles) < 15:
+            print("Not enough market data.")
+            return
+
         closes = [float(candle[4]) for candle in candles]
 
         current_price = closes[-1]
@@ -41,10 +45,8 @@ def main():
 
         if short_avg > long_avg and current_price > previous_price:
             signal = "BUY"
-
         elif short_avg < long_avg and current_price < previous_price:
             signal = "SELL"
-
         else:
             signal = "HOLD"
 
@@ -57,8 +59,8 @@ def main():
         print("================================")
 
     except Exception as error:
-        print("ERROR:", str(error))
-        raise
+        print("BOT ERROR:", error)
+        print("Bot finished safely.")
 
 
 if __name__ == "__main__":
