@@ -16,7 +16,7 @@ def get_btc_price():
 
     request = urllib.request.Request(
         url,
-        headers={"User-Agent": "ATI-Crypto-Bot/3.0"}
+        headers={"User-Agent": "ATI-Crypto-Bot/4.0"}
     )
 
     with urllib.request.urlopen(request, timeout=15) as response:
@@ -99,15 +99,18 @@ def main():
 
         success = send_telegram(message)
 
-        if not success:
+        if success:
+            print("================================")
+            print("BOT FINISHED SUCCESSFULLY")
+            print("================================")
+        else:
             print("BOT ERROR: Telegram message was NOT sent")
-            raise RuntimeError("Telegram send failed")
-
-        print("BOT FINISHED SUCCESSFULLY")
+            raise SystemExit(1)
 
     except Exception as e:
-        print("BOT ERROR:", repr(e))
-        raise
+        print("BOT ERROR:")
+        print(repr(e))
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":
