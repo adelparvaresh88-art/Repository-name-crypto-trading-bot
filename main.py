@@ -90,8 +90,13 @@ else:
         "BTC price could not be received."
     )
 
-send_telegram(message)
+success = send_telegram(message)
 
+if not success:
+    print("BOT FAILED: Telegram message was not sent")
+    raise SystemExit(1)
+
+print("BOT FINISHED SUCCESSFULLY")
 print("================================")
 print("ATI CRYPTO BOT - FINISHED")
 print("================================")
