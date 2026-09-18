@@ -7,8 +7,7 @@ from datetime import datetime, timezone
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-# حداقل قدرت حرکت
-MIN_CHANGE = 0.10
+MIN_CHANGE = 0.03
 
 
 def send_telegram(message):
@@ -36,7 +35,7 @@ def send_telegram(message):
         return False
 
 
-def get_btc_prices():
+def get_prices():
     url = (
         "https://api.coingecko.com/api/v3/coins/bitcoin/market_chart"
         "?vs_currency=usd&days=1"
@@ -63,103 +62,99 @@ def get_btc_prices():
         return None
 
 
-print("================================")
-print("ATI CRYPTO BOT - STRONG SIGNAL")
-print("================================")
-
-prices = get_btc_prices()
+prices = get_prices()
 
 if prices is None:
-    print("BTC DATA ERROR")
     raise SystemExit(1)
 
 
 current = prices[-1]
 
-# میانگین‌های کوتاه و بلند
-avg_5 = sum(prices[-5:]) / 5
-avg_10 = sum(prices[-10:]) / 10
-avg_20 = sum(prices[-20:]) / 20
+avg5 = sum(prices[-5:]) / 5
+avg10 = sum(prices[-10:]) / 10
+avg20 = sum(prices[-20:]) / 20
 
-# حرکت قیمت در چند بازه
-change_3 = ((prices[-1] - prices[-4]) / prices[-4]) * 100
-change_5 = ((prices[-1] - prices[-6]) / prices[-6]) * 100
-change_10 = ((prices[-1] - prices[-11]) / prices[-11]) * 100
+change3 = ((prices[-1] - prices[-4]) / prices[-4]) * 100
+change5 = ((prices[-1] - prices[-6]) / prices[-6]) * 100
+change10 = ((prices[-1] - prices[-11]) / prices[-11]) * 100
 
 
-signal = None
+buy_score = 0
+sell_score = 0
 
 
-# =========================
-# STRONG BUY
-# =========================
-if (
-    avg_5 > avg_10
-    and avg_10 > avg_20
-    and change_3 > 0
-    and change_5 >= MIN_CHANGE
-    and change_10 > 0
-):
+# BUY conditions
+if avg5 > avg10:
+    buy_score += 1
+
+if avg10 > avg20:
+    buy_score += 1
+
+if change3 > 0:
+    buy_score += 1
+
+if change5 >= MIN_CHANGE:
+    buy_score += 1
+
+if change10 > 0:
+    buy_score += 1
+
+
+# SELL conditions
+if avg5 < avg10:
+    sell_score += 1
+
+if avg10 < avg20:
+    sell_score += 1
+
+if change3 < 0:
+    sell_score += 1
+
+if change5 <= -MIN_CHANGE:
+    sell_score += 1
+
+if change10 < 0:
+    sell_score += 1
+
+
+signal = "HOLD"
+
+if buy_score >= 4:
     signal = "STRONG BUY"
 
-
-# =========================
-# STRONG SELL
-# =========================
-elif (
-    avg_5 < avg_10
-    and avg_10 < avg_20
-    and change_3 < 0
-    and change_5 <= -MIN_CHANGE
-    and change_10 < 0
-):
-
+elif sell_score >= 4:
     signal = "STRONG SELL"
 
 
-print("BTC:", current)
-print("AVG 5:", avg_5)
-print("AVG 10:", avg_10)
-print("AVG 20:", avg_20)
-print("CHANGE 3:", change_3)
-print("CHANGE 5:", change_5)
-print("CHANGE 10:", change_10)
-print("SIGNAL:", signal)
+if signal == "STRONG BUY":
+    emoji = "🟢"
 
-
-# فقط سیگنال قوی ارسال شود
-if signal is not None:
-
-    if signal == "STRONG BUY":
-        emoji = "🟢"
-    else:
-        emoji = "🔴"
-
-    message = (
-        f"{emoji} {signal}\n\n"
-        f"💰 BTC: ${current:,.2f}\n\n"
-        f"📊 Avg 5: ${avg_5:,.2f}\n"
-        f"📊 Avg 10: ${avg_10:,.2f}\n"
-        f"📊 Avg 20: ${avg_20:,.2f}\n\n"
-        f"📈 3-Candle: {change_3:.3f}%\n"
-        f"📈 5-Candle: {change_5:.3f}%\n"
-        f"📈 10-Candle: {change_10:.3f}%\n\n"
-        "🧪 PAPER / TEST MODE\n"
-        "🚫 REAL TRADING: OFF\n\n"
-        f"⏰ {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}"
-    )
-
-    if not send_telegram(message):
-        raise SystemExit(1)
-
-    print("SIGNAL SENT TO TELEGRAM")
+elif signal == "STRONG SELL":
+    emoji = "🔴"
 
 else:
-
-    print("NO STRONG SIGNAL")
-    print("NOTHING SENT TO TELEGRAM")
+    emoji = "⚪"
 
 
-print("================================")
-print("ATI CRYPTO BOT - FINISHED")
-print("================================")
+message = (
+    "🤖 ATI CRYPTO BOT\n\n"
+    f"{emoji} {signal}\n\n"
+    f"💰 BTC: ${current:,.2f}\n\n"
+    f"🟢 BUY SCORE: {buy_score}/5\n"
+    f"🔴 SELL SCORE: {sell_score}/5\n\n"
+    f"AVG 5: ${avg5:,.2f}\n"
+    f"AVG 10: ${avg10:,.2f}\n"
+    f"AVG 20: ${avg20:,.2f}\n\n"
+    f"3-Candle: {change3:.3f}%\n"
+    f"5-Candle: {change5:.3f}%\n"
+    f"10-Candle: {change10:.3f}%\n\n"
+    "🧪 PAPER / TEST\n"
+    "🚫 REAL TRADING: OFF\n\n"
+    f"⏰ {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}"
+)
+
+
+if not send_telegram(message):
+    raise SystemExit(1)
+
+print(message)
