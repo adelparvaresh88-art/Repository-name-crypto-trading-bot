@@ -2,25 +2,18 @@ import os
 import json
 import urllib.request
 import urllib.parse
-
-print("================================")
-print("ATI CRYPTO BOT - START")
-print("================================")
+from datetime import datetime, timezone
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-print("BOT TOKEN:", "OK" if BOT_TOKEN else "MISSING")
-print("CHAT ID:", "OK" if CHAT_ID else "MISSING")
+SYMBOL = "BTCUSDT"
+LIMIT = 30
 
 
 def send_telegram(message):
-    if not BOT_TOKEN:
-        print("ERROR: TELEGRAM_BOT_TOKEN is missing")
-        return False
-
-    if not CHAT_ID:
-        print("ERROR: TELEGRAM_CHAT_ID is missing")
+    if not BOT_TOKEN or not CHAT_ID:
+        print("ERROR: Telegram secrets are missing")
         return False
 
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
@@ -40,55 +33,82 @@ def send_telegram(message):
         with urllib.request.urlopen(request, timeout=20) as response:
             result = json.loads(response.read().decode("utf-8"))
 
-        print("TELEGRAM RESPONSE:", result)
+        print("TELEGRAM:", result)
 
-        if result.get("ok") is True:
-            print("SUCCESS: Telegram message sent")
-            return True
-
-        print("ERROR: Telegram rejected the message")
-        return False
+        return result.get("ok") is True
 
     except Exception as e:
-        print("ERROR: Telegram connection failed")
-        print("DETAIL:", str(e))
+        print("TELEGRAM ERROR:", str(e))
         return False
 
 
-def get_btc_price():
+def get_candles():
     url = (
-        "https://api.coingecko.com/api/v3/simple/price"
-        "?ids=bitcoin&vs_currencies=usd"
+        "https://api.binance.com/api/v3/klines"
+        f"?symbol={SYMBOL}&interval=5m&limit={LIMIT}"
     )
 
     try:
         with urllib.request.urlopen(url, timeout=20) as response:
-            data = json.loads(response.read().decode("utf-8"))
-
-        return data["bitcoin"]["usd"]
+            return json.loads(response.read().decode("utf-8"))
 
     except Exception as e:
-        print("ERROR: BTC price failed")
-        print("DETAIL:", str(e))
+        print("BINANCE ERROR:", str(e))
         return None
 
 
-price = get_btc_price()
+def calculate_signal(candles):
+    closes = [float(candle[4]) for candle in candles]
 
-if price is not None:
+    short_avg = sum(closes[-5:]) / 5
+    long_avg = sum(closes[-15:]) / 15
+
+    current_price = closes[-1]
+    previous_price = closes[-2]
+
+    if short_avg > long_avg and current_price > previous_price:
+        signal = "🟢 BUY"
+
+    elif short_avg < long_avg and current_price < previous_price:
+        signal = "🔴 SELL"
+
+    else:
+        signal = "⚪ HOLD"
+
+    return signal, current_price, short_avg, long_avg
+
+
+print("================================")
+print("ATI CRYPTO SIGNAL BOT")
+print("MODE: PAPER / SIGNAL ONLY")
+print("TRADING: DISABLED")
+print("================================")
+
+candles = get_candles()
+
+if candles is None:
     message = (
         "🤖 ATI CRYPTO BOT\n\n"
-        "✅ Bot is working\n"
-        f"💰 BTC Price: ${price}\n"
-        "🧪 MODE: PAPER / TEST\n"
-        "🚫 TRADING: DISABLED"
+        "⚠️ خطا در دریافت اطلاعات BTC\n"
+        "TRADING: DISABLED"
     )
 else:
+    signal, price, short_avg, long_avg = calculate_signal(candles)
+
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
     message = (
         "🤖 ATI CRYPTO BOT\n\n"
-        "⚠️ Telegram test message\n"
-        "BTC price could not be received."
+        f"💰 BTC: ${price:,.2f}\n"
+        f"📊 SIGNAL: {signal}\n\n"
+        f"5C AVG: ${short_avg:,.2f}\n"
+        f"15C AVG: ${long_avg:,.2f}\n\n"
+        f"⏰ {now}\n"
+        "🧪 PAPER / TEST\n"
+        "🚫 REAL TRADING: OFF"
     )
+
+print(message)
 
 success = send_telegram(message)
 
@@ -97,6 +117,3 @@ if not success:
     raise SystemExit(1)
 
 print("BOT FINISHED SUCCESSFULLY")
-print("================================")
-print("ATI CRYPTO BOT - FINISHED")
-print("================================")
