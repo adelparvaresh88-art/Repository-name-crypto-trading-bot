@@ -7,8 +7,8 @@ from datetime import datetime, timezone
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-# حداقل تغییر قیمت برای تأیید سیگنال قوی
-MIN_CHANGE = 0.05
+# حداقل قدرت حرکت
+MIN_CHANGE = 0.10
 
 
 def send_telegram(message):
@@ -53,7 +53,7 @@ def get_btc_prices():
 
         prices = [float(x[1]) for x in data["prices"]]
 
-        if len(prices) < 20:
+        if len(prices) < 30:
             return None
 
         return prices
@@ -63,7 +63,9 @@ def get_btc_prices():
         return None
 
 
-print("ATI CRYPTO BOT STARTED")
+print("================================")
+print("ATI CRYPTO BOT - STRONG SIGNAL")
+print("================================")
 
 prices = get_btc_prices()
 
@@ -71,30 +73,62 @@ if prices is None:
     print("BTC DATA ERROR")
     raise SystemExit(1)
 
+
 current = prices[-1]
 
-short_avg = sum(prices[-5:]) / 5
-long_avg = sum(prices[-20:]) / 20
+# میانگین‌های کوتاه و بلند
+avg_5 = sum(prices[-5:]) / 5
+avg_10 = sum(prices[-10:]) / 10
+avg_20 = sum(prices[-20:]) / 20
 
-change = ((current - prices[-5]) / prices[-5]) * 100
+# حرکت قیمت در چند بازه
+change_3 = ((prices[-1] - prices[-4]) / prices[-4]) * 100
+change_5 = ((prices[-1] - prices[-6]) / prices[-6]) * 100
+change_10 = ((prices[-1] - prices[-11]) / prices[-11]) * 100
+
 
 signal = None
 
+
+# =========================
 # STRONG BUY
-if short_avg > long_avg and change >= MIN_CHANGE:
+# =========================
+if (
+    avg_5 > avg_10
+    and avg_10 > avg_20
+    and change_3 > 0
+    and change_5 >= MIN_CHANGE
+    and change_10 > 0
+):
     signal = "STRONG BUY"
 
+
+# =========================
 # STRONG SELL
-elif short_avg < long_avg and change <= -MIN_CHANGE:
+# =========================
+elif (
+    avg_5 < avg_10
+    and avg_10 < avg_20
+    and change_3 < 0
+    and change_5 <= -MIN_CHANGE
+    and change_10 < 0
+):
+
     signal = "STRONG SELL"
 
 
 print("BTC:", current)
-print("CHANGE:", change)
+print("AVG 5:", avg_5)
+print("AVG 10:", avg_10)
+print("AVG 20:", avg_20)
+print("CHANGE 3:", change_3)
+print("CHANGE 5:", change_5)
+print("CHANGE 10:", change_10)
 print("SIGNAL:", signal)
 
-# فقط BUY و SELL ارسال شود
-if signal:
+
+# فقط سیگنال قوی ارسال شود
+if signal is not None:
 
     if signal == "STRONG BUY":
         emoji = "🟢"
@@ -103,10 +137,13 @@ if signal:
 
     message = (
         f"{emoji} {signal}\n\n"
-        f"💰 BTC: ${current:,.2f}\n"
-        f"📈 Change: {change:.3f}%\n"
-        f"📊 5 Avg: ${short_avg:,.2f}\n"
-        f"📊 20 Avg: ${long_avg:,.2f}\n\n"
+        f"💰 BTC: ${current:,.2f}\n\n"
+        f"📊 Avg 5: ${avg_5:,.2f}\n"
+        f"📊 Avg 10: ${avg_10:,.2f}\n"
+        f"📊 Avg 20: ${avg_20:,.2f}\n\n"
+        f"📈 3-Candle: {change_3:.3f}%\n"
+        f"📈 5-Candle: {change_5:.3f}%\n"
+        f"📈 10-Candle: {change_10:.3f}%\n\n"
         "🧪 PAPER / TEST MODE\n"
         "🚫 REAL TRADING: OFF\n\n"
         f"⏰ {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}"
@@ -115,9 +152,14 @@ if signal:
     if not send_telegram(message):
         raise SystemExit(1)
 
-    print("SIGNAL SENT")
+    print("SIGNAL SENT TO TELEGRAM")
 
 else:
-    print("NO STRONG SIGNAL - TELEGRAM MESSAGE NOT SENT")
 
-print("ATI CRYPTO BOT FINISHED")
+    print("NO STRONG SIGNAL")
+    print("NOTHING SENT TO TELEGRAM")
+
+
+print("================================")
+print("ATI CRYPTO BOT - FINISHED")
+print("================================")
