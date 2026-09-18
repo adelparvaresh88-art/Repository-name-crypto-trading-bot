@@ -28,6 +28,7 @@ def send_telegram(message):
         with urllib.request.urlopen(request, timeout=30) as response:
             result = json.loads(response.read().decode("utf-8"))
 
+        print("TELEGRAM:", result)
         return result.get("ok") is True
 
     except Exception as e:
@@ -53,86 +54,59 @@ def get_btc_prices():
         prices = [float(x[1]) for x in data["prices"]]
 
         if len(prices) < 20:
-            return None
+            return None, "داده کافی دریافت نشد"
 
-        return prices
+        return prices, None
 
     except Exception as e:
-        print("PRICE ERROR:", e)
-        return None
+        return None, str(e)
 
 
-print("================================")
-print("ATI CRYPTO BOT - STRONG SIGNAL")
-print("================================")
+print("ATI CRYPTO BOT STARTED")
 
-prices = get_btc_prices()
+prices, error = get_btc_prices()
 
 if prices is None:
 
-    print("Could not get BTC data")
-    raise SystemExit(1)
-
-
-current = prices[-1]
-
-short_avg = sum(prices[-5:]) / 5
-long_avg = sum(prices[-20:]) / 20
-
-change = ((current - prices[-5]) / prices[-5]) * 100
-
-signal = "HOLD"
-
-# STRONG BUY
-if short_avg > long_avg and change >= MIN_CHANGE:
-    signal = "BUY"
-
-# STRONG SELL
-elif short_avg < long_avg and change <= -MIN_CHANGE:
-    signal = "SELL"
-
-
-print("BTC:", current)
-print("5 AVG:", short_avg)
-print("20 AVG:", long_avg)
-print("CHANGE:", change)
-print("SIGNAL:", signal)
-
-
-# فقط BUY و SELL ارسال شود
-if signal in ["BUY", "SELL"]:
-
-    if signal == "BUY":
-        message = (
-            "🟢 STRONG BUY SIGNAL\n\n"
-            f"💰 BTC: ${current:,.2f}\n"
-            f"📈 Change: {change:.2f}%\n"
-            f"📊 Short Avg: ${short_avg:,.2f}\n"
-            f"📊 Long Avg: ${long_avg:,.2f}\n\n"
-            "🧪 PAPER / TEST MODE\n"
-            "🚫 REAL TRADING: OFF"
-        )
-
-    else:
-        message = (
-            "🔴 STRONG SELL SIGNAL\n\n"
-            f"💰 BTC: ${current:,.2f}\n"
-            f"📉 Change: {change:.2f}%\n"
-            f"📊 Short Avg: ${short_avg:,.2f}\n"
-            f"📊 Long Avg: ${long_avg:,.2f}\n\n"
-            "🧪 PAPER / TEST MODE\n"
-            "🚫 REAL TRADING: OFF"
-        )
-
-    if not send_telegram(message):
-        raise SystemExit(1)
-
-    print("SIGNAL SENT TO TELEGRAM")
+    message = (
+        "🤖 ATI CRYPTO BOT\n\n"
+        "❌ دریافت اطلاعات BTC ناموفق بود\n\n"
+        f"ERROR:\n{error}\n\n"
+        "🧪 PAPER MODE\n"
+        "🚫 REAL TRADING: OFF"
+    )
 
 else:
 
-    print("NO STRONG SIGNAL - NOTHING SENT")
+    current = prices[-1]
 
-print("================================")
-print("ATI CRYPTO BOT - FINISHED")
-print("================================")
+    short_avg = sum(prices[-5:]) / 5
+    long_avg = sum(prices[-20:]) / 20
+
+    change = ((current - prices[-5]) / prices[-5]) * 100
+
+    if short_avg > long_avg and change >= MIN_CHANGE:
+        signal = "🟢 STRONG BUY"
+
+    elif short_avg < long_avg and change <= -MIN_CHANGE:
+        signal = "🔴 STRONG SELL"
+
+    else:
+        signal = "⚪ HOLD"
+
+    message = (
+        "🤖 ATI CRYPTO BOT\n\n"
+        f"💰 BTC: ${current:,.2f}\n"
+        f"📈 Change: {change:.3f}%\n\n"
+        f"📊 5 Average: ${short_avg:,.2f}\n"
+        f"📊 20 Average: ${long_avg:,.2f}\n\n"
+        f"📢 SIGNAL: {signal}\n\n"
+        "🧪 PAPER / TEST MODE\n"
+        "🚫 REAL TRADING: OFF\n\n"
+        f"⏰ {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}"
+    )
+
+if not send_telegram(message):
+    raise SystemExit(1)
+
+print("ATI CRYPTO BOT FINISHED")
