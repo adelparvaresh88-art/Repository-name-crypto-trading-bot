@@ -8,6 +8,7 @@ BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 MIN_CHANGE = 0.03
+MIN_SCORE = 4
 
 
 def send_telegram(message):
@@ -28,6 +29,7 @@ def send_telegram(message):
         with urllib.request.urlopen(request, timeout=30) as response:
             result = json.loads(response.read().decode("utf-8"))
 
+        print("TELEGRAM:", result)
         return result.get("ok") is True
 
     except Exception as e:
@@ -53,6 +55,7 @@ def get_prices():
         prices = [float(x[1]) for x in data["prices"]]
 
         if len(prices) < 30:
+            print("Not enough price data")
             return None
 
         return prices
@@ -61,6 +64,10 @@ def get_prices():
         print("PRICE ERROR:", e)
         return None
 
+
+print("================================")
+print("ATI CRYPTO BOT - FINAL")
+print("================================")
 
 prices = get_prices()
 
@@ -83,7 +90,10 @@ buy_score = 0
 sell_score = 0
 
 
-# BUY conditions
+# =========================
+# BUY SCORE
+# =========================
+
 if avg5 > avg10:
     buy_score += 1
 
@@ -100,7 +110,10 @@ if change10 > 0:
     buy_score += 1
 
 
-# SELL conditions
+# =========================
+# SELL SCORE
+# =========================
+
 if avg5 < avg10:
     sell_score += 1
 
@@ -117,44 +130,76 @@ if change10 < 0:
     sell_score += 1
 
 
-signal = "HOLD"
-
-if buy_score >= 4:
-    signal = "STRONG BUY"
-
-elif sell_score >= 4:
-    signal = "STRONG SELL"
+print("BTC:", current)
+print("BUY SCORE:", buy_score, "/5")
+print("SELL SCORE:", sell_score, "/5")
 
 
-if signal == "STRONG BUY":
-    emoji = "🟢"
+# =========================
+# STRONG BUY
+# =========================
 
-elif signal == "STRONG SELL":
-    emoji = "🔴"
+if buy_score >= MIN_SCORE:
+
+    message = (
+        "🟢 STRONG BUY\n\n"
+        f"💰 BTC: ${current:,.2f}\n\n"
+        f"🟢 BUY SCORE: {buy_score}/5\n"
+        f"🔴 SELL SCORE: {sell_score}/5\n\n"
+        f"AVG 5: ${avg5:,.2f}\n"
+        f"AVG 10: ${avg10:,.2f}\n"
+        f"AVG 20: ${avg20:,.2f}\n\n"
+        f"3-Candle: {change3:.3f}%\n"
+        f"5-Candle: {change5:.3f}%\n"
+        f"10-Candle: {change10:.3f}%\n\n"
+        "🧪 PAPER / TEST\n"
+        "🚫 REAL TRADING: OFF\n\n"
+        f"⏰ {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}"
+    )
+
+    if not send_telegram(message):
+        raise SystemExit(1)
+
+    print("STRONG BUY SENT")
+
+
+# =========================
+# STRONG SELL
+# =========================
+
+elif sell_score >= MIN_SCORE:
+
+    message = (
+        "🔴 STRONG SELL\n\n"
+        f"💰 BTC: ${current:,.2f}\n\n"
+        f"🟢 BUY SCORE: {buy_score}/5\n"
+        f"🔴 SELL SCORE: {sell_score}/5\n\n"
+        f"AVG 5: ${avg5:,.2f}\n"
+        f"AVG 10: ${avg10:,.2f}\n"
+        f"AVG 20: ${avg20:,.2f}\n\n"
+        f"3-Candle: {change3:.3f}%\n"
+        f"5-Candle: {change5:.3f}%\n"
+        f"10-Candle: {change10:.3f}%\n\n"
+        "🧪 PAPER / TEST\n"
+        "🚫 REAL TRADING: OFF\n\n"
+        f"⏰ {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}"
+    )
+
+    if not send_telegram(message):
+        raise SystemExit(1)
+
+    print("STRONG SELL SENT")
+
+
+# =========================
+# HOLD = NOTHING
+# =========================
 
 else:
-    emoji = "⚪"
+
+    print("HOLD - NOTHING SENT TO TELEGRAM")
 
 
-message = (
-    "🤖 ATI CRYPTO BOT\n\n"
-    f"{emoji} {signal}\n\n"
-    f"💰 BTC: ${current:,.2f}\n\n"
-    f"🟢 BUY SCORE: {buy_score}/5\n"
-    f"🔴 SELL SCORE: {sell_score}/5\n\n"
-    f"AVG 5: ${avg5:,.2f}\n"
-    f"AVG 10: ${avg10:,.2f}\n"
-    f"AVG 20: ${avg20:,.2f}\n\n"
-    f"3-Candle: {change3:.3f}%\n"
-    f"5-Candle: {change5:.3f}%\n"
-    f"10-Candle: {change10:.3f}%\n\n"
-    "🧪 PAPER / TEST\n"
-    "🚫 REAL TRADING: OFF\n\n"
-    f"⏰ {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}"
-)
-
-
-if not send_telegram(message):
-    raise SystemExit(1)
-
-print(message)
+print("================================")
+print("ATI CRYPTO BOT - FINISHED")
+print("================================")
