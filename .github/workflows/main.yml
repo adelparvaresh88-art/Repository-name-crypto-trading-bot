@@ -2,28 +2,39 @@ name: Run ATI Bot
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "*/5 * * * *"
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Get code
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Check Python
-        run: python --version
+      - name: Check Secrets
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          echo "Checking Telegram settings..."
+          if [ -z "$TELEGRAM_BOT_TOKEN" ]; then
+            echo "ERROR: TELEGRAM_BOT_TOKEN is missing"
+            exit 1
+          fi
+          if [ -z "$TELEGRAM_CHAT_ID" ]; then
+            echo "ERROR: TELEGRAM_CHAT_ID is missing"
+            exit 1
+          fi
+          echo "Telegram secrets are present."
 
-      - name: Run bot and show errors
+      - name: Run Bot
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           python main.py
-          EXIT_CODE=$?
-          echo "BOT EXIT CODE: $EXIT_CODE"
-          exit $EXIT_CODE
