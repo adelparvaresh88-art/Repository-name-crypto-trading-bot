@@ -42,7 +42,7 @@ def send_telegram(message):
         return False
 
 
-def get_candles():
+
     url = (
         "https://api.binance.com/api/v3/klines"
         f"?symbol={SYMBOL}&interval=5m&limit={LIMIT}"
@@ -51,7 +51,27 @@ def get_candles():
     try:
         with urllib.request.urlopen(url, timeout=20) as response:
             return json.loads(response.read().decode("utf-8"))
+def get_candles():
+    url = (
+        "https://api.coingecko.com/api/v3/coins/bitcoin/market_chart"
+        "?vs_currency=usd&interval=5m&days=1"
+    )
 
+    try:
+        with urllib.request.urlopen(url, timeout=30) as response:
+            data = json.loads(response.read().decode("utf-8"))
+
+        prices = [float(item[1]) for item in data["prices"]]
+
+        candles = []
+        for price in prices[-30:]:
+            candles.append([0, 0, 0, 0, price])
+
+        return candles
+
+    except Exception as e:
+        print("COINGECKO ERROR:", str(e))
+        return None
     except Exception as e:
         print("BINANCE ERROR:", str(e))
         return None
