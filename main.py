@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-MIN_CHANGE = 0.20
+MIN_CHANGE = 0.10
 
 
 def send_telegram(message):
