@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
+# حداقل تغییر قیمت برای تأیید سیگنال قوی
 MIN_CHANGE = 0.05
 
 
@@ -28,7 +29,6 @@ def send_telegram(message):
         with urllib.request.urlopen(request, timeout=30) as response:
             result = json.loads(response.read().decode("utf-8"))
 
-        print("TELEGRAM:", result)
         return result.get("ok") is True
 
     except Exception as e:
@@ -54,59 +54,70 @@ def get_btc_prices():
         prices = [float(x[1]) for x in data["prices"]]
 
         if len(prices) < 20:
-            return None, "داده کافی دریافت نشد"
+            return None
 
-        return prices, None
+        return prices
 
     except Exception as e:
-        return None, str(e)
+        print("PRICE ERROR:", e)
+        return None
 
 
 print("ATI CRYPTO BOT STARTED")
 
-prices, error = get_btc_prices()
+prices = get_btc_prices()
 
 if prices is None:
+    print("BTC DATA ERROR")
+    raise SystemExit(1)
 
-    message = (
-        "🤖 ATI CRYPTO BOT\n\n"
-        "❌ دریافت اطلاعات BTC ناموفق بود\n\n"
-        f"ERROR:\n{error}\n\n"
-        "🧪 PAPER MODE\n"
-        "🚫 REAL TRADING: OFF"
-    )
+current = prices[-1]
 
-else:
+short_avg = sum(prices[-5:]) / 5
+long_avg = sum(prices[-20:]) / 20
 
-    current = prices[-1]
+change = ((current - prices[-5]) / prices[-5]) * 100
 
-    short_avg = sum(prices[-5:]) / 5
-    long_avg = sum(prices[-20:]) / 20
+signal = None
 
-    change = ((current - prices[-5]) / prices[-5]) * 100
+# STRONG BUY
+if short_avg > long_avg and change >= MIN_CHANGE:
+    signal = "STRONG BUY"
 
-    if short_avg > long_avg and change >= MIN_CHANGE:
-        signal = "🟢 STRONG BUY"
+# STRONG SELL
+elif short_avg < long_avg and change <= -MIN_CHANGE:
+    signal = "STRONG SELL"
 
-    elif short_avg < long_avg and change <= -MIN_CHANGE:
-        signal = "🔴 STRONG SELL"
 
+print("BTC:", current)
+print("CHANGE:", change)
+print("SIGNAL:", signal)
+
+# فقط BUY و SELL ارسال شود
+if signal:
+
+    if signal == "STRONG BUY":
+        emoji = "🟢"
     else:
-        signal = "⚪ HOLD"
+        emoji = "🔴"
 
     message = (
-        "🤖 ATI CRYPTO BOT\n\n"
+        f"{emoji} {signal}\n\n"
         f"💰 BTC: ${current:,.2f}\n"
-        f"📈 Change: {change:.3f}%\n\n"
-        f"📊 5 Average: ${short_avg:,.2f}\n"
-        f"📊 20 Average: ${long_avg:,.2f}\n\n"
-        f"📢 SIGNAL: {signal}\n\n"
+        f"📈 Change: {change:.3f}%\n"
+        f"📊 5 Avg: ${short_avg:,.2f}\n"
+        f"📊 20 Avg: ${long_avg:,.2f}\n\n"
         "🧪 PAPER / TEST MODE\n"
         "🚫 REAL TRADING: OFF\n\n"
         f"⏰ {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}"
     )
 
-if not send_telegram(message):
-    raise SystemExit(1)
+    if not send_telegram(message):
+        raise SystemExit(1)
+
+    print("SIGNAL SENT")
+
+else:
+    print("NO STRONG SIGNAL - TELEGRAM MESSAGE NOT SENT")
 
 print("ATI CRYPTO BOT FINISHED")
