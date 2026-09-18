@@ -4,103 +4,173 @@ import urllib.request
 import urllib.parse
 from datetime import datetime, timezone
 
-BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-
+# =========================
+# SETTINGS
+# =========================
 SYMBOL = "BTCUSDT"
-LIMIT = 30
+COINGECKO_ID = "bitcoin"
+
+MIN_SCORE = 3
+SL_PERCENT = 1.0
+TP_PERCENT = 2.0
 
 
+# =========================
+# GET BTC PRICE
+# =========================
 def get_btc_price():
     url = (
-        "https://api.binance.com/api/v3/klines"
-        f"?symbol={SYMBOL}&interval=5m&limit={LIMIT}"
+        "https://api.coingecko.com/api/v3/simple/price"
+        "?ids=" + COINGECKO_ID +
+        "&vs_currencies=usd"
     )
 
     request = urllib.request.Request(
         url,
-        headers={"User-Agent": "ATI-Crypto-Bot"}
+        headers={"User-Agent": "ATI-Crypto-Bot/1.0"}
     )
 
     with urllib.request.urlopen(request, timeout=20) as response:
-        data = json.loads(response.read().decode())
+        data = json.loads(response.read().decode("utf-8"))
 
-    closes = [float(candle[4]) for candle in data]
+    price = data[COINGECKO_ID]["usd"]
 
-    return closes
+    return float(price)
 
 
+# =========================
+# TELEGRAM
+# =========================
 def send_telegram(message):
-    if not BOT_TOKEN or not CHAT_ID:
+    bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
+    chat_id = os.getenv("TELEGRAM_CHAT_ID")
+
+    if not bot_token or not chat_id:
         print("Telegram secrets not found.")
+        print("BOT WILL CONTINUE WITHOUT TELEGRAM.")
         return
 
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    url = (
+        "https://api.telegram.org/bot"
+        + bot_token
+        + "/sendMessage"
+    )
 
     data = urllib.parse.urlencode({
-        "chat_id": CHAT_ID,
+        "chat_id": chat_id,
         "text": message
-    }).encode()
+    }).encode("utf-8")
 
-    request = urllib.request.Request(url, data=data)
+    request = urllib.request.Request(
+        url,
+        data=data,
+        method="POST"
+    )
 
     try:
         with urllib.request.urlopen(request, timeout=20) as response:
-            result = json.loads(response.read().decode())
+            result = json.loads(response.read().decode("utf-8"))
 
         if result.get("ok"):
             print("Telegram message sent successfully.")
         else:
             print("Telegram returned an error.")
+            print(result)
 
     except Exception as error:
         print("Telegram error:", error)
 
 
-print("================================")
-print("ATI CRYPTO BOT")
-print("MODE: PAPER / TEST")
-print("TRADING: DISABLED")
-print("================================")
+# =========================
+# MAIN BOT
+# =========================
+def main():
 
-try:
-    closes = get_btc_price()
+    print("================================")
+    print("ATI CRYPTO BOT V5")
+    print("MODE: PAPER / TEST")
+    print("REAL TRADING: DISABLED")
+    print("================================")
 
-    current = closes[-1]
-    previous = closes[-2]
+    try:
+        current_price = get_btc_price()
+    except Exception as error:
+        print("PRICE ERROR:", error)
+        return
 
-    avg5 = sum(closes[-5:]) / 5
-    avg15 = sum(closes[-15:]) / 15
+    print("SYMBOL:", SYMBOL)
+    print("BTC PRICE: $", current_price)
 
-    if avg5 > avg15 and current > previous:
-        signal = "🟢 BUY"
+    # Simple test signal
+    buy_score = 3
+    sell_score = 0
 
-    elif avg5 < avg15 and current < previous:
-        signal = "🔴 SELL"
+    print("BUY SCORE:", buy_score, "/5")
+    print("SELL SCORE:", sell_score, "/5")
+
+    signal = "HOLD"
+    message = None
+
+    if buy_score >= MIN_SCORE:
+
+        signal = "BUY"
+
+        stop_loss = current_price * (1 - SL_PERCENT / 100)
+        take_profit = current_price * (1 + TP_PERCENT / 100)
+
+        message = (
+            "🟢 STRONG BUY - PAPER\n\n"
+            "💰 Entry: $" + f"{current_price:,.2f}" + "\n"
+            "🛑 Stop Loss: $" + f"{stop_loss:,.2f}" + "\n"
+            "🎯 Take Profit: $" + f"{take_profit:,.2f}" + "\n\n"
+            "📊 BUY SCORE: "
+            + str(buy_score)
+            + "/5\n"
+            "⚠️ PAPER TEST - NO REAL TRADE"
+        )
+
+    elif sell_score >= MIN_SCORE:
+
+        signal = "SELL"
+
+        stop_loss = current_price * (1 + SL_PERCENT / 100)
+        take_profit = current_price * (1 - TP_PERCENT / 100)
+
+        message = (
+            "🔴 STRONG SELL - PAPER\n\n"
+            "💰 Entry: $" + f"{current_price:,.2f}" + "\n"
+            "🛑 Stop Loss: $" + f"{stop_loss:,.2f}" + "\n"
+            "🎯 Take Profit: $" + f"{take_profit:,.2f}" + "\n\n"
+            "📊 SELL SCORE: "
+            + str(sell_score)
+            + "/5\n"
+            "⚠️ PAPER TEST - NO REAL TRADE"
+        )
 
     else:
-        signal = "⚪ HOLD"
 
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        message = (
+            "⚪ HOLD - PAPER\n\n"
+            "💰 BTC: $" + f"{current_price:,.2f}" + "\n"
+            "📊 BUY SCORE: " + str(buy_score) + "/5\n"
+            "📊 SELL SCORE: " + str(sell_score) + "/5\n\n"
+            "⚠️ PAPER TEST - NO REAL TRADE"
+        )
 
-    message = (
-        "ATI CRYPTO BOT\n\n"
-        f"Symbol: {SYMBOL}\n"
-        f"Price: ${current:,.2f}\n"
-        f"5 Candle Avg: ${avg5:,.2f}\n"
-        f"15 Candle Avg: ${avg15:,.2f}\n\n"
-        f"Signal: {signal}\n\n"
-        "PAPER / TEST ONLY\n"
-        "NO REAL TRADING\n"
-        f"Time: {now}"
-    )
-
+    print("SIGNAL:", signal)
+    print("--------------------------------")
     print(message)
+    print("--------------------------------")
 
     send_telegram(message)
 
-    print("\nBOT FINISHED SUCCESSFULLY")
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    print("BOT TIME:", now)
+    print("BOT FINISHED SUCCESSFULLY.")
 
-except Exception as error:
-    print("BOT ERROR:", error)
-    print("BOT STOPPED")
+
+# =========================
+# START
+# =========================
+if __name__ == "__main__":
+    main()
