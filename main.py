@@ -1,68 +1,97 @@
-import osprint("TEST: MAIN.PY STARTED")
+import os
 import json
 import urllib.request
 import urllib.parse
 
+print("================================")
+print("ATI CRYPTO BOT - START")
+print("================================")
+
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-
-def get_btc_price():
-    url = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd"
-
-    with urllib.request.urlopen(url, timeout=15) as response:
-        data = json.loads(response.read().decode())
-
-    return data["bitcoin"]["usd"]
+print("BOT TOKEN:", "OK" if BOT_TOKEN else "MISSING")
+print("CHAT ID:", "OK" if CHAT_ID else "MISSING")
 
 
 def send_telegram(message):
-    if not BOT_TOKEN or not CHAT_ID:
-        print("ERROR: Telegram secrets are missing")
+    if not BOT_TOKEN:
+        print("ERROR: TELEGRAM_BOT_TOKEN is missing")
+        return False
+
+    if not CHAT_ID:
+        print("ERROR: TELEGRAM_CHAT_ID is missing")
         return False
 
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
 
-    params = urllib.parse.urlencode({
+    data = urllib.parse.urlencode({
         "chat_id": CHAT_ID,
         "text": message
-    }).encode()
+    }).encode("utf-8")
 
-    request = urllib.request.Request(url, data=params, method="POST")
+    request = urllib.request.Request(
+        url,
+        data=data,
+        method="POST"
+    )
 
-    with urllib.request.urlopen(request, timeout=15) as response:
-        result = json.loads(response.read().decode())
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            result = json.loads(response.read().decode("utf-8"))
 
-    if result.get("ok"):
-        return True
+        print("TELEGRAM RESPONSE:", result)
 
-    print("Telegram error:", result)
-    return False
+        if result.get("ok") is True:
+            print("SUCCESS: Telegram message sent")
+            return True
+
+        print("ERROR: Telegram rejected the message")
+        return False
+
+    except Exception as e:
+        print("ERROR: Telegram connection failed")
+        print("DETAIL:", str(e))
+        return False
 
 
-print("================================")
-print("ATI CRYPTO BOT")
-print("MODE: PAPER / TEST")
-print("TRADING: DISABLED")
-print("================================")
+def get_btc_price():
+    url = (
+        "https://api.coingecko.com/api/v3/simple/price"
+        "?ids=bitcoin&vs_currencies=usd"
+    )
 
-try:
-    price = get_btc_price()
+    try:
+        with urllib.request.urlopen(url, timeout=20) as response:
+            data = json.loads(response.read().decode("utf-8"))
 
+        return data["bitcoin"]["usd"]
+
+    except Exception as e:
+        print("ERROR: BTC price failed")
+        print("DETAIL:", str(e))
+        return None
+
+
+price = get_btc_price()
+
+if price is not None:
     message = (
         "🤖 ATI CRYPTO BOT\n\n"
         "✅ Bot is working\n"
-        "💰 BTC Price: $" + str(price) + "\n"
-        "🟢 Trading: DISABLED\n"
-        "🧪 Mode: PAPER / TEST"
+        f"💰 BTC Price: ${price}\n"
+        "🧪 MODE: PAPER / TEST\n"
+        "🚫 TRADING: DISABLED"
+    )
+else:
+    message = (
+        "🤖 ATI CRYPTO BOT\n\n"
+        "⚠️ Telegram test message\n"
+        "BTC price could not be received."
     )
 
-    print(message)
+send_telegram(message)
 
-    if send_telegram(message):
-        print("✅ Telegram message sent successfully")
-    else:
-        print("❌ Telegram message was not sent")
-
-except Exception as e:
-    print("ERROR:", str(e))
+print("================================")
+print("ATI CRYPTO BOT - FINISHED")
+print("================================")
