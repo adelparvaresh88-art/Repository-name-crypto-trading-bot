@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
+MIN_CHANGE = 0.20
+
 
 def send_telegram(message):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
@@ -16,71 +18,121 @@ def send_telegram(message):
         "text": message
     }).encode("utf-8")
 
-    try:
-        request = urllib.request.Request(
-            url,
-            data=data,
-            method="POST"
-        )
+    request = urllib.request.Request(
+        url,
+        data=data,
+        method="POST"
+    )
 
+    try:
         with urllib.request.urlopen(request, timeout=30) as response:
             result = json.loads(response.read().decode("utf-8"))
 
         return result.get("ok") is True
 
     except Exception as e:
-        print("TELEGRAM ERROR:", str(e))
+        print("TELEGRAM ERROR:", e)
         return False
 
 
-def get_btc_price():
+def get_btc_prices():
     url = (
-        "https://api.coingecko.com/api/v3/simple/price"
-        "?ids=bitcoin&vs_currencies=usd"
+        "https://api.coingecko.com/api/v3/coins/bitcoin/market_chart"
+        "?vs_currency=usd&days=1"
     )
 
     try:
         request = urllib.request.Request(
             url,
-            headers={
-                "User-Agent": "ATI-Crypto-Bot/1.0"
-            }
+            headers={"User-Agent": "ATI-Crypto-Bot/1.0"}
         )
 
         with urllib.request.urlopen(request, timeout=30) as response:
             data = json.loads(response.read().decode("utf-8"))
 
-        return data["bitcoin"]["usd"], None
+        prices = [float(x[1]) for x in data["prices"]]
+
+        if len(prices) < 20:
+            return None
+
+        return prices
 
     except Exception as e:
-        return None, str(e)
+        print("PRICE ERROR:", e)
+        return None
 
 
-print("ATI CRYPTO BOT STARTED")
+print("================================")
+print("ATI CRYPTO BOT - STRONG SIGNAL")
+print("================================")
 
-price, error = get_btc_price()
+prices = get_btc_prices()
 
-if price is not None:
+if prices is None:
 
-    message = (
-        "🤖 ATI CRYPTO BOT\n\n"
-        f"💰 BTC: ${price:,.2f}\n\n"
-        "🟢 BUY / 🔴 SELL / ⚪ HOLD\n"
-        "فعلاً حالت آزمایشی است\n"
-        "🚫 معامله واقعی خاموش است\n\n"
-        f"⏰ {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}"
-    )
+    print("Could not get BTC data")
+    raise SystemExit(1)
+
+
+current = prices[-1]
+
+short_avg = sum(prices[-5:]) / 5
+long_avg = sum(prices[-20:]) / 20
+
+change = ((current - prices[-5]) / prices[-5]) * 100
+
+signal = "HOLD"
+
+# STRONG BUY
+if short_avg > long_avg and change >= MIN_CHANGE:
+    signal = "BUY"
+
+# STRONG SELL
+elif short_avg < long_avg and change <= -MIN_CHANGE:
+    signal = "SELL"
+
+
+print("BTC:", current)
+print("5 AVG:", short_avg)
+print("20 AVG:", long_avg)
+print("CHANGE:", change)
+print("SIGNAL:", signal)
+
+
+# فقط BUY و SELL ارسال شود
+if signal in ["BUY", "SELL"]:
+
+    if signal == "BUY":
+        message = (
+            "🟢 STRONG BUY SIGNAL\n\n"
+            f"💰 BTC: ${current:,.2f}\n"
+            f"📈 Change: {change:.2f}%\n"
+            f"📊 Short Avg: ${short_avg:,.2f}\n"
+            f"📊 Long Avg: ${long_avg:,.2f}\n\n"
+            "🧪 PAPER / TEST MODE\n"
+            "🚫 REAL TRADING: OFF"
+        )
+
+    else:
+        message = (
+            "🔴 STRONG SELL SIGNAL\n\n"
+            f"💰 BTC: ${current:,.2f}\n"
+            f"📉 Change: {change:.2f}%\n"
+            f"📊 Short Avg: ${short_avg:,.2f}\n"
+            f"📊 Long Avg: ${long_avg:,.2f}\n\n"
+            "🧪 PAPER / TEST MODE\n"
+            "🚫 REAL TRADING: OFF"
+        )
+
+    if not send_telegram(message):
+        raise SystemExit(1)
+
+    print("SIGNAL SENT TO TELEGRAM")
 
 else:
 
-    message = (
-        "🤖 ATI CRYPTO BOT\n\n"
-        "❌ خطا در دریافت قیمت BTC\n\n"
-        f"🔎 ERROR:\n{error}\n\n"
-        "🚫 معامله واقعی خاموش است"
-    )
+    print("NO STRONG SIGNAL - NOTHING SENT")
 
-if not send_telegram(message):
-    raise SystemExit(1)
-
-print("ATI CRYPTO BOT FINISHED")
+print("================================")
+print("ATI CRYPTO BOT - FINISHED")
+print("================================")
