@@ -1,4 +1,4 @@
-import os
+import osprint("TEST: MAIN.PY STARTED")
 import json
 import urllib.request
 import urllib.parse
