@@ -8,8 +8,46 @@ BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 
+def request_json(url):
+    req = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "Mozilla/5.0",
+            "Accept": "application/json"
+        }
+    )
+
+    with urllib.request.urlopen(req, timeout=20) as response:
+        return json.loads(response.read().decode())
+
+
+def get_market_data():
+    url = (
+        "https://api.coingecko.com/api/v3/coins/bitcoin/market_chart"
+        "?vs_currency=usd&days=1&interval=5"
+    )
+
+    data = request_json(url)
+
+    prices = data.get("prices", [])
+
+    if len(prices) < 30:
+        raise Exception("داده کافی از CoinGecko دریافت نشد.")
+
+    closes = [float(item[1]) for item in prices]
+
+    return closes
+
+
 def send_telegram(message):
-    url = "https://api.telegram.org/bot" + BOT_TOKEN + "/sendMessage"
+    if not BOT_TOKEN or not CHAT_ID:
+        raise Exception("Telegram secrets پیدا نشد.")
+
+    url = (
+        "https://api.telegram.org/bot"
+        + BOT_TOKEN
+        + "/sendMessage"
+    )
 
     data = urllib.parse.urlencode({
         "chat_id": CHAT_ID,
@@ -22,63 +60,39 @@ def send_telegram(message):
         headers={"User-Agent": "Mozilla/5.0"}
     )
 
-    with urllib.request.urlopen(req, timeout=15) as response:
+    with urllib.request.urlopen(req, timeout=20) as response:
         return response.read().decode()
 
 
-def get_price():
-    url = "https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT"
+def calculate_signal(closes):
+    current = closes[-1]
+    previous = closes[-2]
 
-    req = urllib.request.Request(
-        url,
-        headers={"User-Agent": "Mozilla/5.0"}
-    )
+    short_avg = sum(closes[-5:]) / 5
+    long_avg = sum(closes[-15:]) / 15
 
-    with urllib.request.urlopen(req, timeout=15) as response:
-        data = json.loads(response.read().decode())
+    if short_avg > long_avg and current > previous:
+        return "BUY"
 
-    return float(data["price"])
+    if short_avg < long_avg and current < previous:
+        return "SELL"
 
-
-def get_candles():
-    url = (
-        "https://api.binance.com/api/v3/klines"
-        "?symbol=BTCUSDT&interval=5m&limit=30"
-    )
-
-    req = urllib.request.Request(
-        url,
-        headers={"User-Agent": "Mozilla/5.0"}
-    )
-
-    with urllib.request.urlopen(req, timeout=15) as response:
-        return json.loads(response.read().decode())
+    return "HOLD"
 
 
 def main():
     print("ATI CRYPTO BOT STARTED")
 
-    price = get_price()
-    candles = get_candles()
+    closes = get_market_data()
 
-    closes = [float(c[4]) for c in candles]
+    price = closes[-1]
+    signal = calculate_signal(closes)
 
-    current = closes[-2]
-    previous = closes[-3]
-
-    short_avg = sum(closes[-7:-2]) / 5
-    long_avg = sum(closes[-17:-2]) / 15
-
-    if short_avg > long_avg and current > previous:
-        signal = "BUY"
+    if signal == "BUY":
         icon = "🟢"
-
-    elif short_avg < long_avg and current < previous:
-        signal = "SELL"
+    elif signal == "SELL":
         icon = "🔴"
-
     else:
-        signal = "HOLD"
         icon = "⚪"
 
     message = (
@@ -98,12 +112,8 @@ try:
     main()
 
 except Exception as error:
-    error_text = traceback.format_exc()
-
-    print("================================")
-    print("BOT ERROR")
-    print(error_text)
-    print("================================")
+    print("BOT ERROR:")
+    print(traceback.format_exc())
 
     try:
         send_telegram(
@@ -111,5 +121,5 @@ except Exception as error:
             "خطای دقیق:\n\n"
             + str(error)
         )
-    except Exception as telegram_error:
-        print("Telegram error:", telegram_error)
+    except Exception:
+        pass
