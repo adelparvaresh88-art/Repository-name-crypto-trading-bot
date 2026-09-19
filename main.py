@@ -7,9 +7,9 @@ import traceback
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-# Risk settings
 SL_PERCENT = 0.50
 TP_PERCENT = 1.00
+MIN_SCORE = 3
 
 
 def get_data():
@@ -30,12 +30,10 @@ def get_data():
     pair_key = [key for key in result.keys() if key != "last"][0]
     candles = result[pair_key]
 
-    if len(candles) < 20:
+    if len(candles) < 25:
         raise Exception("داده کافی دریافت نشد.")
 
-    closes = [float(candle[4]) for candle in candles]
-
-    return closes
+    return candles
 
 
 def send_telegram(message):
@@ -63,20 +61,65 @@ def send_telegram(message):
         return response.read().decode()
 
 
-def calculate_signal(closes):
+def calculate_signal(candles):
+    closes = [float(c[4]) for c in candles]
+    opens = [float(c[1]) for c in candles]
+    highs = [float(c[2]) for c in candles]
+    lows = [float(c[3]) for c in candles]
+
     current = closes[-1]
     previous = closes[-2]
 
     short_avg = sum(closes[-5:]) / 5
     long_avg = sum(closes[-15:]) / 15
 
-    if short_avg > long_avg and current > previous:
-        return "BUY"
+    buy_score = 0
+    sell_score = 0
 
-    if short_avg < long_avg and current < previous:
-        return "SELL"
+    # 1 - روند کوتاه‌مدت
+    if short_avg > long_avg:
+        buy_score += 1
+    elif short_avg < long_avg:
+        sell_score += 1
 
-    return "HOLD"
+    # 2 - جهت قیمت
+    if current > previous:
+        buy_score += 1
+    elif current < previous:
+        sell_score += 1
+
+    # 3 - جهت کندل فعلی
+    if closes[-1] > opens[-1]:
+        buy_score += 1
+    elif closes[-1] < opens[-1]:
+        sell_score += 1
+
+    # 4 - شکست سقف/کف 10 کندل اخیر
+    recent_high = max(highs[-11:-1])
+    recent_low = min(lows[-11:-1])
+
+    if current > recent_high:
+        buy_score += 1
+
+    if current < recent_low:
+        sell_score += 1
+
+    # 5 - حرکت دو کندل اخیر
+    if closes[-1] > closes[-3]:
+        buy_score += 1
+    elif closes[-1] < closes[-3]:
+        sell_score += 1
+
+    print("BUY SCORE:", buy_score, "/5")
+    print("SELL SCORE:", sell_score, "/5")
+
+    if buy_score >= MIN_SCORE and buy_score > sell_score:
+        return "BUY", buy_score, sell_score
+
+    if sell_score >= MIN_SCORE and sell_score > buy_score:
+        return "SELL", buy_score, sell_score
+
+    return "HOLD", buy_score, sell_score
 
 
 def calculate_levels(price, signal):
@@ -96,12 +139,13 @@ def calculate_levels(price, signal):
 
 
 def main():
-    print("ATI CRYPTO BOT V4 STARTED")
+    print("ATI CRYPTO BOT V5 STARTED")
 
-    closes = get_data()
+    candles = get_data()
 
-    price = closes[-1]
-    signal = calculate_signal(closes)
+    price = float(candles[-1][4])
+
+    signal, buy_score, sell_score = calculate_signal(candles)
 
     sl, tp = calculate_levels(price, signal)
 
@@ -115,10 +159,12 @@ def main():
         icon = "⚪"
 
     message = (
-        "⚡ ATI CRYPTO BOT V4\n\n"
+        "⚡ ATI CRYPTO BOT V5\n\n"
         f"₿ BTC: ${price:,.2f}\n"
         "⏱ Timeframe: 5m\n"
         f"{icon} SIGNAL: {signal}\n"
+        f"📈 BUY SCORE: {buy_score}/5\n"
+        f"📉 SELL SCORE: {sell_score}/5\n"
     )
 
     if signal != "HOLD":
@@ -134,6 +180,7 @@ def main():
     )
 
     print(message)
+
     send_telegram(message)
 
 
@@ -146,7 +193,7 @@ except Exception as error:
 
     try:
         send_telegram(
-            "⚠️ ATI CRYPTO BOT\n\n"
+            "⚠️ ATI CRYPTO BOT V5\n\n"
             "خطای دقیق:\n\n"
             + str(error)
         )
