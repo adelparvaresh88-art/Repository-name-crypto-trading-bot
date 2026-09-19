@@ -30,19 +30,31 @@ def get_data():
 
     result = data["result"]
     pair_key = [key for key in result.keys() if key != "last"][0]
+
     candles = result[pair_key]
 
-    if len(candles) < 25:
+    if len(candles) < 30:
         raise Exception("داده کافی دریافت نشد.")
 
-    return candles
+    # آخرین کندل ممکن است هنوز در حال تشکیل باشد.
+    # آن را حذف می‌کنیم تا فقط کندل بسته‌شده بررسی شود.
+    closed_candles = candles[:-1]
+
+    if len(closed_candles) < 25:
+        raise Exception("کندل بسته‌شده کافی نیست.")
+
+    return closed_candles
 
 
 def send_telegram(message):
     if not BOT_TOKEN or not CHAT_ID:
         raise Exception("Telegram secrets تنظیم نشده.")
 
-    url = "https://api.telegram.org/bot" + BOT_TOKEN + "/sendMessage"
+    url = (
+        "https://api.telegram.org/bot"
+        + BOT_TOKEN
+        + "/sendMessage"
+    )
 
     data = urllib.parse.urlencode({
         "chat_id": CHAT_ID,
@@ -69,6 +81,7 @@ def load_state():
     try:
         with open(STATE_FILE, "r", encoding="utf-8") as file:
             return json.load(file)
+
     except Exception:
         return {
             "last_signal": "NONE",
@@ -101,21 +114,25 @@ def calculate_signal(candles):
     buy_score = 0
     sell_score = 0
 
+    # 1 - روند
     if short_avg > long_avg:
         buy_score += 1
     elif short_avg < long_avg:
         sell_score += 1
 
+    # 2 - جهت قیمت
     if current > previous:
         buy_score += 1
     elif current < previous:
         sell_score += 1
 
+    # 3 - جهت کندل بسته‌شده
     if closes[-1] > opens[-1]:
         buy_score += 1
     elif closes[-1] < opens[-1]:
         sell_score += 1
 
+    # 4 - شکست سقف/کف 10 کندل قبلی
     recent_high = max(highs[-11:-1])
     recent_low = min(lows[-11:-1])
 
@@ -125,6 +142,7 @@ def calculate_signal(candles):
     if current < recent_low:
         sell_score += 1
 
+    # 5 - حرکت دو کندل اخیر
     if closes[-1] > closes[-3]:
         buy_score += 1
     elif closes[-1] < closes[-3]:
@@ -144,27 +162,30 @@ def calculate_signal(candles):
 
 def calculate_levels(price, signal):
     if signal == "BUY":
-        return (
-            price * (1 - SL_PERCENT / 100),
-            price * (1 + TP_PERCENT / 100)
-        )
+        sl = price * (1 - SL_PERCENT / 100)
+        tp = price * (1 + TP_PERCENT / 100)
 
-    if signal == "SELL":
-        return (
-            price * (1 + SL_PERCENT / 100),
-            price * (1 - TP_PERCENT / 100)
-        )
+    elif signal == "SELL":
+        sl = price * (1 + SL_PERCENT / 100)
+        tp = price * (1 - TP_PERCENT / 100)
 
-    return None, None
+    else:
+        return None, None
+
+    return sl, tp
 
 
 def main():
-    print("ATI CRYPTO BOT V8 STARTED")
+    print("================================")
+    print("ATI CRYPTO BOT V9 STARTED")
+    print("5m CLOSED CANDLE MODE")
+    print("================================")
 
     candles = get_data()
 
-    price = float(candles[-1][4])
+    # این کندل کاملاً بسته شده است
     candle_time = candles[-1][0]
+    price = float(candles[-1][4])
 
     signal, buy_score, sell_score = calculate_signal(candles)
 
@@ -173,40 +194,38 @@ def main():
     last_signal = state.get("last_signal", "NONE")
     last_candle = state.get("last_candle", "")
 
-    # فقط BUY/SELL تکراری روی همان کندل فیلتر می‌شوند.
-    # HOLD همیشه برای تست تلگرام ارسال می‌شود.
-    if signal != "HOLD":
-        if signal == last_signal and str(candle_time) == str(last_candle):
-            print("DUPLICATE SIGNAL - SKIPPED")
-            return
+    # HOLD پیام نمی‌دهد
+    if signal == "HOLD":
+        print("HOLD - TELEGRAM MESSAGE SKIPPED")
+        return
+
+    # جلوگیری از BUY/SELL تکراری روی همان کندل
+    if (
+        signal == last_signal
+        and str(candle_time) == str(last_candle)
+    ):
+        print("DUPLICATE SIGNAL - TELEGRAM MESSAGE SKIPPED")
+        return
 
     sl, tp = calculate_levels(price, signal)
 
     if signal == "BUY":
         icon = "🟢"
-    elif signal == "SELL":
-        icon = "🔴"
     else:
-        icon = "⚪"
+        icon = "🔴"
 
     message = (
-        "⚡ ATI CRYPTO BOT V8\n\n"
+        "⚡ ATI CRYPTO BOT V9\n\n"
         f"₿ BTC: ${price:,.2f}\n"
         "⏱ Timeframe: 5m\n"
+        "✅ CLOSED CANDLE CONFIRMED\n\n"
         f"{icon} SIGNAL: {signal}\n"
         f"📈 BUY SCORE: {buy_score}/5\n"
-        f"📉 SELL SCORE: {sell_score}/5\n"
-    )
-
-    if signal != "HOLD":
-        message += (
-            f"\n💰 Entry: ${price:,.2f}\n"
-            f"🛑 SL: ${sl:,.2f}\n"
-            f"🎯 TP: ${tp:,.2f}\n"
-        )
-
-    message += (
-        "\n📊 MODE: PAPER / TEST\n"
+        f"📉 SELL SCORE: {sell_score}/5\n\n"
+        f"💰 Entry: ${price:,.2f}\n"
+        f"🛑 SL: ${sl:,.2f}\n"
+        f"🎯 TP: ${tp:,.2f}\n\n"
+        "📊 MODE: PAPER / TEST\n"
         "🚫 REAL TRADING: DISABLED"
     )
 
@@ -214,8 +233,7 @@ def main():
 
     send_telegram(message)
 
-    if signal != "HOLD":
-        save_state(signal, candle_time)
+    save_state(signal, candle_time)
 
 
 try:
@@ -227,7 +245,7 @@ except Exception as error:
 
     try:
         send_telegram(
-            "⚠️ ATI CRYPTO BOT V8\n\n"
+            "⚠️ ATI CRYPTO BOT V9\n\n"
             "خطای دقیق:\n\n"
             + str(error)
         )
