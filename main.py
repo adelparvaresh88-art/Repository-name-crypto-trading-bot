@@ -9,7 +9,9 @@ CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 SL_PERCENT = 0.50
 TP_PERCENT = 1.00
-MIN_SCORE = 3
+
+MIN_SCORE = 4
+MIN_MOVE_PERCENT = 0.08
 
 
 def get_data():
@@ -33,7 +35,6 @@ def get_data():
     if len(candles) < 30:
         raise Exception("Not enough candle data")
 
-    # Use only closed candles
     return candles[:-1]
 
 
@@ -62,9 +63,7 @@ def send_telegram(message):
     )
 
     with urllib.request.urlopen(req, timeout=20) as response:
-        result = response.read().decode()
-
-    return result
+        return response.read().decode()
 
 
 def calculate_signal(candles):
@@ -77,7 +76,7 @@ def calculate_signal(candles):
     previous = closes[-2]
 
     short_avg = sum(closes[-5:]) / 5
-    long_avg = sum(closes[-15:]) / 15
+    long_avg = sum(closes[-20:]) / 20
 
     buy_score = 0
     sell_score = 0
@@ -110,31 +109,57 @@ def calculate_signal(candles):
     if current < recent_low:
         sell_score += 1
 
-    # 5. Recent movement
+    # 5. Three-candle movement
     if closes[-1] > closes[-3]:
         buy_score += 1
     elif closes[-1] < closes[-3]:
         sell_score += 1
 
+    # Movement percentage
+    move_percent = abs(
+        (current - closes[-3]) / closes[-3] * 100
+    )
+
+    # Distance from trend average
+    trend_distance = abs(
+        (current - long_avg) / long_avg * 100
+    )
+
     print("BUY SCORE:", buy_score, "/5")
     print("SELL SCORE:", sell_score, "/5")
+    print("MOVE:", round(move_percent, 4), "%")
+    print("TREND DISTANCE:", round(trend_distance, 4), "%")
 
-    if buy_score >= MIN_SCORE and buy_score > sell_score:
-        return "BUY", buy_score, sell_score
+    # Strong BUY
+    if (
+        buy_score >= MIN_SCORE
+        and buy_score > sell_score
+        and move_percent >= MIN_MOVE_PERCENT
+        and current > short_avg
+    ):
+        return "BUY", buy_score, sell_score, move_percent
 
-    if sell_score >= MIN_SCORE and sell_score > buy_score:
-        return "SELL", buy_score, sell_score
+    # Strong SELL
+    if (
+        sell_score >= MIN_SCORE
+        and sell_score > buy_score
+        and move_percent >= MIN_MOVE_PERCENT
+        and current < short_avg
+    ):
+        return "SELL", buy_score, sell_score, move_percent
 
-    return "HOLD", buy_score, sell_score
+    return "HOLD", buy_score, sell_score, move_percent
 
 
 def calculate_levels(price, signal):
     if signal == "BUY":
         sl = price * (1 - SL_PERCENT / 100)
         tp = price * (1 + TP_PERCENT / 100)
+
     elif signal == "SELL":
         sl = price * (1 + SL_PERCENT / 100)
         tp = price * (1 - TP_PERCENT / 100)
+
     else:
         return None, None
 
@@ -143,9 +168,10 @@ def calculate_levels(price, signal):
 
 def main():
     print("================================")
-    print("ATI CRYPTO BOT V10")
-    print("CLOSED CANDLE MODE")
-    print("PAPER / TEST MODE")
+    print("ATI CRYPTO BOT V11")
+    print("STRONG SIGNAL MODE")
+    print("CLOSED CANDLE")
+    print("PAPER / TEST")
     print("================================")
 
     candles = get_data()
@@ -156,11 +182,12 @@ def main():
     print("CANDLE:", candle_time)
     print("BTC PRICE:", price)
 
-    signal, buy_score, sell_score = calculate_signal(candles)
+    signal, buy_score, sell_score, move_percent = calculate_signal(
+        candles
+    )
 
-    print("SIGNAL:", signal)
+    print("FINAL SIGNAL:", signal)
 
-    # Do not send HOLD
     if signal == "HOLD":
         print("HOLD - NO TELEGRAM MESSAGE")
         return
@@ -173,13 +200,15 @@ def main():
         icon = "🔴"
 
     message = (
-        "⚡ ATI CRYPTO BOT V10\n\n"
+        "⚡ ATI CRYPTO BOT V11\n\n"
         f"₿ BTC: ${price:,.2f}\n"
         "⏱ Timeframe: 5m\n"
-        "✅ CLOSED CANDLE CONFIRMED\n\n"
+        "✅ CLOSED CANDLE CONFIRMED\n"
+        "💪 STRONG SIGNAL FILTER\n\n"
         f"{icon} SIGNAL: {signal}\n"
         f"📈 BUY SCORE: {buy_score}/5\n"
-        f"📉 SELL SCORE: {sell_score}/5\n\n"
+        f"📉 SELL SCORE: {sell_score}/5\n"
+        f"📊 MOVE: {move_percent:.3f}%\n\n"
         f"💰 Entry: ${price:,.2f}\n"
         f"🛑 SL: ${sl:,.2f}\n"
         f"🎯 TP: ${tp:,.2f}\n\n"
@@ -206,7 +235,7 @@ except Exception as error:
 
     try:
         send_telegram(
-            "⚠️ ATI CRYPTO BOT ERROR\n\n"
+            "⚠️ ATI CRYPTO BOT V11 ERROR\n\n"
             + str(error)
         )
     except Exception:
