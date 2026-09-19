@@ -1,7 +1,9 @@
-import osimport urllib.parse
+import os
 import json
 import urllib.request
+import urllib.parse
 from datetime import datetime, timezone
+
 
 # =========================
 # SETTINGS
@@ -14,46 +16,47 @@ SYMBOL = "BTCUSDT"
 INTERVAL = "5m"
 LIMIT = 30
 
+
 # =========================
 # TELEGRAM
 # =========================
 
 def send_telegram(message):
-    if not BOT_TOKEN or not CHAT_ID:
-        print("❌ TELEGRAM SECRETS ARE MISSING")
-        return False
+    if not BOT_TOKEN:
+        print("ERROR: TELEGRAM_BOT_TOKEN is missing")
+        return
+
+    if not CHAT_ID:
+        print("ERROR: TELEGRAM_CHAT_ID is missing")
+        return
+
+    url = "https://api.telegram.org/bot" + BOT_TOKEN + "/sendMessage"
+
+    data = urllib.parse.urlencode({
+        "chat_id": CHAT_ID,
+        "text": message
+    }).encode("utf-8")
+
+    request = urllib.request.Request(
+        url,
+        data=data,
+        method="POST"
+    )
 
     try:
-        url = (
-            "https://api.telegram.org/bot"
-            + BOT_TOKEN
-            + "/sendMessage"
-        )
-
-        data = urllib.parse.urlencode({
-            "chat_id": CHAT_ID,
-            "text": message
-        }).encode("utf-8")
-
-        request = urllib.request.Request(
-            url,
-            data=data,
-            method="POST"
-        )
-
         with urllib.request.urlopen(request, timeout=20) as response:
             result = response.read().decode("utf-8")
 
-        print("✅ TELEGRAM:", result)
-        return True
+        print("TELEGRAM OK")
+        print(result)
 
     except Exception as error:
-        print("❌ TELEGRAM ERROR:", str(error))
-        return False
+        print("TELEGRAM ERROR:")
+        print(str(error))
 
 
 # =========================
-# BINANCE PRICE
+# GET BTC DATA
 # =========================
 
 def get_candles():
@@ -66,36 +69,44 @@ def get_candles():
 
     request = urllib.request.Request(
         url,
-        headers={"User-Agent": "ATI-CRYPTO-BOT"}
+        headers={
+            "User-Agent": "ATI-CRYPTO-BOT"
+        }
     )
 
     with urllib.request.urlopen(request, timeout=20) as response:
-        return json.loads(response.read().decode("utf-8"))
+        data = response.read().decode("utf-8")
+
+    return json.loads(data)
 
 
 # =========================
 # SIGNAL
 # =========================
 
-def get_signal(candles):
-    closes = [float(candle[4]) for candle in candles]
+def calculate_signal(candles):
 
-    current = closes[-1]
-    previous = closes[-2]
+    closes = []
 
-    short_avg = sum(closes[-5:]) / 5
-    long_avg = sum(closes[-15:]) / 15
+    for candle in candles:
+        closes.append(float(candle[4]))
 
-    if short_avg > long_avg and current > previous:
+    current_price = closes[-1]
+    previous_price = closes[-2]
+
+    short_average = sum(closes[-5:]) / 5
+    long_average = sum(closes[-15:]) / 15
+
+    if short_average > long_average and current_price > previous_price:
         signal = "BUY"
 
-    elif short_avg < long_avg and current < previous:
+    elif short_average < long_average and current_price < previous_price:
         signal = "SELL"
 
     else:
         signal = "HOLD"
 
-    return signal, current, short_avg, long_avg
+    return signal, current_price, short_average, long_average
 
 
 # =========================
@@ -112,17 +123,19 @@ def main():
 
     candles = get_candles()
 
-    signal, current, short_avg, long_avg = get_signal(candles)
+    signal, price, short_average, long_average = calculate_signal(candles)
 
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    now = datetime.now(timezone.utc).strftime(
+        "%Y-%m-%d %H:%M:%S UTC"
+    )
 
     message = (
         "🤖 ATI CRYPTO BOT\n\n"
-        "₿ BTC: $" + f"{current:,.2f}" + "\n"
+        "₿ BTC: $" + f"{price:,.2f}" + "\n"
         "⏱ Timeframe: 5m\n\n"
         "📊 SIGNAL: " + signal + "\n\n"
-        "📈 Short Avg: $" + f"{short_avg:,.2f}" + "\n"
-        "📉 Long Avg: $" + f"{long_avg:,.2f}" + "\n\n"
+        "📈 Short Avg: $" + f"{short_average:,.2f}" + "\n"
+        "📉 Long Avg: $" + f"{long_average:,.2f}" + "\n\n"
         "🧪 MODE: PAPER / TEST\n"
         "🚫 REAL TRADING: DISABLED\n\n"
         "🕐 " + now
@@ -134,16 +147,19 @@ def main():
 
 
 # =========================
-# SAFE START
+# START
 # =========================
 
 if __name__ == "__main__":
+
     try:
         main()
 
     except Exception as error:
+
         print("================================")
-        print("❌ BOT ERROR:")
+        print("BOT ERROR:")
         print(str(error))
         print("================================")
+
         raise
