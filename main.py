@@ -4,18 +4,20 @@ import urllib.request
 import urllib.parse
 from datetime import datetime, timezone
 
-
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
+SYMBOL = "BTCUSDT"
+INTERVAL = "5m"
+LIMIT = 50
+
+SL_PERCENT = 0.6
+TP_PERCENT = 1.2
+
 
 def send_telegram(message):
-    if not BOT_TOKEN:
-        print("ERROR: TELEGRAM_BOT_TOKEN is missing")
-        return False
-
-    if not CHAT_ID:
-        print("ERROR: TELEGRAM_CHAT_ID is missing")
+    if not BOT_TOKEN or not CHAT_ID:
+        print("Telegram settings missing")
         return False
 
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
@@ -36,76 +38,116 @@ def send_telegram(message):
         with urllib.request.urlopen(request, timeout=20) as response:
             result = json.loads(response.read().decode("utf-8"))
 
-        print("TELEGRAM RESULT:", result)
+        print("TELEGRAM:", result)
 
-        if result.get("ok"):
-            print("TELEGRAM MESSAGE SENT")
-            return True
-
-        print("TELEGRAM SEND FAILED")
-        return False
+        return result.get("ok", False)
 
     except Exception as e:
         print("TELEGRAM ERROR:", e)
         return False
 
 
-def get_btc_price():
+def get_candles():
     url = (
-        "https://api.coingecko.com/api/v3/simple/price"
-        "?ids=bitcoin&vs_currencies=usd"
+        "https://api.binance.com/api/v3/klines"
+        f"?symbol={SYMBOL}&interval={INTERVAL}&limit={LIMIT}"
     )
 
-    try:
-        request = urllib.request.Request(
-            url,
-            headers={"User-Agent": "ATI-CRYPTO-BOT"}
-        )
+    request = urllib.request.Request(
+        url,
+        headers={"User-Agent": "ATI-CRYPTO-BOT"}
+    )
 
-        with urllib.request.urlopen(request, timeout=20) as response:
-            data = json.loads(response.read().decode("utf-8"))
+    with urllib.request.urlopen(request, timeout=20) as response:
+        return json.loads(response.read().decode("utf-8"))
 
-        return data["bitcoin"]["usd"]
 
-    except Exception as e:
-        print("PRICE ERROR:", e)
-        return None
+def calculate_signal(candles):
+    closes = [float(c[4]) for c in candles]
+
+    current = closes[-1]
+
+    sma5 = sum(closes[-5:]) / 5
+    sma15 = sum(closes[-15:]) / 15
+
+    previous = closes[-2]
+
+    if sma5 > sma15 and current > previous:
+        return "BUY", current, sma5, sma15
+
+    if sma5 < sma15 and current < previous:
+        return "SELL", current, sma5, sma15
+
+    return "HOLD", current, sma5, sma15
 
 
 print("================================")
-print("ATI CRYPTO BOT V7")
+print("ATI CRYPTO BOT V8")
+print("TIMEFRAME: 5m")
 print("MODE: PAPER / TEST")
 print("REAL TRADING: DISABLED")
 print("================================")
 
 
-# اول تلگرام را تست می‌کنیم
-test_message = (
-    "🤖 ATI CRYPTO BOT V7\n\n"
-    "✅ Telegram connection test\n"
-    "🟢 Bot is running\n"
-    "💰 REAL TRADING: DISABLED"
-)
+try:
+    candles = get_candles()
 
-telegram_ok = send_telegram(test_message)
+    signal, price, sma5, sma15 = calculate_signal(candles)
 
+    print("PRICE:", price)
+    print("SMA5:", sma5)
+    print("SMA15:", sma15)
+    print("SIGNAL:", signal)
 
-# بعد قیمت را می‌گیریم
-price = get_btc_price()
+    if signal == "BUY":
 
-if price is not None:
-    message = (
-        "📊 ATI CRYPTO BOT\n\n"
-        f"₿ BTC: ${price:,.2f}\n"
-        "🟢 MODE: PAPER / TEST\n"
-        "🚫 REAL TRADING: DISABLED"
+        stop_loss = price * (1 - SL_PERCENT / 100)
+        take_profit = price * (1 + TP_PERCENT / 100)
+
+        message = (
+            "🟢 BUY SIGNAL\n\n"
+            f"₿ BTC: ${price:,.2f}\n"
+            f"⏱ Timeframe: {INTERVAL}\n\n"
+            f"🎯 Entry: ${price:,.2f}\n"
+            f"🛑 Stop Loss: ${stop_loss:,.2f}\n"
+            f"💰 Take Profit: ${take_profit:,.2f}\n\n"
+            "📊 MODE: PAPER / TEST\n"
+            "🚫 REAL TRADING: DISABLED"
+        )
+
+        send_telegram(message)
+
+    elif signal == "SELL":
+
+        stop_loss = price * (1 + SL_PERCENT / 100)
+        take_profit = price * (1 - TP_PERCENT / 100)
+
+        message = (
+            "🔴 SELL SIGNAL\n\n"
+            f"₿ BTC: ${price:,.2f}\n"
+            f"⏱ Timeframe: {INTERVAL}\n\n"
+            f"🎯 Entry: ${price:,.2f}\n"
+            f"🛑 Stop Loss: ${stop_loss:,.2f}\n"
+            f"💰 Take Profit: ${take_profit:,.2f}\n\n"
+            "📊 MODE: PAPER / TEST\n"
+            "🚫 REAL TRADING: DISABLED"
+        )
+
+        send_telegram(message)
+
+    else:
+
+        print("HOLD - no Telegram signal sent")
+
+except Exception as e:
+
+    print("BOT ERROR:", e)
+
+    send_telegram(
+        "⚠️ ATI BOT ERROR\n\n"
+        f"{e}\n\n"
+        "📊 MODE: PAPER / TEST"
     )
-
-    send_telegram(message)
-    print("BTC PRICE:", price)
-
-else:
-    print("BTC price unavailable - Telegram is still working")
 
 
 print("FINISHED")
