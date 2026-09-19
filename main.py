@@ -7,121 +7,98 @@ from datetime import datetime, timezone
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
+SYMBOL = "BTCUSDT"
 
-def send_telegram(message):
+
+def get_price():
+    # منبع اول: Binance
+    try:
+        url = f"https://api.binance.com/api/v3/ticker/price?symbol={SYMBOL}"
+        req = urllib.request.Request(
+            url,
+            headers={"User-Agent": "Mozilla/5.0"}
+        )
+
+        with urllib.request.urlopen(req, timeout=15) as response:
+            data = json.loads(response.read().decode())
+
+        return float(data["price"])
+
+    except Exception as e:
+        print("Binance failed:", str(e))
+
+    # منبع دوم: CoinGecko
     try:
         url = (
-            "https://api.telegram.org/bot"
-            + BOT_TOKEN
-            + "/sendMessage"
+            "https://api.coingecko.com/api/v3/simple/price"
+            "?ids=bitcoin&vs_currencies=usd"
         )
 
-        data = urllib.parse.urlencode({
-            "chat_id": CHAT_ID,
-            "text": message
-        }).encode("utf-8")
-
-        request = urllib.request.Request(
+        req = urllib.request.Request(
             url,
-            data=data,
-            method="POST"
+            headers={"User-Agent": "Mozilla/5.0"}
         )
 
-        with urllib.request.urlopen(request, timeout=20) as response:
-            result = response.read().decode("utf-8")
+        with urllib.request.urlopen(req, timeout=15) as response:
+            data = json.loads(response.read().decode())
 
-        print("TELEGRAM OK")
-        print(result)
+        return float(data["bitcoin"]["usd"])
 
-    except Exception as error:
-        print("TELEGRAM ERROR:", str(error))
+    except Exception as e:
+        print("CoinGecko failed:", str(e))
+
+    return None
 
 
-def get_btc_data():
+def send_telegram(message):
+    if not BOT_TOKEN or not CHAT_ID:
+        print("Telegram secrets are missing.")
+        return
+
     url = (
-        "https://api.binance.com/api/v3/klines"
-        "?symbol=BTCUSDT&interval=5m&limit=30"
+        f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+        f"?chat_id={urllib.parse.quote(CHAT_ID)}"
+        f"&text={urllib.parse.quote(message)}"
     )
 
-    request = urllib.request.Request(
+    req = urllib.request.Request(
         url,
         headers={"User-Agent": "Mozilla/5.0"}
     )
 
-    with urllib.request.urlopen(request, timeout=20) as response:
-        data = response.read().decode("utf-8")
-
-    candles = json.loads(data)
-
-    closes = [float(candle[4]) for candle in candles]
-
-    price = closes[-1]
-    previous = closes[-2]
-
-    avg5 = sum(closes[-5:]) / 5
-    avg15 = sum(closes[-15:]) / 15
-
-    if avg5 > avg15 and price > previous:
-        signal = "BUY"
-
-    elif avg5 < avg15 and price < previous:
-        signal = "SELL"
-
-    else:
-        signal = "HOLD"
-
-    return price, signal
+    with urllib.request.urlopen(req, timeout=15) as response:
+        print(response.read().decode())
 
 
 def main():
-
     print("================================")
     print("ATI CRYPTO BOT")
     print("================================")
 
-    if not BOT_TOKEN or not CHAT_ID:
-        print("TELEGRAM SECRETS MISSING")
-        return
+    price = get_price()
 
-    try:
-        price, signal = get_btc_data()
-
-        now = datetime.now(timezone.utc).strftime(
-            "%Y-%m-%d %H:%M UTC"
-        )
-
+    if price is None:
         message = (
-            "🤖 ATI CRYPTO BOT\n\n"
-            "₿ BTC: $" + f"{price:,.2f}" + "\n"
-            "⏱ Timeframe: 5m\n\n"
-            "📊 SIGNAL: " + signal + "\n\n"
-            "🧪 MODE: PAPER / TEST\n"
-            "🚫 REAL TRADING: DISABLED\n\n"
-            "🕐 " + now
-        )
-
-        print(message)
-        send_telegram(message)
-
-    except Exception as error:
-
-        print("DATA ERROR:", str(error))
-
-        error_message = (
             "⚠️ ATI CRYPTO BOT\n\n"
             "دریافت قیمت با مشکل مواجه شد.\n"
-            "معامله واقعی انجام نشد.\n\n"
-            "🔧 Error: " + str(error)
+            "معامله واقعی انجام نشد."
         )
+        send_telegram(message)
+        return
 
-        send_telegram(error_message)
+    print("BTC PRICE:", price)
+
+    message = (
+        "🟢 ATI CRYPTO BOT\n\n"
+        f"₿ BTC: ${price:,.2f}\n"
+        "⏱ Timeframe: 5m\n"
+        "⚪ SIGNAL: HOLD\n\n"
+        "📊 MODE: PAPER / TEST\n"
+        "🚫 REAL TRADING: DISABLED"
+    )
+
+    send_telegram(message)
 
 
 if __name__ == "__main__":
-    try:
-        main()
-        print("BOT FINISHED")
-    except Exception as error:
-        print("FINAL ERROR:", str(error))
-
-    print("WORKFLOW FINISHED")
+    main()
