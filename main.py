@@ -7,6 +7,10 @@ import traceback
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
+# Risk settings
+SL_PERCENT = 0.50
+TP_PERCENT = 1.00
+
 
 def get_data():
     url = "https://api.kraken.com/0/public/OHLC?pair=XBTUSD&interval=5"
@@ -23,9 +27,7 @@ def get_data():
         raise Exception(str(data["error"]))
 
     result = data["result"]
-
     pair_key = [key for key in result.keys() if key != "last"][0]
-
     candles = result[pair_key]
 
     if len(candles) < 20:
@@ -38,7 +40,7 @@ def get_data():
 
 def send_telegram(message):
     if not BOT_TOKEN or not CHAT_ID:
-        raise Exception("TELEGRAM_BOT_TOKEN یا TELEGRAM_CHAT_ID تنظیم نشده.")
+        raise Exception("Telegram secrets تنظیم نشده.")
 
     url = (
         "https://api.telegram.org/bot"
@@ -77,27 +79,57 @@ def calculate_signal(closes):
     return "HOLD"
 
 
+def calculate_levels(price, signal):
+    if signal == "BUY":
+        sl = price * (1 - SL_PERCENT / 100)
+        tp = price * (1 + TP_PERCENT / 100)
+
+    elif signal == "SELL":
+        sl = price * (1 + SL_PERCENT / 100)
+        tp = price * (1 - TP_PERCENT / 100)
+
+    else:
+        sl = None
+        tp = None
+
+    return sl, tp
+
+
 def main():
-    print("ATI CRYPTO BOT STARTED")
+    print("ATI CRYPTO BOT V4 STARTED")
 
     closes = get_data()
 
     price = closes[-1]
     signal = calculate_signal(closes)
 
+    sl, tp = calculate_levels(price, signal)
+
     if signal == "BUY":
         icon = "🟢"
+
     elif signal == "SELL":
         icon = "🔴"
+
     else:
         icon = "⚪"
 
     message = (
-        "⚡ ATI CRYPTO BOT\n\n"
+        "⚡ ATI CRYPTO BOT V4\n\n"
         f"₿ BTC: ${price:,.2f}\n"
         "⏱ Timeframe: 5m\n"
-        f"{icon} SIGNAL: {signal}\n\n"
-        "📊 MODE: PAPER / TEST\n"
+        f"{icon} SIGNAL: {signal}\n"
+    )
+
+    if signal != "HOLD":
+        message += (
+            f"\n💰 Entry: ${price:,.2f}\n"
+            f"🛑 SL: ${sl:,.2f}\n"
+            f"🎯 TP: ${tp:,.2f}\n"
+        )
+
+    message += (
+        "\n📊 MODE: PAPER / TEST\n"
         "🚫 REAL TRADING: DISABLED"
     )
 
@@ -118,5 +150,5 @@ except Exception as error:
             "خطای دقیق:\n\n"
             + str(error)
         )
-    except Exception as telegram_error:
-        print("Telegram error:", telegram_error)
+    except Exception:
+        pass
