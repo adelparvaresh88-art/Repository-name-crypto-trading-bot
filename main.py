@@ -11,6 +11,8 @@ SL_PERCENT = 0.50
 TP_PERCENT = 1.00
 MIN_SCORE = 3
 
+STATE_FILE = "bot_state.json"
+
 
 def get_data():
     url = "https://api.kraken.com/0/public/OHLC?pair=XBTUSD&interval=5"
@@ -34,7 +36,7 @@ def get_data():
     if len(candles) < 30:
         raise Exception("داده کافی دریافت نشد.")
 
-    # حذف کندل در حال تشکیل
+    # آخرین کندل ممکن است هنوز در حال تشکیل باشد
     return candles[:-1]
 
 
@@ -60,10 +62,34 @@ def send_telegram(message):
     )
 
     with urllib.request.urlopen(req, timeout=20) as response:
-        result = response.read().decode()
+        return response.read().decode()
 
-    print("TELEGRAM OK")
-    return result
+
+def load_state():
+    if not os.path.exists(STATE_FILE):
+        return {
+            "last_signal": "NONE",
+            "last_candle": ""
+        }
+
+    try:
+        with open(STATE_FILE, "r", encoding="utf-8") as file:
+            return json.load(file)
+    except Exception:
+        return {
+            "last_signal": "NONE",
+            "last_candle": ""
+        }
+
+
+def save_state(signal, candle_time):
+    state = {
+        "last_signal": signal,
+        "last_candle": str(candle_time)
+    }
+
+    with open(STATE_FILE, "w", encoding="utf-8") as file:
+        json.dump(state, file)
 
 
 def calculate_signal(candles):
@@ -81,21 +107,25 @@ def calculate_signal(candles):
     buy_score = 0
     sell_score = 0
 
+    # 1. Trend
     if short_avg > long_avg:
         buy_score += 1
     elif short_avg < long_avg:
         sell_score += 1
 
+    # 2. Price direction
     if current > previous:
         buy_score += 1
     elif current < previous:
         sell_score += 1
 
+    # 3. Closed candle direction
     if closes[-1] > opens[-1]:
         buy_score += 1
     elif closes[-1] < opens[-1]:
         sell_score += 1
 
+    # 4. Breakout
     recent_high = max(highs[-11:-1])
     recent_low = min(lows[-11:-1])
 
@@ -105,54 +135,98 @@ def calculate_signal(candles):
     if current < recent_low:
         sell_score += 1
 
+    # 5. Recent movement
     if closes[-1] > closes[-3]:
         buy_score += 1
     elif closes[-1] < closes[-3]:
         sell_score += 1
 
-    if buy_score >= MIN_SCORE and buy_score > sell_score:
-        signal = "BUY"
-    elif sell_score >= MIN_SCORE and sell_score > buy_score:
-        signal = "SELL"
-    else:
-        signal = "HOLD"
+    print("BUY SCORE:", buy_score, "/5")
+    print("SELL SCORE:", sell_score, "/5")
 
-    return signal, buy_score, sell_score
+    if buy_score >= MIN_SCORE and buy_score > sell_score:
+        return "BUY", buy_score, sell_score
+
+    if sell_score >= MIN_SCORE and sell_score > buy_score:
+        return "SELL", buy_score, sell_score
+
+    return "HOLD", buy_score, sell_score
+
+
+def calculate_levels(price, signal):
+    if signal == "BUY":
+        sl = price * (1 - SL_PERCENT / 100)
+        tp = price * (1 + TP_PERCENT / 100)
+
+    elif signal == "SELL":
+        sl = price * (1 + SL_PERCENT / 100)
+        tp = price * (1 - TP_PERCENT / 100)
+
+    else:
+        return None, None
+
+    return sl, tp
 
 
 def main():
-    print("ATI CRYPTO BOT V9 TEST STARTED")
+    print("================================")
+    print("ATI CRYPTO BOT V10")
+    print("CLOSED CANDLE MODE")
+    print("PAPER / TEST MODE")
+    print("================================")
 
     candles = get_data()
 
     price = float(candles[-1][4])
+    candle_time = candles[-1][0]
 
     signal, buy_score, sell_score = calculate_signal(candles)
 
+    # HOLD ارسال نمی‌شود
+    if signal == "HOLD":
+        print("HOLD - NO TELEGRAM MESSAGE")
+        return
+
+    state = load_state()
+
+    last_signal = state.get("last_signal", "NONE")
+    last_candle = state.get("last_candle", "")
+
+    # جلوگیری از ارسال تکراری همان سیگنال روی همان کندل
+    if (
+        signal == last_signal
+        and str(candle_time) == str(last_candle)
+    ):
+        print("DUPLICATE SIGNAL - NO TELEGRAM MESSAGE")
+        return
+
+    sl, tp = calculate_levels(price, signal)
+
     if signal == "BUY":
         icon = "🟢"
-    elif signal == "SELL":
-        icon = "🔴"
     else:
-        icon = "⚪"
+        icon = "🔴"
 
     message = (
-        "⚡ ATI CRYPTO BOT V9 TEST\n\n"
+        "⚡ ATI CRYPTO BOT V10\n\n"
         f"₿ BTC: ${price:,.2f}\n"
         "⏱ Timeframe: 5m\n"
-        "✅ CLOSED CANDLE\n\n"
+        "✅ CLOSED CANDLE CONFIRMED\n\n"
         f"{icon} SIGNAL: {signal}\n"
         f"📈 BUY SCORE: {buy_score}/5\n"
         f"📉 SELL SCORE: {sell_score}/5\n\n"
+        f"💰 Entry: ${price:,.2f}\n"
+        f"🛑 SL: ${sl:,.2f}\n"
+        f"🎯 TP: ${tp:,.2f}\n\n"
         "📊 MODE: PAPER / TEST\n"
-        "🚫 REAL TRADING: DISABLED\n\n"
-        "📡 TELEGRAM TEST: OK"
+        "🚫 REAL TRADING: DISABLED"
     )
 
     print(message)
 
-    # همیشه پیام ارسال می‌شود
     send_telegram(message)
+
+    save_state(signal, candle_time)
 
 
 try:
@@ -164,8 +238,20 @@ except Exception as error:
 
     try:
         send_telegram(
-            "⚠️ ATI CRYPTO BOT ERROR\n\n"
+            "⚠️ ATI CRYPTO BOT V10\n\n"
+            "خطای دقیق:\n\n"
             + str(error)
         )
     except Exception:
         pass
+
+الان فقط این کارها را انجام بده:
+
+1. "main.py" → کل کد قبلی را پاک کن.
+2. کد بالا را Paste کن.
+3. "Commit changes"
+4. "Actions"
+5. "Run workflow"
+6. "Run workflow"
+
+اگر سبز شد، نتیجه را بفرست. فعلاً به Secrets و فایل "main.yml" دست نزن.
