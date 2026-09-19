@@ -2,50 +2,13 @@ import os
 import json
 import urllib.request
 import urllib.parse
+import traceback
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-SYMBOL = "BTCUSDT"
-
-
-def get_candles():
-    url = (
-        "https://api.binance.com/api/v3/klines"
-        "?symbol=BTCUSDT&interval=5m&limit=50"
-    )
-
-    req = urllib.request.Request(
-        url,
-        headers={"User-Agent": "Mozilla/5.0"}
-    )
-
-    with urllib.request.urlopen(req, timeout=15) as response:
-        return json.loads(response.read().decode())
-
-
-def get_price():
-    url = (
-        "https://api.binance.com/api/v3/ticker/price"
-        "?symbol=BTCUSDT"
-    )
-
-    req = urllib.request.Request(
-        url,
-        headers={"User-Agent": "Mozilla/5.0"}
-    )
-
-    with urllib.request.urlopen(req, timeout=15) as response:
-        data = json.loads(response.read().decode())
-
-    return float(data["price"])
-
 
 def send_telegram(message):
-    if not BOT_TOKEN or not CHAT_ID:
-        print("Telegram secrets are missing.")
-        return
-
     url = "https://api.telegram.org/bot" + BOT_TOKEN + "/sendMessage"
 
     data = urllib.parse.urlencode({
@@ -60,103 +23,93 @@ def send_telegram(message):
     )
 
     with urllib.request.urlopen(req, timeout=15) as response:
-        print(response.read().decode())
+        return response.read().decode()
 
 
-def calculate_signal(candles):
-    closes = [float(c[4]) for c in candles]
+def get_price():
+    url = "https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT"
 
-    # آخرین کندل کامل
-    current = closes[-2]
-    previous = closes[-3]
+    req = urllib.request.Request(
+        url,
+        headers={"User-Agent": "Mozilla/5.0"}
+    )
 
-    # میانگین کوتاه و بلند
-    short_avg = sum(closes[-7:-2]) / 5
-    long_avg = sum(closes[-17:-2]) / 15
+    with urllib.request.urlopen(req, timeout=15) as response:
+        data = json.loads(response.read().decode())
 
-    # حرکت اخیر
-    recent_high = max(closes[-7:-2])
-    recent_low = min(closes[-7:-2])
+    return float(data["price"])
 
-    buy_score = 0
-    sell_score = 0
 
-    # روند
-    if short_avg > long_avg:
-        buy_score += 1
+def get_candles():
+    url = (
+        "https://api.binance.com/api/v3/klines"
+        "?symbol=BTCUSDT&interval=5m&limit=30"
+    )
 
-    if short_avg < long_avg:
-        sell_score += 1
+    req = urllib.request.Request(
+        url,
+        headers={"User-Agent": "Mozilla/5.0"}
+    )
 
-    # حرکت قیمت
-    if current > previous:
-        buy_score += 1
-
-    if current < previous:
-        sell_score += 1
-
-    # شکست سقف/کف کوتاه‌مدت
-    if current > recent_high:
-        buy_score += 2
-
-    if current < recent_low:
-        sell_score += 2
-
-    # تصمیم نهایی
-    if buy_score >= 2 and buy_score > sell_score:
-        return "BUY", buy_score, sell_score
-
-    if sell_score >= 2 and sell_score > buy_score:
-        return "SELL", buy_score, sell_score
-
-    return "HOLD", buy_score, sell_score
+    with urllib.request.urlopen(req, timeout=15) as response:
+        return json.loads(response.read().decode())
 
 
 def main():
+    print("ATI CRYPTO BOT STARTED")
+
+    price = get_price()
+    candles = get_candles()
+
+    closes = [float(c[4]) for c in candles]
+
+    current = closes[-2]
+    previous = closes[-3]
+
+    short_avg = sum(closes[-7:-2]) / 5
+    long_avg = sum(closes[-17:-2]) / 15
+
+    if short_avg > long_avg and current > previous:
+        signal = "BUY"
+        icon = "🟢"
+
+    elif short_avg < long_avg and current < previous:
+        signal = "SELL"
+        icon = "🔴"
+
+    else:
+        signal = "HOLD"
+        icon = "⚪"
+
+    message = (
+        "⚡ ATI CRYPTO BOT\n\n"
+        f"₿ BTC: ${price:,.2f}\n"
+        "⏱ Timeframe: 5m\n"
+        f"{icon} SIGNAL: {signal}\n\n"
+        "📊 MODE: PAPER / TEST\n"
+        "🚫 REAL TRADING: DISABLED"
+    )
+
+    print(message)
+    send_telegram(message)
+
+
+try:
+    main()
+
+except Exception as error:
+    error_text = traceback.format_exc()
+
     print("================================")
-    print("ATI CRYPTO BOT V3")
+    print("BOT ERROR")
+    print(error_text)
     print("================================")
 
     try:
-        candles = get_candles()
-        price = get_price()
-
-        signal, buy_score, sell_score = calculate_signal(candles)
-
-        if signal == "BUY":
-            icon = "🟢"
-        elif signal == "SELL":
-            icon = "🔴"
-        else:
-            icon = "⚪"
-
-        message = (
-            "⚡ ATI CRYPTO BOT V3\n\n"
-            f"₿ BTC: ${price:,.2f}\n"
-            "⏱ Timeframe: 5m\n\n"
-            f"{icon} SIGNAL: {signal}\n"
-            f"🟢 BUY SCORE: {buy_score}/4\n"
-            f"🔴 SELL SCORE: {sell_score}/4\n\n"
-            "📊 MODE: PAPER / TEST\n"
-            "🚫 REAL TRADING: DISABLED"
+        send_telegram(
+            "⚠️ ATI CRYPTO BOT\n\n"
+            "خطای دقیق:\n\n"
+            + str(error)
         )
-
-        print(message)
-        send_telegram(message)
-
-    except Exception as error:
-        print("BOT ERROR:")
-        print(str(error))
-
-        try:
-            send_telegram(
-                "⚠️ ATI CRYPTO BOT\n\n"
-                "خطا در اجرای ربات.\n"
-                "معامله واقعی انجام نشد."
-            )
-        except Exception:
-            pass
-
-
-if __name__ == "__main__":
-    main()
+    except Exception as telegram_error:
+        print("Telegram error:", telegram_error)
