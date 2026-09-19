@@ -11,8 +11,6 @@ SL_PERCENT = 0.50
 TP_PERCENT = 1.00
 MIN_SCORE = 3
 
-STATE_FILE = "bot_state.json"
-
 
 def get_data():
     url = "https://api.kraken.com/0/public/OHLC?pair=XBTUSD&interval=5"
@@ -29,20 +27,22 @@ def get_data():
         raise Exception(str(data["error"]))
 
     result = data["result"]
-    pair_key = [key for key in result.keys() if key != "last"][0]
-
+    pair_key = [key for key in result if key != "last"][0]
     candles = result[pair_key]
 
     if len(candles) < 30:
-        raise Exception("داده کافی دریافت نشد.")
+        raise Exception("Not enough candle data")
 
-    # آخرین کندل ممکن است هنوز در حال تشکیل باشد
+    # Use only closed candles
     return candles[:-1]
 
 
 def send_telegram(message):
-    if not BOT_TOKEN or not CHAT_ID:
-        raise Exception("Telegram secrets تنظیم نشده.")
+    if not BOT_TOKEN:
+        raise Exception("TELEGRAM_BOT_TOKEN is missing")
+
+    if not CHAT_ID:
+        raise Exception("TELEGRAM_CHAT_ID is missing")
 
     url = (
         "https://api.telegram.org/bot"
@@ -62,34 +62,9 @@ def send_telegram(message):
     )
 
     with urllib.request.urlopen(req, timeout=20) as response:
-        return response.read().decode()
+        result = response.read().decode()
 
-
-def load_state():
-    if not os.path.exists(STATE_FILE):
-        return {
-            "last_signal": "NONE",
-            "last_candle": ""
-        }
-
-    try:
-        with open(STATE_FILE, "r", encoding="utf-8") as file:
-            return json.load(file)
-    except Exception:
-        return {
-            "last_signal": "NONE",
-            "last_candle": ""
-        }
-
-
-def save_state(signal, candle_time):
-    state = {
-        "last_signal": signal,
-        "last_candle": str(candle_time)
-    }
-
-    with open(STATE_FILE, "w", encoding="utf-8") as file:
-        json.dump(state, file)
+    return result
 
 
 def calculate_signal(candles):
@@ -119,7 +94,7 @@ def calculate_signal(candles):
     elif current < previous:
         sell_score += 1
 
-    # 3. Closed candle direction
+    # 3. Candle direction
     if closes[-1] > opens[-1]:
         buy_score += 1
     elif closes[-1] < opens[-1]:
@@ -157,11 +132,9 @@ def calculate_levels(price, signal):
     if signal == "BUY":
         sl = price * (1 - SL_PERCENT / 100)
         tp = price * (1 + TP_PERCENT / 100)
-
     elif signal == "SELL":
         sl = price * (1 + SL_PERCENT / 100)
         tp = price * (1 - TP_PERCENT / 100)
-
     else:
         return None, None
 
@@ -180,24 +153,16 @@ def main():
     price = float(candles[-1][4])
     candle_time = candles[-1][0]
 
+    print("CANDLE:", candle_time)
+    print("BTC PRICE:", price)
+
     signal, buy_score, sell_score = calculate_signal(candles)
 
-    # HOLD ارسال نمی‌شود
+    print("SIGNAL:", signal)
+
+    # Do not send HOLD
     if signal == "HOLD":
         print("HOLD - NO TELEGRAM MESSAGE")
-        return
-
-    state = load_state()
-
-    last_signal = state.get("last_signal", "NONE")
-    last_candle = state.get("last_candle", "")
-
-    # جلوگیری از ارسال تکراری همان سیگنال روی همان کندل
-    if (
-        signal == last_signal
-        and str(candle_time) == str(last_candle)
-    ):
-        print("DUPLICATE SIGNAL - NO TELEGRAM MESSAGE")
         return
 
     sl, tp = calculate_levels(price, signal)
@@ -226,32 +191,25 @@ def main():
 
     send_telegram(message)
 
-    save_state(signal, candle_time)
+    print("TELEGRAM: SENT SUCCESSFULLY")
 
 
 try:
     main()
 
 except Exception as error:
+    print("================================")
     print("BOT ERROR:")
+    print(str(error))
+    print("================================")
     print(traceback.format_exc())
 
     try:
         send_telegram(
-            "⚠️ ATI CRYPTO BOT V10\n\n"
-            "خطای دقیق:\n\n"
+            "⚠️ ATI CRYPTO BOT ERROR\n\n"
             + str(error)
         )
     except Exception:
         pass
 
-الان فقط این کارها را انجام بده:
-
-1. "main.py" → کل کد قبلی را پاک کن.
-2. کد بالا را Paste کن.
-3. "Commit changes"
-4. "Actions"
-5. "Run workflow"
-6. "Run workflow"
-
-اگر سبز شد، نتیجه را بفرست. فعلاً به Secrets و فایل "main.yml" دست نزن.
+    raise
