@@ -11,6 +11,8 @@ SL_PERCENT = 0.50
 TP_PERCENT = 1.00
 MIN_SCORE = 3
 
+STATE_FILE = "bot_state.json"
+
 
 def get_data():
     url = "https://api.kraken.com/0/public/OHLC?pair=XBTUSD&interval=5"
@@ -61,6 +63,33 @@ def send_telegram(message):
         return response.read().decode()
 
 
+def load_state():
+    if not os.path.exists(STATE_FILE):
+        return {
+            "last_signal": "NONE",
+            "last_candle": ""
+        }
+
+    try:
+        with open(STATE_FILE, "r", encoding="utf-8") as file:
+            return json.load(file)
+    except Exception:
+        return {
+            "last_signal": "NONE",
+            "last_candle": ""
+        }
+
+
+def save_state(signal, candle_time):
+    state = {
+        "last_signal": signal,
+        "last_candle": str(candle_time)
+    }
+
+    with open(STATE_FILE, "w", encoding="utf-8") as file:
+        json.dump(state, file)
+
+
 def calculate_signal(candles):
     closes = [float(c[4]) for c in candles]
     opens = [float(c[1]) for c in candles]
@@ -76,7 +105,7 @@ def calculate_signal(candles):
     buy_score = 0
     sell_score = 0
 
-    # 1 - روند کوتاه‌مدت
+    # 1 - روند
     if short_avg > long_avg:
         buy_score += 1
     elif short_avg < long_avg:
@@ -88,13 +117,13 @@ def calculate_signal(candles):
     elif current < previous:
         sell_score += 1
 
-    # 3 - جهت کندل فعلی
+    # 3 - جهت کندل
     if closes[-1] > opens[-1]:
         buy_score += 1
     elif closes[-1] < opens[-1]:
         sell_score += 1
 
-    # 4 - شکست سقف/کف 10 کندل اخیر
+    # 4 - شکست سقف / کف
     recent_high = max(highs[-11:-1])
     recent_low = min(lows[-11:-1])
 
@@ -139,27 +168,36 @@ def calculate_levels(price, signal):
 
 
 def main():
-    print("ATI CRYPTO BOT V5 STARTED")
+    print("ATI CRYPTO BOT V6 STARTED")
 
     candles = get_data()
 
     price = float(candles[-1][4])
+    candle_time = candles[-1][0]
 
     signal, buy_score, sell_score = calculate_signal(candles)
+
+    state = load_state()
+
+    last_signal = state.get("last_signal", "NONE")
+    last_candle = state.get("last_candle", "")
+
+    # اگر همان سیگنال روی همان کندل قبلی است، پیام تکراری نده
+    if signal == last_signal and str(candle_time) == str(last_candle):
+        print("DUPLICATE SIGNAL - TELEGRAM MESSAGE SKIPPED")
+        return
 
     sl, tp = calculate_levels(price, signal)
 
     if signal == "BUY":
         icon = "🟢"
-
     elif signal == "SELL":
         icon = "🔴"
-
     else:
         icon = "⚪"
 
     message = (
-        "⚡ ATI CRYPTO BOT V5\n\n"
+        "⚡ ATI CRYPTO BOT V6\n\n"
         f"₿ BTC: ${price:,.2f}\n"
         "⏱ Timeframe: 5m\n"
         f"{icon} SIGNAL: {signal}\n"
@@ -183,6 +221,8 @@ def main():
 
     send_telegram(message)
 
+    save_state(signal, candle_time)
+
 
 try:
     main()
@@ -193,7 +233,7 @@ except Exception as error:
 
     try:
         send_telegram(
-            "⚠️ ATI CRYPTO BOT V5\n\n"
+            "⚠️ ATI CRYPTO BOT V6\n\n"
             "خطای دقیق:\n\n"
             + str(error)
         )
