@@ -17,38 +17,82 @@ def get_candles():
         f"?symbol={SYMBOL}&interval={INTERVAL}&limit=30"
     )
 
-    with urllib.request.urlopen(url, timeout=15) as response:
-        return json.loads(response.read().decode())
+    request = urllib.request.Request(
+        url,
+        headers={"User-Agent": "ATI-Crypto-Bot/1.0"}
+    )
+
+    with urllib.request.urlopen(request, timeout=20) as response:
+        data = response.read().decode("utf-8")
+
+    return json.loads(data)
 
 
 def send_telegram(message):
-    if not BOT_TOKEN or not CHAT_ID:
-        print("Telegram secrets are missing.")
-        return
+    print("Checking Telegram settings...")
+
+    if not BOT_TOKEN:
+        print("❌ ERROR: TELEGRAM_BOT_TOKEN is missing.")
+        return False
+
+    if not CHAT_ID:
+        print("❌ ERROR: TELEGRAM_CHAT_ID is missing.")
+        return False
 
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
 
     data = urllib.parse.urlencode({
         "chat_id": CHAT_ID,
         "text": message
-    }).encode()
+    }).encode("utf-8")
 
     request = urllib.request.Request(
         url,
         data=data,
-        method="POST"
+        method="POST",
+        headers={
+            "Content-Type": "application/x-www-form-urlencoded",
+            "User-Agent": "ATI-Crypto-Bot/1.0"
+        }
     )
 
-    with urllib.request.urlopen(request, timeout=15) as response:
-        print("Telegram message sent.")
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            result = json.loads(response.read().decode("utf-8"))
+
+        if result.get("ok") is True:
+            print("================================")
+            print("✅ TELEGRAM MESSAGE SENT")
+            print("================================")
+            return True
+
+        print("================================")
+        print("❌ TELEGRAM API ERROR")
+        print(result)
+        print("================================")
+        return False
+
+    except Exception as error:
+        print("================================")
+        print("❌ TELEGRAM SEND ERROR")
+        print(str(error))
+        print("================================")
+        return False
 
 
 def main():
-    print("ATI CRYPTO BOT")
-    print("REAL MARKET SIGNAL")
-    print("-------------------------")
+    print("================================")
+    print("🤖 ATI CRYPTO BOT")
+    print("================================")
+    print("MARKET: Binance")
+    print("TIMEFRAME: 5m")
+    print("REAL TRADING: DISABLED")
+    print("--------------------------------")
 
     candles = get_candles()
+
+    if len(candles) < 15:
+        raise Exception("Not enough candle data.")
 
     closes = [float(candle[4]) for candle in candles]
 
@@ -80,9 +124,17 @@ def main():
     )
 
     print(message)
+    print("--------------------------------")
 
     send_telegram(message)
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as error:
+        print("================================")
+        print("❌ BOT ERROR")
+        print(str(error))
+        print("================================")
+        raise
