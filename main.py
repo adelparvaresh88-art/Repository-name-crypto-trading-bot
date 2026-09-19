@@ -8,40 +8,37 @@ BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 
-def request_json(url):
+def get_data():
+    url = "https://api.kraken.com/0/public/OHLC?pair=XBTUSD&interval=5"
+
     req = urllib.request.Request(
         url,
-        headers={
-            "User-Agent": "Mozilla/5.0",
-            "Accept": "application/json"
-        }
+        headers={"User-Agent": "ATI-CRYPTO-BOT/1.0"}
     )
 
     with urllib.request.urlopen(req, timeout=20) as response:
-        return json.loads(response.read().decode())
+        data = json.loads(response.read().decode())
 
+    if data.get("error"):
+        raise Exception(str(data["error"]))
 
-def get_market_data():
-    url = (
-        "https://api.coingecko.com/api/v3/coins/bitcoin/market_chart"
-        "?vs_currency=usd&days=1&interval=5"
-    )
+    result = data["result"]
 
-    data = request_json(url)
+    pair_key = [key for key in result.keys() if key != "last"][0]
 
-    prices = data.get("prices", [])
+    candles = result[pair_key]
 
-    if len(prices) < 30:
-        raise Exception("داده کافی از CoinGecko دریافت نشد.")
+    if len(candles) < 20:
+        raise Exception("داده کافی دریافت نشد.")
 
-    closes = [float(item[1]) for item in prices]
+    closes = [float(candle[4]) for candle in candles]
 
     return closes
 
 
 def send_telegram(message):
     if not BOT_TOKEN or not CHAT_ID:
-        raise Exception("Telegram secrets پیدا نشد.")
+        raise Exception("TELEGRAM_BOT_TOKEN یا TELEGRAM_CHAT_ID تنظیم نشده.")
 
     url = (
         "https://api.telegram.org/bot"
@@ -57,7 +54,7 @@ def send_telegram(message):
     req = urllib.request.Request(
         url,
         data=data,
-        headers={"User-Agent": "Mozilla/5.0"}
+        headers={"User-Agent": "ATI-CRYPTO-BOT/1.0"}
     )
 
     with urllib.request.urlopen(req, timeout=20) as response:
@@ -83,7 +80,7 @@ def calculate_signal(closes):
 def main():
     print("ATI CRYPTO BOT STARTED")
 
-    closes = get_market_data()
+    closes = get_data()
 
     price = closes[-1]
     signal = calculate_signal(closes)
@@ -121,5 +118,5 @@ except Exception as error:
             "خطای دقیق:\n\n"
             + str(error)
         )
-    except Exception:
-        pass
+    except Exception as telegram_error:
+        print("Telegram error:", telegram_error)
