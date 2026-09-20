@@ -10,8 +10,8 @@ CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 SL_PERCENT = 0.50
 TP_PERCENT = 1.00
 
-MIN_SCORE = 4
-MIN_MOVE_PERCENT = 0.08
+MIN_SCORE = 3
+MIN_MOVE_PERCENT = 0.05
 
 
 def send_telegram(message):
@@ -26,42 +26,72 @@ def send_telegram(message):
     data = urllib.parse.urlencode({
         "chat_id": CHAT_ID,
         "text": message
-    }).encode()
+    }).encode("utf-8")
 
     request = urllib.request.Request(
         url,
         data=data,
-        headers={"User-Agent": "ATI-CRYPTO-BOT/1.0"}
+        headers={
+            "User-Agent": "ATI-CRYPTO-BOT/1.0"
+        }
     )
 
     with urllib.request.urlopen(request, timeout=20) as response:
-        result = response.read().decode()
+        result = response.read().decode("utf-8")
+
+    result_data = json.loads(result)
+
+    if not result_data.get("ok"):
+        raise Exception("Telegram API error: " + result)
 
     return result
 
 
 def get_data():
-    url = (
-        "https://api.binance.com/api/v3/klines"
-        "?symbol=BTCUSDT&interval=5m&limit=50"
-    )
+    url = "https://api.kraken.com/0/public/OHLC?pair=XBTUSD&interval=5"
 
     request = urllib.request.Request(
         url,
-        headers={"User-Agent": "ATI-CRYPTO-BOT/1.0"}
+        headers={
+            "User-Agent": "ATI-CRYPTO-BOT/1.0"
+        }
     )
 
     with urllib.request.urlopen(request, timeout=20) as response:
-        data = json.loads(response.read().decode())
+        raw = response.read().decode("utf-8")
 
-    if not isinstance(data, list):
-        raise Exception("Binance returned invalid data")
+    data = json.loads(raw)
 
-    if len(data) < 30:
+    if data.get("error"):
+        raise Exception("Kraken API error: " + str(data["error"]))
+
+    result = data.get("result")
+
+    if not result:
+        raise Exception("Kraken returned empty data")
+
+    pair_key = None
+
+    for key in result:
+        if key != "last":
+            pair_key = key
+            break
+
+    if not pair_key:
+        raise Exception("BTC candle data not found")
+
+    candles = result[pair_key]
+
+    if len(candles) < 30:
         raise Exception("Not enough candle data")
 
-    # حذف کندل در حال تشکیل
-    return data[:-1]
+    # آخرین کندل ممکن است هنوز در حال تشکیل باشد
+    candles = candles[:-1]
+
+    if len(candles) < 25:
+        raise Exception("Not enough closed candles")
+
+    return candles
 
 
 def calculate_signal(candles):
@@ -73,196 +103,160 @@ def calculate_signal(candles):
     current = closes[-1]
     previous = closes[-2]
 
-    short_avg = sum(closes[-5:]) / 5
-    long_avg = sum(closes[-20:]) / 20
+    sma5 = sum(closes[-5:]) / 5
+    sma20 = sum(closes[-20:]) / 20
 
     buy_score = 0
     sell_score = 0
 
-    # 1 - Trend
-    if short_avg > long_avg:
+    # 1. Trend
+    if sma5 > sma20:
         buy_score += 1
-    elif short_avg < long_avg:
+    elif sma5 < sma20:
         sell_score += 1
 
-    # 2 - Price direction
-    if current > previous:
-        buy_score += 1
-    elif current < previous:
-        sell_score += 1
-
-    # 3 - Candle direction
+    # 2. آخرین کندل
     if closes[-1] > opens[-1]:
         buy_score += 1
     elif closes[-1] < opens[-1]:
         sell_score += 1
 
-    # 4 - Breakout
-    recent_high = max(highs[-11:-1])
-    recent_low = min(lows[-11:-1])
+    # 3. حرکت قیمت
+    move = ((current - previous) / previous) * 100
 
-    if current > recent_high:
+    if move >= MIN_MOVE_PERCENT:
         buy_score += 1
-    elif current < recent_low:
+    elif move <= -MIN_MOVE_PERCENT:
         sell_score += 1
 
-    # 5 - Move strength
-    move_percent = abs((current - previous) / previous) * 100
+    # 4. شکست سقف/کف چند کندل قبلی
+    previous_high = max(highs[-6:-1])
+    previous_low = min(lows[-6:-1])
 
-    if move_percent >= MIN_MOVE_PERCENT:
-        if current > previous:
-            buy_score += 1
-        elif current < previous:
-            sell_score += 1
+    if current > previous_high:
+        buy_score += 1
+    elif current < previous_low:
+        sell_score += 1
 
+    # سیگنال نهایی
     if buy_score >= MIN_SCORE and buy_score > sell_score:
         signal = "BUY"
+
     elif sell_score >= MIN_SCORE and sell_score > buy_score:
         signal = "SELL"
+
     else:
         signal = "HOLD"
 
-    return signal, current, buy_score, sell_score, move_percent
+    return (
+        signal,
+        current,
+        buy_score,
+        sell_score,
+        abs(move)
+    )
 
 
 def main():
-
     print("================================")
-    print("      ATI CRYPTO BOT V14")
+    print("      ATI CRYPTO BOT V16")
     print("================================")
 
-    # ---------------------------------------
-    # تست مستقیم تلگرام
-    # ---------------------------------------
+    print("Checking Telegram...")
 
-    print("📡 Testing Telegram...")
+    if not BOT_TOKEN:
+        raise Exception("TELEGRAM_BOT_TOKEN is missing")
 
-    test_message = (
-        "⚡ ATI CRYPTO BOT V14\n\n"
-        "✅ TELEGRAM CONNECTION TEST\n"
-        "📡 Telegram connection is working.\n\n"
-        "🧪 MODE: PAPER / TEST\n"
-        "🚫 REAL TRADING: DISABLED"
-    )
+    if not CHAT_ID:
+        raise Exception("TELEGRAM_CHAT_ID is missing")
 
-    telegram_result = send_telegram(test_message)
+    print("Telegram settings found")
 
-    print("✅ Telegram test sent")
-    print(telegram_result)
-
-    # ---------------------------------------
-    # دریافت قیمت و کندل
-    # ---------------------------------------
-
-    print("📡 Getting BTC 5m candles...")
+    print("Getting BTC 5m candles...")
 
     candles = get_data()
 
-    print("✅ BTC candle data received")
-    print("📊 Candles:", len(candles))
+    print("BTC candles received:", len(candles))
 
-    signal, current, buy_score, sell_score, move_percent = calculate_signal(
-        candles
-    )
+    (
+        signal,
+        current,
+        buy_score,
+        sell_score,
+        move_percent
+    ) = calculate_signal(candles)
 
-    print("================================")
-    print("₿ BTC:", round(current, 2))
-    print("📈 BUY SCORE:", buy_score, "/5")
-    print("📉 SELL SCORE:", sell_score, "/5")
-    print("📊 MOVE:", round(move_percent, 3), "%")
-    print("🚦 SIGNAL:", signal)
-    print("================================")
-
-    # ---------------------------------------
-    # BUY
-    # ---------------------------------------
+    print("BTC:", round(current, 2))
+    print("BUY SCORE:", buy_score, "/4")
+    print("SELL SCORE:", sell_score, "/4")
+    print("MOVE:", round(move_percent, 3), "%")
+    print("SIGNAL:", signal)
 
     if signal == "BUY":
-
         stop_loss = current * (1 - SL_PERCENT / 100)
         take_profit = current * (1 + TP_PERCENT / 100)
 
-        signal_text = "🟢 SIGNAL: BUY"
+        signal_line = "🟢 SIGNAL: BUY"
 
-        trade_info = (
+        trade_lines = (
             f"💰 Entry: ${current:,.2f}\n"
             f"🛑 SL: ${stop_loss:,.2f}\n"
             f"🎯 TP: ${take_profit:,.2f}"
         )
 
-    # ---------------------------------------
-    # SELL
-    # ---------------------------------------
-
     elif signal == "SELL":
-
         stop_loss = current * (1 + SL_PERCENT / 100)
         take_profit = current * (1 - TP_PERCENT / 100)
 
-        signal_text = "🔴 SIGNAL: SELL"
+        signal_line = "🔴 SIGNAL: SELL"
 
-        trade_info = (
+        trade_lines = (
             f"💰 Entry: ${current:,.2f}\n"
             f"🛑 SL: ${stop_loss:,.2f}\n"
             f"🎯 TP: ${take_profit:,.2f}"
         )
 
-    # ---------------------------------------
-    # HOLD
-    # ---------------------------------------
-
     else:
+        signal_line = "⚪ SIGNAL: HOLD"
 
-        signal_text = "⚪ SIGNAL: HOLD"
-
-        trade_info = (
-            "⏸ No strong signal yet\n"
+        trade_lines = (
+            "⏸ No strong setup yet\n"
             "👀 Bot is monitoring BTC"
         )
 
-    # ---------------------------------------
-    # ارسال پیام سیگنال
-    # ---------------------------------------
-
     message = (
-        "⚡ ATI CRYPTO BOT V14\n\n"
+        "⚡ ATI CRYPTO BOT V16\n\n"
         f"₿ BTC: ${current:,.2f}\n"
         "⏱ Timeframe: 5m\n"
         "✅ CLOSED CANDLE CONFIRMED\n\n"
-        f"{signal_text}\n"
-        f"📈 BUY SCORE: {buy_score}/5\n"
-        f"📉 SELL SCORE: {sell_score}/5\n"
+        f"{signal_line}\n"
+        f"📈 BUY SCORE: {buy_score}/4\n"
+        f"📉 SELL SCORE: {sell_score}/4\n"
         f"📊 MOVE: {move_percent:.3f}%\n\n"
-        f"{trade_info}\n\n"
+        f"{trade_lines}\n\n"
         "🧪 MODE: PAPER / TEST\n"
         "🚫 REAL TRADING: DISABLED"
     )
 
-    print("📨 Sending signal to Telegram...")
+    print("Sending Telegram message...")
 
-    result = send_telegram(message)
-
-    print("✅ Signal sent")
-    print(result)
+    send_telegram(message)
 
     print("================================")
-    print("✅ ATI BOT FINISHED SUCCESSFULLY")
+    print("TELEGRAM MESSAGE SENT")
+    print("ATI BOT FINISHED SUCCESSFULLY")
     print("================================")
 
 
 if __name__ == "__main__":
-
     try:
         main()
 
     except Exception as error:
-
         print("================================")
-        print("❌ ATI BOT ERROR")
+        print("ATI BOT ERROR")
         print("================================")
         print(str(error))
         print("================================")
-
         traceback.print_exc()
-
         raise
