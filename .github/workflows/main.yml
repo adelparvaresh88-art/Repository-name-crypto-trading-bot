@@ -3,6 +3,9 @@ name: Run ATI Bot
 on:
   workflow_dispatch:
 
+  schedule:
+    - cron: "*/5 * * * *"
+
 jobs:
   run-bot:
     runs-on: ubuntu-latest
@@ -21,18 +24,20 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          echo "Checking Telegram settings..."
           if [ -z "$TELEGRAM_BOT_TOKEN" ]; then
-            echo "ERROR: TELEGRAM_BOT_TOKEN is missing"
+            echo "❌ TELEGRAM_BOT_TOKEN is missing"
             exit 1
           fi
-          if [ -z "$TELEGRAM_CHAT_ID" ]; then
-            echo "ERROR: TELEGRAM_CHAT_ID is missing"
-            exit 1
-          fi
-          echo "Telegram secrets are present."
 
-      - name: Run Bot
+          if [ -z "$TELEGRAM_CHAT_ID" ]; then
+            echo "❌ TELEGRAM_CHAT_ID is missing"
+            exit 1
+          fi
+
+          echo "✅ TELEGRAM_BOT_TOKEN: OK"
+          echo "✅ TELEGRAM_CHAT_ID: OK"
+
+      - name: Run ATI Bot
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
