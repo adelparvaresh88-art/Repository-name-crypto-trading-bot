@@ -1,134 +1,163 @@
 import os
+import time
 import requests
 from datetime import datetime
 
-BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+# =========================
+# ATI BOT - TABDEAL 5M V2
+# =========================
 
-BASE_URL = "https://api1.tabdeal.org"
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
+TABDEEL_API_KEY = os.getenv("TABDIL_API_KEY")
+TABDEEL_API_SECRET = os.getenv("TABDIL_API_SECRET")
 
-def send_telegram(message):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+TABDEEL_BASE = "https://api.tabdeal.org"
 
-    requests.post(
-        url,
-        data={
-            "chat_id": CHAT_ID,
-            "text": message
-        },
-        timeout=20
-    )
+SYMBOL = "BTCIRT"
+TIMEFRAME = "5m"
 
 
-def get_trades():
-    url = f"{BASE_URL}/r/api/v1/trades"
+def telegram(message):
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        print("Telegram secrets missing")
+        return
+
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+
+    data = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": message
+    }
+
+    try:
+        r = requests.post(url, data=data, timeout=15)
+        print("Telegram:", r.status_code)
+    except Exception as e:
+        print("Telegram error:", e)
+
+
+def get_market_data():
+    url = f"{TABDEEL_BASE}/v1/depth"
 
     params = {
-        "symbol": "BTCIRT",
+        "symbol": SYMBOL,
         "limit": 500
     }
 
-    response = requests.get(
+    headers = {
+        "X-TABDEAL-APIKEY": TABDEEL_API_KEY
+    }
+
+    r = requests.get(
         url,
         params=params,
+        headers=headers,
         timeout=20
     )
 
-    response.raise_for_status()
+    r.raise_for_status()
 
-    return response.json()
+    return r.json()
 
 
-def make_5m_candles(trades):
-    candles = {}
+def build_candles():
+    data = get_market_data()
 
-    for trade in trades:
-        price = float(trade["price"])
-        qty = float(trade["qty"])
-        timestamp = int(trade["time"])
+    trades = []
 
-        # شروع کندل 5 دقیقه‌ای
-        bucket = (timestamp // 300000) * 300000
+    if isinstance(data, dict):
+        for key in ["trades", "data", "results"]:
+            if key in data and isinstance(data[key], list):
+                trades = data[key]
+                break
 
-        if bucket not in candles:
-            candles[bucket] = {
-                "open": price,
-                "high": price,
-                "low": price,
-                "close": price,
-                "volume": qty
-            }
-        else:
-            candles[bucket]["high"] = max(
-                candles[bucket]["high"],
-                price
-            )
+    if not trades and isinstance(data, list):
+        trades = data
 
-            candles[bucket]["low"] = min(
-                candles[bucket]["low"],
-                price
-            )
+    prices = []
 
-            candles[bucket]["close"] = price
-            candles[bucket]["volume"] += qty
+    for item in trades:
+        try:
+            if isinstance(item, dict):
+                price = (
+                    item.get("price")
+                    or item.get("last")
+                    or item.get("p")
+                )
 
-    return candles
+                if price:
+                    prices.append(float(price))
+
+            elif isinstance(item, (int, float, str)):
+                prices.append(float(item))
+
+        except:
+            continue
+
+    if len(prices) < 10:
+        raise Exception("Not enough market prices")
+
+    return prices
+
+
+def calculate_signal(prices):
+    recent = prices[-20:]
+
+    first = recent[0]
+    last = recent[-1]
+
+    change = ((last - first) / first) * 100
+
+    if change >= 0.08:
+        signal = "BUY"
+
+    elif change <= -0.08:
+        signal = "SELL"
+
+    else:
+        signal = "WAIT"
+
+    return signal, change, last
 
 
 def main():
+
+    print("ATI BOT STARTED")
+
     try:
-        trades = get_trades()
+        prices = build_candles()
 
-        if not trades:
-            send_telegram(
-                "❌ ATI BOT\n\n"
-                "هیچ معامله‌ای از بازار BTCIRT دریافت نشد.\n\n"
-                "🚫 REAL TRADING DISABLED"
-            )
-            return
-
-        candles = make_5m_candles(trades)
-
-        sorted_candles = sorted(
-            candles.items(),
-            key=lambda x: x[0],
-            reverse=True
-        )
+        signal, change, price = calculate_signal(prices)
 
         message = (
-            "✅ ATI BOT - TABDEAL 5M MARKET\n\n"
+            "⚡ ATI BOT - TABDEAL 5M\n\n"
             "✅ Telegram: OK\n"
             "✅ Tabdil Market API: OK\n"
-            f"📊 Trades received: {len(trades)}\n"
-            f"🕯 5M candles: {len(candles)}\n\n"
+            f"📊 Prices received: {len(prices)}\n"
+            "⏱ Timeframe: 5M\n\n"
+            f"💰 BTC/IRT: {price:,.0f}\n"
+            f"📈 MOVE: {change:.3f}%\n\n"
+            f"📢 SIGNAL: {signal}\n\n"
+            "🛑 REAL TRADING: DISABLED\n"
+            "🧪 MODE: PAPER / TEST"
         )
 
-        for timestamp, candle in sorted_candles[:3]:
+        print(message)
 
-            time_text = datetime.fromtimestamp(
-                timestamp / 1000
-            ).strftime("%H:%M")
-
-            message += (
-                f"🕯 {time_text}\n"
-                f"Open: {candle['open']:,.0f}\n"
-                f"High: {candle['high']:,.0f}\n"
-                f"Low: {candle['low']:,.0f}\n"
-                f"Close: {candle['close']:,.0f}\n"
-                f"Volume: {candle['volume']:.6f}\n\n"
-            )
-
-        message += "🚫 REAL TRADING DISABLED"
-
-        send_telegram(message)
+        telegram(message)
 
     except Exception as e:
-        send_telegram(
-            "❌ TABDEAL 5M MARKET ERROR\n\n"
-            f"{str(e)}\n\n"
+
+        error = (
+            "⚠️ ATI BOT ERROR\n\n"
+            f"{type(e).__name__}: {e}\n\n"
             "🚫 REAL TRADING DISABLED"
         )
+
+        print(error)
+        telegram(error)
 
 
 if __name__ == "__main__":
