@@ -3,9 +3,6 @@ name: Run ATI Bot
 on:
   workflow_dispatch:
 
-  schedule:
-    - cron: "*/5 * * * *"
-
 jobs:
   run-bot:
     runs-on: ubuntu-latest
@@ -19,27 +16,25 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Install requests
+        run: python -m pip install requests
+
       - name: Check Secrets
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TABDIL_API_KEY: ${{ secrets.TABDIL_API_KEY }}
+          TABDIL_API_SECRET: ${{ secrets.TABDIL_API_SECRET }}
         run: |
-          if [ -z "$TELEGRAM_BOT_TOKEN" ]; then
-            echo "❌ TELEGRAM_BOT_TOKEN is missing"
-            exit 1
-          fi
+          echo "TELEGRAM_BOT_TOKEN=$([ -n "$TELEGRAM_BOT_TOKEN" ] && echo OK || echo MISSING)"
+          echo "TELEGRAM_CHAT_ID=$([ -n "$TELEGRAM_CHAT_ID" ] && echo OK || echo MISSING)"
+          echo "TABDIL_API_KEY=$([ -n "$TABDIL_API_KEY" ] && echo OK || echo MISSING)"
+          echo "TABDIL_API_SECRET=$([ -n "$TABDIL_API_SECRET" ] && echo OK || echo MISSING)"
 
-          if [ -z "$TELEGRAM_CHAT_ID" ]; then
-            echo "❌ TELEGRAM_CHAT_ID is missing"
-            exit 1
-          fi
-
-          echo "✅ TELEGRAM_BOT_TOKEN: OK"
-          echo "✅ TELEGRAM_CHAT_ID: OK"
-
-      - name: Run ATI Bot
+      - name: Run Bot
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: |
-          python main.py
+          TABDIL_API_KEY: ${{ secrets.TABDIL_API_KEY }}
+          TABDIL_API_SECRET: ${{ secrets.TABDIL_API_SECRET }}
+        run: python main.py
