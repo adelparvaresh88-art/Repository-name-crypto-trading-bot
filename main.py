@@ -1,27 +1,40 @@
 import os
 import requests
 
-API_KEY = os.getenv("TABDIL_API_KEY")
-API_SECRET = os.getenv("TABDIL_API_SECRET")
-TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+print("=== ATI BOT TEST ===")
 
-print("=== ATI TABDIL CONNECTION TEST ===")
+names = [
+    "TELEGRAM_BOT_TOKEN",
+    "TELEGRAM_CHAT_ID",
+    "TABDIL_API_KEY",
+    "TABDIL_API_SECRET",
+]
 
-print("TABDIL_API_KEY:", "OK" if API_KEY else "MISSING")
-print("TABDIL_API_SECRET:", "OK" if API_SECRET else "MISSING")
-print("TELEGRAM_BOT_TOKEN:", "OK" if TOKEN else "MISSING")
-print("TELEGRAM_CHAT_ID:", "OK" if CHAT_ID else "MISSING")
+for name in names:
+    value = os.getenv(name)
+    print(name, "OK" if value else "MISSING")
 
-if TOKEN and CHAT_ID:
-    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-    data = {
-        "chat_id": CHAT_ID,
-        "text": "✅ ATI BOT\n\nTABDIL SECRETS TEST STARTED"
-    }
+token = os.getenv("TELEGRAM_BOT_TOKEN")
+chat_id = os.getenv("TELEGRAM_CHAT_ID")
 
-    r = requests.post(url, data=data, timeout=20)
-    print("Telegram:", r.status_code)
-    print(r.text)
+if not token or not chat_id:
+    raise Exception("Telegram Secrets are missing")
+
+url = f"https://api.telegram.org/bot{token}/sendMessage"
+
+response = requests.post(
+    url,
+    data={
+        "chat_id": chat_id,
+        "text": "✅ ATI BOT TEST\nTelegram connection OK"
+    },
+    timeout=20
+)
+
+print("Telegram HTTP:", response.status_code)
+print(response.text)
+
+if response.status_code != 200:
+    raise Exception("Telegram connection failed")
 
 print("=== TEST FINISHED ===")
