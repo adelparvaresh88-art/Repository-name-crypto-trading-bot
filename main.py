@@ -1,40 +1,37 @@
 import os
 import requests
 
-print("=== ATI BOT TEST ===")
+BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-names = [
-    "TELEGRAM_BOT_TOKEN",
-    "TELEGRAM_CHAT_ID",
-    "TABDIL_API_KEY",
-    "TABDIL_API_SECRET",
-]
+TABDIL_API_KEY = os.getenv("TABDIL_API_KEY")
+TABDIL_API_SECRET = os.getenv("TABDIL_API_SECRET")
 
-for name in names:
-    value = os.getenv(name)
-    print(name, "OK" if value else "MISSING")
 
-token = os.getenv("TELEGRAM_BOT_TOKEN")
-chat_id = os.getenv("TELEGRAM_CHAT_ID")
+def send_telegram(message):
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    requests.post(url, data={
+        "chat_id": CHAT_ID,
+        "text": message
+    }, timeout=15)
 
-if not token or not chat_id:
-    raise Exception("Telegram Secrets are missing")
 
-url = f"https://api.telegram.org/bot{token}/sendMessage"
+def main():
+    if not TABDIL_API_KEY or not TABDIL_API_SECRET:
+        send_telegram(
+            "❌ TABDIL CONNECTION ERROR\n\n"
+            "API Key یا API Secret پیدا نشد."
+        )
+        return
 
-response = requests.post(
-    url,
-    data={
-        "chat_id": chat_id,
-        "text": "✅ ATI BOT TEST\nTelegram connection OK"
-    },
-    timeout=20
-)
+    # فقط تست وجود کلیدها؛ هیچ سفارش یا معامله‌ای ارسال نمی‌شود.
+    send_telegram(
+        "✅ ATI BOT TEST\n\n"
+        "Telegram connection OK\n"
+        "✅ Tabdil API keys found\n"
+        "🚫 REAL TRADING DISABLED"
+    )
 
-print("Telegram HTTP:", response.status_code)
-print(response.text)
 
-if response.status_code != 200:
-    raise Exception("Telegram connection failed")
-
-print("=== TEST FINISHED ===")
+if __name__ == "__main__":
+    main()
