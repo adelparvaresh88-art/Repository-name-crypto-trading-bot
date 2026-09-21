@@ -1,4 +1,5 @@
 import os
+import json
 import requests
 from datetime import datetime, timezone
 
@@ -6,6 +7,7 @@ BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 BASE_URL = "https://api1.tabdeal.org"
+SIGNAL_FILE = "active_signal.json"
 
 
 def send_telegram(message):
@@ -31,14 +33,12 @@ def send_telegram(message):
 def get_trades():
     url = f"{BASE_URL}/r/api/v1/trades"
 
-    params = {
-        "symbol": "BTCUSDT",
-        "limit": 1000
-    }
-
     response = requests.get(
         url,
-        params=params,
+        params={
+            "symbol": "BTCUSDT",
+            "limit": 1000
+        },
         timeout=15
     )
 
@@ -57,36 +57,33 @@ def get_trades():
     return trades
 
 
-def get_trade_price(trade):
-    price = (
-        trade.get("price")
-        or trade.get("p")
-    )
+def get_price(trade):
+    value = trade.get("price") or trade.get("p")
 
-    if price is None:
+    if value is None:
         return None
 
-    return float(price)
+    return float(value)
 
 
-def get_trade_time(trade):
-    timestamp = (
+def get_time(trade):
+    value = (
         trade.get("time")
         or trade.get("timestamp")
         or trade.get("T")
         or trade.get("ts")
     )
 
-    if timestamp is None:
+    if value is None:
         return None
 
-    timestamp = int(timestamp)
+    value = int(value)
 
-    if timestamp < 100000000000:
-        timestamp *= 1000
+    if value < 100000000000:
+        value *= 1000
 
     return datetime.fromtimestamp(
-        timestamp / 1000,
+        value / 1000,
         tz=timezone.utc
     )
 
@@ -96,8 +93,8 @@ def build_candles(trades):
 
     for trade in trades:
 
-        price = get_trade_price(trade)
-        trade_time = get_trade_time(trade)
+        price = get_price(trade)
+        trade_time = get_time(trade)
 
         if price is None or trade_time is None:
             continue
@@ -117,7 +114,6 @@ def build_candles(trades):
                 "low": price,
                 "close": price
             }
-
         else:
             candle = candles[candle_time]
 
@@ -147,31 +143,24 @@ def calculate_signal(candles):
     previous = data[-2]
     three_back = data[-3]
 
-    buy_score = 0
-    sell_score = 0
+    buy = 0
+    sell = 0
 
-    # 1. Candle direction
     if last["close"] > last["open"]:
-        buy_score += 1
-
+        buy += 1
     elif last["close"] < last["open"]:
-        sell_score += 1
+        sell += 1
 
-    # 2. Close compared with previous candle
     if last["close"] > previous["close"]:
-        buy_score += 1
-
+        buy += 1
     elif last["close"] < previous["close"]:
-        sell_score += 1
+        sell += 1
 
-    # 3. Higher high / lower low
     if last["high"] > previous["high"]:
-        buy_score += 1
-
+        buy += 1
     elif last["low"] < previous["low"]:
-        sell_score += 1
+        sell += 1
 
-    # 4. Candle body strength
     candle_range = last["high"] - last["low"]
 
     if candle_range > 0:
@@ -185,76 +174,183 @@ def calculate_signal(candles):
         if strength >= 0.55:
 
             if last["close"] > last["open"]:
-                buy_score += 1
-
+                buy += 1
             elif last["close"] < last["open"]:
-                sell_score += 1
+                sell += 1
 
-    # 5. Short-term direction
     if last["close"] > three_back["close"]:
-        buy_score += 1
-
+        buy += 1
     elif last["close"] < three_back["close"]:
-        sell_score += 1
+        sell += 1
 
-    # Strong signal filter
-    if buy_score >= 4 and buy_score > sell_score:
-        return "BUY", buy_score, sell_score
+    if buy >= 4 and buy > sell:
+        return "BUY", buy, sell
 
-    if sell_score >= 4 and sell_score > buy_score:
-        return "SELL", buy_score, sell_score
+    if sell >= 4 and sell > buy:
+        return "SELL", buy, sell
 
-    return "HOLD", buy_score, sell_score
+    return "HOLD", buy, sell
 
 
 def calculate_sl_tp(signal, entry):
 
     if signal == "BUY":
+        return entry * 0.995, entry * 1.010
 
-        stop_loss = entry * 0.995
-        take_profit = entry * 1.010
+    if signal == "SELL":
+        return entry * 1.005, entry * 0.990
 
-    elif signal == "SELL":
+    return None, None
 
-        stop_loss = entry * 1.005
-        take_profit = entry * 0.990
 
-    else:
+def load_signal():
 
-        stop_loss = None
-        take_profit = None
+    if not os.path.exists(SIGNAL_FILE):
+        return None
 
-    return stop_loss, take_profit
+    try:
+        with open(
+            SIGNAL_FILE,
+            "r",
+            encoding="utf-8"
+        ) as file:
+            return json.load(file)
+
+    except Exception:
+        return None
+
+
+def save_signal(signal, entry, sl, tp, candle_time):
+
+    data = {
+        "signal": signal,
+        "entry": entry,
+        "sl": sl,
+        "tp": tp,
+        "candle_time": candle_time,
+        "created_at": datetime.now(
+            timezone.utc
+        ).isoformat()
+    }
+
+    with open(
+        SIGNAL_FILE,
+        "w",
+        encoding="utf-8"
+    ) as file:
+
+        json.dump(
+            data,
+            file,
+            indent=2
+        )
+
+
+def clear_signal():
+
+    if os.path.exists(SIGNAL_FILE):
+        os.remove(SIGNAL_FILE)
+
+
+def check_signal(price):
+
+    active = load_signal()
+
+    if not active:
+        return False
+
+    signal = active["signal"]
+    entry = float(active["entry"])
+    sl = float(active["sl"])
+    tp = float(active["tp"])
+
+    if signal == "BUY":
+
+        if price >= tp:
+
+            send_telegram(
+                "🎯 ATI RESULT\n\n"
+                "🟢 BUY\n"
+                f"Entry: ${entry:,.2f}\n"
+                f"TP: ${tp:,.2f}\n"
+                f"Price: ${price:,.2f}\n\n"
+                "✅ TP HIT"
+            )
+
+            clear_signal()
+            return True
+
+        if price <= sl:
+
+            send_telegram(
+                "🛑 ATI RESULT\n\n"
+                "🟢 BUY\n"
+                f"Entry: ${entry:,.2f}\n"
+                f"SL: ${sl:,.2f}\n"
+                f"Price: ${price:,.2f}\n\n"
+                "❌ SL HIT"
+            )
+
+            clear_signal()
+            return True
+
+    if signal == "SELL":
+
+        if price <= tp:
+
+            send_telegram(
+                "🎯 ATI RESULT\n\n"
+                "🔴 SELL\n"
+                f"Entry: ${entry:,.2f}\n"
+                f"TP: ${tp:,.2f}\n"
+                f"Price: ${price:,.2f}\n\n"
+                "✅ TP HIT"
+            )
+
+            clear_signal()
+            return True
+
+        if price >= sl:
+
+            send_telegram(
+                "🛑 ATI RESULT\n\n"
+                "🔴 SELL\n"
+                f"Entry: ${entry:,.2f}\n"
+                f"SL: ${sl:,.2f}\n"
+                f"Price: ${price:,.2f}\n\n"
+                "❌ SL HIT"
+            )
+
+            clear_signal()
+            return True
+
+    return False
 
 
 def main():
 
-    print("⚡ ATI BOT - STAGE 6")
-    print("₿ BTC/USDT")
-    print("⏱ Timeframe: 5m")
-    print()
+    print("⚡ ATI CRYPTO BOT - STAGE 7")
 
-    # Market data
     trades = get_trades()
 
     print(f"📊 Trades received: {len(trades)}")
 
-    if not trades:
-        raise Exception("No trades received")
-
-    print("✅ Tabdeal Market API: OK")
-
-    # Build 5m candles
     candles = build_candles(trades)
 
     print(f"🕯 5M candles built: {len(candles)}")
 
     if len(candles) < 6:
-        raise Exception(
-            "Not enough 5M candles"
-        )
+        raise Exception("Not enough candles")
 
-    # Use latest completed candle
+    current_price = get_price(trades[-1])
+
+    if current_price is None:
+        current_price = candles[-1][1]["close"]
+
+    # First check existing signal
+    if check_signal(current_price):
+        print("✅ Previous signal completed")
+
     candle_time, candle = candles[-1]
 
     entry = candle["close"]
@@ -263,13 +359,23 @@ def main():
         candles
     )
 
-    stop_loss, take_profit = calculate_sl_tp(
+    sl, tp = calculate_sl_tp(
         signal,
         entry
     )
 
+    if signal in ("BUY", "SELL"):
+
+        save_signal(
+            signal,
+            entry,
+            sl,
+            tp,
+            candle_time.isoformat()
+        )
+
     message = (
-        "⚡ ATI CRYPTO BOT - STAGE 6\n\n"
+        "⚡ ATI CRYPTO BOT - STAGE 7\n\n"
         "₿ BTC/USDT\n"
         "⏱ Timeframe: 5m\n"
         "✅ CLOSED CANDLE\n"
@@ -286,16 +392,16 @@ def main():
 
         message += (
             "\n🟢 BUY SIGNAL\n"
-            f"🛑 SL: ${stop_loss:,.2f}\n"
-            f"🎯 TP: ${take_profit:,.2f}\n"
+            f"🛑 SL: ${sl:,.2f}\n"
+            f"🎯 TP: ${tp:,.2f}\n"
         )
 
     elif signal == "SELL":
 
         message += (
             "\n🔴 SELL SIGNAL\n"
-            f"🛑 SL: ${stop_loss:,.2f}\n"
-            f"🎯 TP: ${take_profit:,.2f}\n"
+            f"🛑 SL: ${sl:,.2f}\n"
+            f"🎯 TP: ${tp:,.2f}\n"
         )
 
     else:
@@ -310,7 +416,6 @@ def main():
         "🚫 REAL TRADING DISABLED"
     )
 
-    print()
     print(message)
 
     send_telegram(message)
