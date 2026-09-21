@@ -2,17 +2,17 @@ name: Run ATI Bot
 
 on:
   workflow_dispatch:
+  schedule:
+    - cron: "*/5 * * * *"
 
 permissions:
   contents: write
 
 jobs:
   run-bot:
-
     runs-on: ubuntu-latest
 
     steps:
-
       - name: Checkout
         uses: actions/checkout@v4
         with:
@@ -29,23 +29,23 @@ jobs:
           pip install requests
 
       - name: Check Secrets
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          if [ -z "${TELEGRAM_BOT_TOKEN}" ]; then
+          if [ -z "$TELEGRAM_BOT_TOKEN" ]; then
             echo "❌ TELEGRAM_BOT_TOKEN missing"
             exit 1
           else
             echo "✅ TELEGRAM_BOT_TOKEN present"
           fi
 
-          if [ -z "${TELEGRAM_CHAT_ID}" ]; then
+          if [ -z "$TELEGRAM_CHAT_ID" ]; then
             echo "❌ TELEGRAM_CHAT_ID missing"
             exit 1
           else
             echo "✅ TELEGRAM_CHAT_ID present"
           fi
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
 
       - name: Run ATI Bot
         env:
