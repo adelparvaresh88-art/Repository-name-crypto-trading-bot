@@ -1,6 +1,5 @@
 import os
 import requests
-from datetime import datetime, timezone
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
@@ -28,7 +27,7 @@ def send_telegram(message):
 
 
 def get_depth():
-    url = f"{BASE_URL}/v1/depth"
+    url = f"{BASE_URL}/r/api/v1/depth"
 
     params = {
         "symbol": "BTCIRT",
@@ -42,16 +41,8 @@ def get_depth():
     )
 
     response.raise_for_status()
+
     return response.json()
-
-
-def test_market():
-    data = get_depth()
-
-    if not data:
-        raise Exception("Empty market data")
-
-    return data
 
 
 def main():
@@ -66,18 +57,20 @@ def main():
         if not CHAT_ID:
             raise Exception("TELEGRAM_CHAT_ID is missing")
 
-        # تست بازار
-        market = test_market()
+        depth = get_depth()
+
+        if not depth:
+            raise Exception("Empty depth data")
 
         print("Telegram: READY")
         print("Tabdeal Market API: OK")
-        print("Depth data: OK")
+        print("BTCIRT Depth: OK")
 
         message = (
-            "✅ ATI BOT - TABDEEL\n\n"
+            "✅ ATI BOT - TABDEEL 5M MARKET\n\n"
             "✅ Telegram: OK\n"
             "✅ Tabdeal Market API: OK\n"
-            "📊 BTCIRT order book: OK\n\n"
+            "📊 BTCIRT Depth: OK\n\n"
             "🧪 MODE: PAPER / TEST\n"
             "🚫 REAL TRADING DISABLED"
         )
