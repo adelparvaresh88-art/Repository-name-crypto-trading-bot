@@ -209,17 +209,13 @@ def calculate_signal(candles):
 def calculate_sl_tp(signal, entry):
 
     if signal == "BUY":
-
         sl = entry * 0.995
         tp = entry * 1.010
-
         return sl, tp
 
     if signal == "SELL":
-
         sl = entry * 1.005
         tp = entry * 0.990
-
         return sl, tp
 
     return None, None
@@ -261,7 +257,11 @@ def save_signal(
         "candle_time": candle_time,
         "created_at": datetime.now(
             timezone.utc
-        ).isoformat()
+        ).isoformat(),
+
+        # مهم:
+        # فقط اولین بار ACTIVE SIGNAL ارسال می‌شود
+        "active_message_sent": False
     }
 
     with open(
@@ -375,14 +375,12 @@ def main():
     print("₿ BTC/USDT")
     print("⏱ Timeframe: 5m")
 
-    # Get market trades
     trades = get_trades()
 
     print(
         f"📊 Trades received: {len(trades)}"
     )
 
-    # Build 5m candles
     candles = build_candles(trades)
 
     print(
@@ -394,7 +392,6 @@ def main():
             "Not enough candles"
         )
 
-    # Current price
     prices = []
 
     for trade in trades:
@@ -402,17 +399,17 @@ def main():
         price = get_price(trade)
 
         if price is not None:
-            prices.append(
-                (
-                    get_time(trade),
-                    price
-                )
-            )
 
-    prices = [
-        item for item in prices
-        if item[0] is not None
-    ]
+            trade_time = get_time(trade)
+
+            if trade_time is not None:
+
+                prices.append(
+                    (
+                        trade_time,
+                        price
+                    )
+                )
 
     if not prices:
         raise Exception(
@@ -429,7 +426,10 @@ def main():
         f"💰 Current price: ${current_price:,.2f}"
     )
 
-    # Check previous active signal
+    # ------------------------------------------------
+    # CHECK ACTIVE SIGNAL
+    # ------------------------------------------------
+
     completed = check_active_signal(
         current_price
     )
@@ -440,7 +440,10 @@ def main():
             "✅ Previous signal completed"
         )
 
-    # Check if another signal is still active
+    # ------------------------------------------------
+    # LOAD ACTIVE SIGNAL AGAIN
+    # ------------------------------------------------
+
     active = load_signal()
 
     if active:
@@ -465,35 +468,66 @@ def main():
             f"🎯 TP: ${float(active['tp']):,.2f}"
         )
 
-        print(
-            "🚫 New signal not created"
-        )
+        # --------------------------------------------
+        # جلوگیری از پیام‌های تکراری
+        # --------------------------------------------
 
-        message = (
-            "⚡ ATI CRYPTO BOT - STAGE 8\n\n"
-            "₿ BTC/USDT\n"
-            "⏱ Timeframe: 5m\n"
-            "📌 ACTIVE SIGNAL\n\n"
-            f"📊 SIGNAL: {active['signal']}\n"
-            f"💰 Entry: ${float(active['entry']):,.2f}\n"
-            f"🛑 SL: ${float(active['sl']):,.2f}\n"
-            f"🎯 TP: ${float(active['tp']):,.2f}\n"
-            f"💵 Current: ${current_price:,.2f}\n\n"
-            "⏳ Waiting for TP or SL\n\n"
-            "🧪 MODE: PAPER / TEST\n"
-            "🚫 REAL TRADING DISABLED"
-        )
+        if not active.get(
+            "active_message_sent",
+            False
+        ):
 
-        send_telegram(message)
+            message = (
+                "⚡ ATI CRYPTO BOT - STAGE 8\n\n"
+                "₿ BTC/USDT\n"
+                "⏱ Timeframe: 5m\n"
+                "📌 ACTIVE SIGNAL\n\n"
+                f"📊 SIGNAL: {active['signal']}\n"
+                f"💰 Entry: ${float(active['entry']):,.2f}\n"
+                f"🛑 SL: ${float(active['sl']):,.2f}\n"
+                f"🎯 TP: ${float(active['tp']):,.2f}\n"
+                f"💵 Current: ${current_price:,.2f}\n\n"
+                "⏳ Waiting for TP or SL\n\n"
+                "🧪 MODE: PAPER / TEST\n"
+                "🚫 REAL TRADING DISABLED"
+            )
+
+            send_telegram(message)
+
+            active["active_message_sent"] = True
+
+            with open(
+                SIGNAL_FILE,
+                "w",
+                encoding="utf-8"
+            ) as file:
+
+                json.dump(
+                    active,
+                    file,
+                    indent=2
+                )
+
+            print(
+                "📨 ACTIVE SIGNAL sent once"
+            )
+
+        else:
+
+            print(
+                "🔕 Duplicate ACTIVE message blocked"
+            )
 
         return
 
-    # Latest closed candle
+    # ------------------------------------------------
+    # NEW SIGNAL
+    # ------------------------------------------------
+
     candle_time, candle = candles[-1]
 
     entry = candle["close"]
 
-    # Signal calculation
     signal, buy_score, sell_score = calculate_signal(
         candles
     )
@@ -503,7 +537,10 @@ def main():
         entry
     )
 
-    # Save new strong signal
+    # ------------------------------------------------
+    # SAVE NEW STRONG SIGNAL
+    # ------------------------------------------------
+
     if signal in ("BUY", "SELL"):
 
         save_signal(
@@ -514,7 +551,10 @@ def main():
             candle_time.isoformat()
         )
 
-    # Telegram message
+    # ------------------------------------------------
+    # TELEGRAM MESSAGE
+    # ------------------------------------------------
+
     message = (
         "⚡ ATI CRYPTO BOT - STAGE 8\n\n"
         "₿ BTC/USDT\n"
