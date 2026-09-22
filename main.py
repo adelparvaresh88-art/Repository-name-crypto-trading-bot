@@ -152,21 +152,18 @@ def calculate_signal(candles):
     # 1. Candle direction
     if last["close"] > last["open"]:
         buy += 1
-
     elif last["close"] < last["open"]:
         sell += 1
 
     # 2. Close comparison
     if last["close"] > previous["close"]:
         buy += 1
-
     elif last["close"] < previous["close"]:
         sell += 1
 
     # 3. High / Low breakout
     if last["high"] > previous["high"]:
         buy += 1
-
     elif last["low"] < previous["low"]:
         sell += 1
 
@@ -185,18 +182,15 @@ def calculate_signal(candles):
 
             if last["close"] > last["open"]:
                 buy += 1
-
             elif last["close"] < last["open"]:
                 sell += 1
 
     # 5. Three-candle momentum
     if last["close"] > three_back["close"]:
         buy += 1
-
     elif last["close"] < three_back["close"]:
         sell += 1
 
-    # Strong signal
     if buy >= 4 and buy > sell:
         return "BUY", buy, sell
 
@@ -227,17 +221,14 @@ def load_signal():
         return None
 
     try:
-
         with open(
             SIGNAL_FILE,
             "r",
             encoding="utf-8"
         ) as file:
-
             return json.load(file)
 
     except Exception:
-
         return None
 
 
@@ -258,9 +249,6 @@ def save_signal(
         "created_at": datetime.now(
             timezone.utc
         ).isoformat(),
-
-        # مهم:
-        # فقط اولین بار ACTIVE SIGNAL ارسال می‌شود
         "active_message_sent": False
     }
 
@@ -283,7 +271,11 @@ def clear_signal():
         os.remove(SIGNAL_FILE)
 
 
-def check_active_signal(price):
+def check_active_signal(
+    current_price,
+    recent_high,
+    recent_low
+):
 
     active = load_signal()
 
@@ -296,17 +288,21 @@ def check_active_signal(price):
     sl = float(active["sl"])
     tp = float(active["tp"])
 
+    # ==========================================
     # BUY
+    # ==========================================
+
     if signal == "BUY":
 
-        if price >= tp:
+        # TP برخورد با High
+        if recent_high >= tp:
 
             message = (
                 "🎯 ATI RESULT\n\n"
                 "🟢 BUY\n"
                 f"Entry: ${entry:,.2f}\n"
                 f"TP: ${tp:,.2f}\n"
-                f"Price: ${price:,.2f}\n\n"
+                f"High: ${recent_high:,.2f}\n\n"
                 "✅ TP HIT"
             )
 
@@ -315,14 +311,15 @@ def check_active_signal(price):
 
             return True
 
-        if price <= sl:
+        # SL برخورد با Low
+        if recent_low <= sl:
 
             message = (
                 "🛑 ATI RESULT\n\n"
                 "🟢 BUY\n"
                 f"Entry: ${entry:,.2f}\n"
                 f"SL: ${sl:,.2f}\n"
-                f"Price: ${price:,.2f}\n\n"
+                f"Low: ${recent_low:,.2f}\n\n"
                 "❌ SL HIT"
             )
 
@@ -331,17 +328,21 @@ def check_active_signal(price):
 
             return True
 
+    # ==========================================
     # SELL
+    # ==========================================
+
     if signal == "SELL":
 
-        if price <= tp:
+        # TP برخورد با Low
+        if recent_low <= tp:
 
             message = (
                 "🎯 ATI RESULT\n\n"
                 "🔴 SELL\n"
                 f"Entry: ${entry:,.2f}\n"
                 f"TP: ${tp:,.2f}\n"
-                f"Price: ${price:,.2f}\n\n"
+                f"Low: ${recent_low:,.2f}\n\n"
                 "✅ TP HIT"
             )
 
@@ -350,14 +351,15 @@ def check_active_signal(price):
 
             return True
 
-        if price >= sl:
+        # SL برخورد با High
+        if recent_high >= sl:
 
             message = (
                 "🛑 ATI RESULT\n\n"
                 "🔴 SELL\n"
                 f"Entry: ${entry:,.2f}\n"
                 f"SL: ${sl:,.2f}\n"
-                f"Price: ${price:,.2f}\n\n"
+                f"High: ${recent_high:,.2f}\n\n"
                 "❌ SL HIT"
             )
 
@@ -392,24 +394,25 @@ def main():
             "Not enough candles"
         )
 
+    # ==========================================
+    # CURRENT PRICE
+    # ==========================================
+
     prices = []
 
     for trade in trades:
 
         price = get_price(trade)
+        trade_time = get_time(trade)
 
-        if price is not None:
+        if price is not None and trade_time is not None:
 
-            trade_time = get_time(trade)
-
-            if trade_time is not None:
-
-                prices.append(
-                    (
-                        trade_time,
-                        price
-                    )
+            prices.append(
+                (
+                    trade_time,
+                    price
                 )
+            )
 
     if not prices:
         raise Exception(
@@ -422,27 +425,49 @@ def main():
 
     current_price = prices[-1][1]
 
+    # ==========================================
+    # RECENT HIGH / LOW
+    # ==========================================
+
+    recent_prices = [
+        price
+        for _, price in prices
+    ]
+
+    recent_high = max(recent_prices)
+    recent_low = min(recent_prices)
+
     print(
-        f"💰 Current price: ${current_price:,.2f}"
+        f"💰 Current: ${current_price:,.2f}"
     )
 
-    # ------------------------------------------------
+    print(
+        f"📈 Recent High: ${recent_high:,.2f}"
+    )
+
+    print(
+        f"📉 Recent Low: ${recent_low:,.2f}"
+    )
+
+    # ==========================================
     # CHECK ACTIVE SIGNAL
-    # ------------------------------------------------
+    # ==========================================
 
     completed = check_active_signal(
-        current_price
+        current_price,
+        recent_high,
+        recent_low
     )
 
     if completed:
 
         print(
-            "✅ Previous signal completed"
+            "✅ Active signal completed"
         )
 
-    # ------------------------------------------------
-    # LOAD ACTIVE SIGNAL AGAIN
-    # ------------------------------------------------
+    # ==========================================
+    # CHECK ACTIVE SIGNAL AGAIN
+    # ==========================================
 
     active = load_signal()
 
@@ -468,10 +493,7 @@ def main():
             f"🎯 TP: ${float(active['tp']):,.2f}"
         )
 
-        # --------------------------------------------
-        # جلوگیری از پیام‌های تکراری
-        # --------------------------------------------
-
+        # فقط اولین بار پیام ACTIVE ارسال می‌شود
         if not active.get(
             "active_message_sent",
             False
@@ -520,9 +542,9 @@ def main():
 
         return
 
-    # ------------------------------------------------
+    # ==========================================
     # NEW SIGNAL
-    # ------------------------------------------------
+    # ==========================================
 
     candle_time, candle = candles[-1]
 
@@ -537,9 +559,9 @@ def main():
         entry
     )
 
-    # ------------------------------------------------
-    # SAVE NEW STRONG SIGNAL
-    # ------------------------------------------------
+    # ==========================================
+    # SAVE STRONG SIGNAL
+    # ==========================================
 
     if signal in ("BUY", "SELL"):
 
@@ -551,9 +573,9 @@ def main():
             candle_time.isoformat()
         )
 
-    # ------------------------------------------------
-    # TELEGRAM MESSAGE
-    # ------------------------------------------------
+    # ==========================================
+    # TELEGRAM
+    # ==========================================
 
     message = (
         "⚡ ATI CRYPTO BOT - STAGE 8\n\n"
