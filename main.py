@@ -7,10 +7,17 @@ BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 BASE_URL = "https://api1.tabdeal.org"
-SIGNAL_FILE = "active_signal.json"
 
+SIGNAL_FILE = "active_signal.json"
+STATS_FILE = "ati_stats.json"
+
+
+# ==========================================
+# TELEGRAM
+# ==========================================
 
 def send_telegram(message):
+
     if not BOT_TOKEN or not CHAT_ID:
         print("❌ Telegram secrets missing")
         return
@@ -27,10 +34,174 @@ def send_telegram(message):
     )
 
     response.raise_for_status()
+
     print("✅ Telegram: OK")
 
 
+# ==========================================
+# STATISTICS
+# ==========================================
+
+def load_stats():
+
+    if not os.path.exists(STATS_FILE):
+
+        # آمار فعلی که تا الان ثبت کرده‌ای
+        stats = {
+            "tp": 20,
+            "sl": 20,
+            "buy_tp": 20,
+            "buy_sl": 20,
+            "sell_tp": 0,
+            "sell_sl": 0,
+            "net_percent": 10.0
+        }
+
+        save_stats(stats)
+
+        return stats
+
+    try:
+
+        with open(
+            STATS_FILE,
+            "r",
+            encoding="utf-8"
+        ) as file:
+
+            return json.load(file)
+
+    except Exception:
+
+        return {
+            "tp": 20,
+            "sl": 20,
+            "buy_tp": 20,
+            "buy_sl": 20,
+            "sell_tp": 0,
+            "sell_sl": 0,
+            "net_percent": 10.0
+        }
+
+
+def save_stats(stats):
+
+    with open(
+        STATS_FILE,
+        "w",
+        encoding="utf-8"
+    ) as file:
+
+        json.dump(
+            stats,
+            file,
+            indent=2
+        )
+
+
+def update_stats(
+    signal,
+    result,
+    entry,
+    exit_price
+):
+
+    stats = load_stats()
+
+    entry = float(entry)
+    exit_price = float(exit_price)
+
+    # ======================================
+    # درصد نتیجه معامله
+    # ======================================
+
+    if signal == "BUY":
+
+        trade_percent = (
+            (exit_price - entry)
+            / entry
+        ) * 100
+
+    else:
+
+        trade_percent = (
+            (entry - exit_price)
+            / entry
+        ) * 100
+
+    # ======================================
+    # TP / SL
+    # ======================================
+
+    if result == "TP":
+
+        stats["tp"] += 1
+
+        if signal == "BUY":
+            stats["buy_tp"] += 1
+        else:
+            stats["sell_tp"] += 1
+
+    elif result == "SL":
+
+        stats["sl"] += 1
+
+        if signal == "BUY":
+            stats["buy_sl"] += 1
+        else:
+            stats["sell_sl"] += 1
+
+    # ======================================
+    # NET
+    # ======================================
+
+    stats["net_percent"] = round(
+        float(stats.get("net_percent", 0))
+        + trade_percent,
+        4
+    )
+
+    save_stats(stats)
+
+    return stats, trade_percent
+
+
+def statistics_message(stats):
+
+    total = stats["tp"] + stats["sl"]
+
+    if total > 0:
+
+        win_rate = (
+            stats["tp"] / total
+        ) * 100
+
+    else:
+
+        win_rate = 0
+
+    return (
+        "📊 ATI STATISTICS\n\n"
+        f"🎯 Total Trades: {total}\n"
+        f"✅ TP: {stats['tp']}\n"
+        f"❌ SL: {stats['sl']}\n\n"
+        f"📈 Win Rate: {win_rate:.1f}%\n\n"
+        f"🟢 BUY TP: {stats['buy_tp']}\n"
+        f"🛑 BUY SL: {stats['buy_sl']}\n"
+        f"🔴 SELL TP: {stats['sell_tp']}\n"
+        f"🛑 SELL SL: {stats['sell_sl']}\n\n"
+        f"💰 Net P/L: {stats['net_percent']:+.2f}%\n\n"
+        "🧪 PAPER / TEST\n"
+        "🚫 REAL TRADING DISABLED"
+    )
+
+
+# ==========================================
+# MARKET DATA
+# ==========================================
+
 def get_trades():
+
     url = f"{BASE_URL}/r/api/v1/trades"
 
     response = requests.get(
@@ -47,18 +218,31 @@ def get_trades():
     data = response.json()
 
     if isinstance(data, dict):
-        trades = data.get("data", data.get("result", []))
+
+        trades = data.get(
+            "data",
+            data.get("result", [])
+        )
+
     else:
+
         trades = data
 
     if not isinstance(trades, list):
-        raise Exception(f"Unexpected API response: {data}")
+
+        raise Exception(
+            f"Unexpected API response: {data}"
+        )
 
     return trades
 
 
 def get_price(trade):
-    value = trade.get("price") or trade.get("p")
+
+    value = (
+        trade.get("price")
+        or trade.get("p")
+    )
 
     if value is None:
         return None
@@ -67,6 +251,7 @@ def get_price(trade):
 
 
 def get_time(trade):
+
     value = (
         trade.get("time")
         or trade.get("timestamp")
@@ -88,7 +273,12 @@ def get_time(trade):
     )
 
 
+# ==========================================
+# CANDLES
+# ==========================================
+
 def build_candles(trades):
+
     candles = {}
 
     for trade in trades:
@@ -99,7 +289,9 @@ def build_candles(trades):
         if price is None or trade_time is None:
             continue
 
-        minute = (trade_time.minute // 5) * 5
+        minute = (
+            trade_time.minute // 5
+        ) * 5
 
         candle_time = trade_time.replace(
             minute=minute,
@@ -135,12 +327,20 @@ def build_candles(trades):
     return sorted(candles.items())
 
 
+# ==========================================
+# SIGNAL
+# ==========================================
+
 def calculate_signal(candles):
 
     if len(candles) < 6:
+
         return "HOLD", 0, 0
 
-    data = [item[1] for item in candles]
+    data = [
+        item[1]
+        for item in candles
+    ]
 
     last = data[-1]
     previous = data[-2]
@@ -150,85 +350,129 @@ def calculate_signal(candles):
     sell = 0
 
     # 1. Candle direction
+
     if last["close"] > last["open"]:
+
         buy += 1
+
     elif last["close"] < last["open"]:
+
         sell += 1
 
     # 2. Close comparison
+
     if last["close"] > previous["close"]:
+
         buy += 1
+
     elif last["close"] < previous["close"]:
+
         sell += 1
 
     # 3. High / Low breakout
+
     if last["high"] > previous["high"]:
+
         buy += 1
+
     elif last["low"] < previous["low"]:
+
         sell += 1
 
     # 4. Candle strength
-    candle_range = last["high"] - last["low"]
+
+    candle_range = (
+        last["high"]
+        - last["low"]
+    )
 
     if candle_range > 0:
 
         body = abs(
-            last["close"] - last["open"]
+            last["close"]
+            - last["open"]
         )
 
-        strength = body / candle_range
+        strength = (
+            body / candle_range
+        )
 
         if strength >= 0.55:
 
             if last["close"] > last["open"]:
+
                 buy += 1
+
             elif last["close"] < last["open"]:
+
                 sell += 1
 
     # 5. Three-candle momentum
+
     if last["close"] > three_back["close"]:
+
         buy += 1
+
     elif last["close"] < three_back["close"]:
+
         sell += 1
 
     if buy >= 4 and buy > sell:
+
         return "BUY", buy, sell
 
     if sell >= 4 and sell > buy:
+
         return "SELL", buy, sell
 
     return "HOLD", buy, sell
 
 
+# ==========================================
+# SL / TP
+# ==========================================
+
 def calculate_sl_tp(signal, entry):
 
     if signal == "BUY":
+
         sl = entry * 0.995
         tp = entry * 1.010
+
         return sl, tp
 
     if signal == "SELL":
+
         sl = entry * 1.005
         tp = entry * 0.990
+
         return sl, tp
 
     return None, None
 
 
+# ==========================================
+# ACTIVE SIGNAL
+# ==========================================
+
 def load_signal():
 
     if not os.path.exists(SIGNAL_FILE):
+
         return None
 
     try:
+
         with open(
             SIGNAL_FILE,
             "r",
             encoding="utf-8"
         ) as file:
+
             return json.load(file)
 
     except Exception:
+
         return None
 
 
@@ -241,14 +485,22 @@ def save_signal(
 ):
 
     data = {
+
         "signal": signal,
+
         "entry": entry,
+
         "sl": sl,
+
         "tp": tp,
+
         "candle_time": candle_time,
-        "created_at": datetime.now(
-            timezone.utc
-        ).isoformat(),
+
+        "created_at":
+            datetime.now(
+                timezone.utc
+            ).isoformat(),
+
         "active_message_sent": False
     }
 
@@ -267,9 +519,18 @@ def save_signal(
 
 def clear_signal():
 
-    if os.path.exists(SIGNAL_FILE):
-        os.remove(SIGNAL_FILE)
+    if os.path.exists(
+        SIGNAL_FILE
+    ):
 
+        os.remove(
+            SIGNAL_FILE
+        )
+
+
+# ==========================================
+# CHECK TP / SL
+# ==========================================
 
 def check_active_signal(
     current_price,
@@ -280,22 +541,39 @@ def check_active_signal(
     active = load_signal()
 
     if not active:
+
         return False
 
     signal = active["signal"]
 
-    entry = float(active["entry"])
-    sl = float(active["sl"])
-    tp = float(active["tp"])
+    entry = float(
+        active["entry"]
+    )
 
-    # ==========================================
+    sl = float(
+        active["sl"]
+    )
+
+    tp = float(
+        active["tp"]
+    )
+
+    # ======================================
     # BUY
-    # ==========================================
+    # ======================================
 
     if signal == "BUY":
 
-        # TP برخورد با High
+        # TP
+
         if recent_high >= tp:
+
+            stats, trade_percent = update_stats(
+                "BUY",
+                "TP",
+                entry,
+                tp
+            )
 
             message = (
                 "🎯 ATI RESULT\n\n"
@@ -303,16 +581,27 @@ def check_active_signal(
                 f"Entry: ${entry:,.2f}\n"
                 f"TP: ${tp:,.2f}\n"
                 f"High: ${recent_high:,.2f}\n\n"
-                "✅ TP HIT"
+                "✅ TP HIT\n\n"
+                f"💰 Trade: +{trade_percent:.2f}%\n\n"
+                f"{statistics_message(stats)}"
             )
 
             send_telegram(message)
+
             clear_signal()
 
             return True
 
-        # SL برخورد با Low
+        # SL
+
         if recent_low <= sl:
+
+            stats, trade_percent = update_stats(
+                "BUY",
+                "SL",
+                entry,
+                sl
+            )
 
             message = (
                 "🛑 ATI RESULT\n\n"
@@ -320,22 +609,33 @@ def check_active_signal(
                 f"Entry: ${entry:,.2f}\n"
                 f"SL: ${sl:,.2f}\n"
                 f"Low: ${recent_low:,.2f}\n\n"
-                "❌ SL HIT"
+                "❌ SL HIT\n\n"
+                f"💰 Trade: {trade_percent:.2f}%\n\n"
+                f"{statistics_message(stats)}"
             )
 
             send_telegram(message)
+
             clear_signal()
 
             return True
 
-    # ==========================================
+    # ======================================
     # SELL
-    # ==========================================
+    # ======================================
 
     if signal == "SELL":
 
-        # TP برخورد با Low
+        # TP
+
         if recent_low <= tp:
+
+            stats, trade_percent = update_stats(
+                "SELL",
+                "TP",
+                entry,
+                tp
+            )
 
             message = (
                 "🎯 ATI RESULT\n\n"
@@ -343,16 +643,27 @@ def check_active_signal(
                 f"Entry: ${entry:,.2f}\n"
                 f"TP: ${tp:,.2f}\n"
                 f"Low: ${recent_low:,.2f}\n\n"
-                "✅ TP HIT"
+                "✅ TP HIT\n\n"
+                f"💰 Trade: +{trade_percent:.2f}%\n\n"
+                f"{statistics_message(stats)}"
             )
 
             send_telegram(message)
+
             clear_signal()
 
             return True
 
-        # SL برخورد با High
+        # SL
+
         if recent_high >= sl:
+
+            stats, trade_percent = update_stats(
+                "SELL",
+                "SL",
+                entry,
+                sl
+            )
 
             message = (
                 "🛑 ATI RESULT\n\n"
@@ -360,10 +671,13 @@ def check_active_signal(
                 f"Entry: ${entry:,.2f}\n"
                 f"SL: ${sl:,.2f}\n"
                 f"High: ${recent_high:,.2f}\n\n"
-                "❌ SL HIT"
+                "❌ SL HIT\n\n"
+                f"💰 Trade: {trade_percent:.2f}%\n\n"
+                f"{statistics_message(stats)}"
             )
 
             send_telegram(message)
+
             clear_signal()
 
             return True
@@ -371,41 +685,62 @@ def check_active_signal(
     return False
 
 
+# ==========================================
+# MAIN
+# ==========================================
+
 def main():
 
-    print("⚡ ATI CRYPTO BOT - STAGE 8")
-    print("₿ BTC/USDT")
-    print("⏱ Timeframe: 5m")
+    print(
+        "⚡ ATI CRYPTO BOT - STAGE 8"
+    )
+
+    print(
+        "₿ BTC/USDT"
+    )
+
+    print(
+        "⏱ Timeframe: 5m"
+    )
 
     trades = get_trades()
 
     print(
-        f"📊 Trades received: {len(trades)}"
+        f"📊 Trades received: "
+        f"{len(trades)}"
     )
 
-    candles = build_candles(trades)
+    candles = build_candles(
+        trades
+    )
 
     print(
-        f"🕯 5M candles built: {len(candles)}"
+        f"🕯 5M candles built: "
+        f"{len(candles)}"
     )
 
     if len(candles) < 6:
+
         raise Exception(
             "Not enough candles"
         )
 
-    # ==========================================
+    # ======================================
     # CURRENT PRICE
-    # ==========================================
+    # ======================================
 
     prices = []
 
     for trade in trades:
 
         price = get_price(trade)
+
         trade_time = get_time(trade)
 
-        if price is not None and trade_time is not None:
+        if (
+            price is not None
+            and trade_time is not None
+        ):
 
             prices.append(
                 (
@@ -415,6 +750,7 @@ def main():
             )
 
     if not prices:
+
         raise Exception(
             "Could not get current price"
         )
@@ -425,33 +761,41 @@ def main():
 
     current_price = prices[-1][1]
 
-    # ==========================================
+    # ======================================
     # RECENT HIGH / LOW
-    # ==========================================
+    # ======================================
 
     recent_prices = [
         price
         for _, price in prices
     ]
 
-    recent_high = max(recent_prices)
-    recent_low = min(recent_prices)
+    recent_high = max(
+        recent_prices
+    )
 
-    print(
-        f"💰 Current: ${current_price:,.2f}"
+    recent_low = min(
+        recent_prices
     )
 
     print(
-        f"📈 Recent High: ${recent_high:,.2f}"
+        f"💰 Current: "
+        f"${current_price:,.2f}"
     )
 
     print(
-        f"📉 Recent Low: ${recent_low:,.2f}"
+        f"📈 Recent High: "
+        f"${recent_high:,.2f}"
     )
 
-    # ==========================================
+    print(
+        f"📉 Recent Low: "
+        f"${recent_low:,.2f}"
+    )
+
+    # ======================================
     # CHECK ACTIVE SIGNAL
-    # ==========================================
+    # ======================================
 
     completed = check_active_signal(
         current_price,
@@ -465,9 +809,9 @@ def main():
             "✅ Active signal completed"
         )
 
-    # ==========================================
-    # CHECK ACTIVE SIGNAL AGAIN
-    # ==========================================
+    # ======================================
+    # ACTIVE SIGNAL
+    # ======================================
 
     active = load_signal()
 
@@ -478,22 +822,25 @@ def main():
         )
 
         print(
-            f"📊 Active: {active['signal']}"
+            f"📊 Active: "
+            f"{active['signal']}"
         )
 
         print(
-            f"💰 Entry: ${float(active['entry']):,.2f}"
+            f"💰 Entry: "
+            f"${float(active['entry']):,.2f}"
         )
 
         print(
-            f"🛑 SL: ${float(active['sl']):,.2f}"
+            f"🛑 SL: "
+            f"${float(active['sl']):,.2f}"
         )
 
         print(
-            f"🎯 TP: ${float(active['tp']):,.2f}"
+            f"🎯 TP: "
+            f"${float(active['tp']):,.2f}"
         )
 
-        # فقط اولین بار پیام ACTIVE ارسال می‌شود
         if not active.get(
             "active_message_sent",
             False
@@ -514,9 +861,13 @@ def main():
                 "🚫 REAL TRADING DISABLED"
             )
 
-            send_telegram(message)
+            send_telegram(
+                message
+            )
 
-            active["active_message_sent"] = True
+            active[
+                "active_message_sent"
+            ] = True
 
             with open(
                 SIGNAL_FILE,
@@ -537,21 +888,22 @@ def main():
         else:
 
             print(
-                "🔕 Duplicate ACTIVE message blocked"
+                "🔕 Duplicate ACTIVE "
+                "message blocked"
             )
 
         return
 
-    # ==========================================
+    # ======================================
     # NEW SIGNAL
-    # ==========================================
+    # ======================================
 
     candle_time, candle = candles[-1]
 
     entry = candle["close"]
 
-    signal, buy_score, sell_score = calculate_signal(
-        candles
+    signal, buy_score, sell_score = (
+        calculate_signal(candles)
     )
 
     sl, tp = calculate_sl_tp(
@@ -559,11 +911,14 @@ def main():
         entry
     )
 
-    # ==========================================
+    # ======================================
     # SAVE STRONG SIGNAL
-    # ==========================================
+    # ======================================
 
-    if signal in ("BUY", "SELL"):
+    if signal in (
+        "BUY",
+        "SELL"
+    ):
 
         save_signal(
             signal,
@@ -573,9 +928,9 @@ def main():
             candle_time.isoformat()
         )
 
-    # ==========================================
+    # ======================================
     # TELEGRAM
-    # ==========================================
+    # ======================================
 
     message = (
         "⚡ ATI CRYPTO BOT - STAGE 8\n\n"
@@ -621,7 +976,9 @@ def main():
 
     print(message)
 
-    send_telegram(message)
+    send_telegram(
+        message
+    )
 
 
 if __name__ == "__main__":
