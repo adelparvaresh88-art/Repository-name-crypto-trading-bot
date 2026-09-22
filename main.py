@@ -10,18 +10,19 @@ BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 BASE_URL = "https://api1.tabdeal.org"
-SYMBOL = "BTCUSDT"
 
-TIMEFRAME_MINUTES = 5
+SYMBOL = "BTCUSDT"
 
 SL_PERCENT = 0.50
 TP_PERCENT = 1.00
+
 
 # =========================
 # TELEGRAM
 # =========================
 
 def send_telegram(message):
+
     if not BOT_TOKEN:
         print("❌ TELEGRAM_BOT_TOKEN is missing")
         return False
@@ -49,20 +50,22 @@ def send_telegram(message):
             print("✅ Telegram message sent")
             return True
 
-        print("❌ Telegram send failed")
         return False
 
     except Exception as e:
+
         print("❌ Telegram error:", e)
+
         return False
 
 
 # =========================
-# TABDEAL MARKET DATA
+# TABDEAL TRADES
 # =========================
 
 def get_trades():
-    url = f"{BASE_URL}/v1/public/trades"
+
+    url = f"{BASE_URL}/r/api/v1/trades"
 
     params = {
         "symbol": SYMBOL,
@@ -75,24 +78,31 @@ def get_trades():
         timeout=20
     )
 
+    print("Tabdeal HTTP:", response.status_code)
+
     response.raise_for_status()
 
     data = response.json()
 
     if isinstance(data, dict):
+
         for key in ["data", "result", "trades"]:
+
             if key in data:
                 data = data[key]
                 break
 
     if not isinstance(data, list):
-        raise ValueError("Unexpected trades response")
+
+        raise ValueError(
+            f"Unexpected Tabdeal response: {data}"
+        )
 
     return data
 
 
 # =========================
-# BUILD 5M CANDLES
+# BUILD 5 MIN CANDLES
 # =========================
 
 def build_5m_candles(trades):
@@ -102,31 +112,18 @@ def build_5m_candles(trades):
     for trade in trades:
 
         try:
+
             price = float(
                 trade.get("price")
-                or trade.get("p")
-                or trade.get("tradePrice")
             )
 
             quantity = float(
-                trade.get("quantity")
-                or trade.get("qty")
-                or trade.get("amount")
-                or trade.get("q")
-                or 0
+                trade.get("qty", 0)
             )
 
-            timestamp = (
-                trade.get("timestamp")
-                or trade.get("time")
-                or trade.get("tradeTime")
-                or trade.get("T")
+            timestamp = int(
+                trade.get("time")
             )
-
-            timestamp = int(timestamp)
-
-            if timestamp < 10000000000:
-                timestamp *= 1000
 
             bucket = timestamp - (
                 timestamp % (5 * 60 * 1000)
@@ -161,10 +158,16 @@ def build_5m_candles(trades):
 
                 candle["volume"] += quantity
 
-        except Exception:
-            continue
+        except Exception as e:
 
-    result = list(candles.values())
+            print(
+                "Trade parsing error:",
+                e
+            )
+
+    result = list(
+        candles.values()
+    )
 
     result.sort(
         key=lambda x: x["time"]
@@ -174,7 +177,7 @@ def build_5m_candles(trades):
 
 
 # =========================
-# CLOSED CANDLE
+# CLOSED CANDLES
 # =========================
 
 def get_closed_candles(candles):
@@ -183,7 +186,9 @@ def get_closed_candles(candles):
         return []
 
     now_ms = int(
-        datetime.now(timezone.utc).timestamp() * 1000
+        datetime.now(
+            timezone.utc
+        ).timestamp() * 1000
     )
 
     current_bucket = now_ms - (
@@ -191,8 +196,13 @@ def get_closed_candles(candles):
     )
 
     closed = [
-        c for c in candles
-        if c["time"] < current_bucket
+
+        candle
+
+        for candle in candles
+
+        if candle["time"] < current_bucket
+
     ]
 
     return closed
@@ -216,9 +226,7 @@ def calculate_signal(candles):
     buy_score = 0
     sell_score = 0
 
-    # -------------------------
-    # 1. PRICE DIRECTION
-    # -------------------------
+    # 1 — PRICE DIRECTION
 
     if c1["close"] > c2["close"]:
         buy_score += 1
@@ -226,62 +234,75 @@ def calculate_signal(candles):
     if c1["close"] < c2["close"]:
         sell_score += 1
 
-    # -------------------------
-    # 2. HIGH / LOW STRUCTURE
-    # -------------------------
+    # 2 — MARKET STRUCTURE
 
     if (
         c1["high"] > c2["high"]
-        and c1["low"] > c2["low"]
+        and
+        c1["low"] > c2["low"]
     ):
         buy_score += 1
 
     if (
         c1["high"] < c2["high"]
-        and c1["low"] < c2["low"]
+        and
+        c1["low"] < c2["low"]
     ):
         sell_score += 1
 
-    # -------------------------
-    # 3. CANDLE BODY
-    # -------------------------
+    # 3 — CANDLE STRENGTH
 
     body = c1["close"] - c1["open"]
 
-    candle_range = c1["high"] - c1["low"]
+    candle_range = (
+        c1["high"] - c1["low"]
+    )
 
     if candle_range > 0:
 
-        body_ratio = abs(body) / candle_range
+        body_ratio = (
+            abs(body) / candle_range
+        )
 
-        if body > 0 and body_ratio >= 0.45:
+        if (
+            body > 0
+            and
+            body_ratio >= 0.45
+        ):
             buy_score += 1
 
-        if body < 0 and body_ratio >= 0.45:
+        if (
+            body < 0
+            and
+            body_ratio >= 0.45
+        ):
             sell_score += 1
 
-    # -------------------------
-    # 4. SHORT MOMENTUM
-    # -------------------------
+    # 4 — MOMENTUM
 
-    previous_move = c2["close"] - c3["close"]
-    current_move = c1["close"] - c2["close"]
+    previous_move = (
+        c2["close"] - c3["close"]
+    )
+
+    current_move = (
+        c1["close"] - c2["close"]
+    )
 
     if (
         current_move > 0
-        and previous_move > 0
+        and
+        previous_move > 0
     ):
         buy_score += 1
 
     if (
         current_move < 0
-        and previous_move < 0
+        and
+        previous_move < 0
     ):
         sell_score += 1
 
-    # -------------------------
-    # 5. BREAKOUT
-    # -------------------------
+    # 5 — BREAKOUT
 
     previous_high = max(
         c2["high"],
@@ -303,17 +324,26 @@ def calculate_signal(candles):
     if c1["close"] < previous_low:
         sell_score += 1
 
-    # -------------------------
-    # STRONG SIGNAL
-    # -------------------------
+    # STRONG SIGNAL FILTER
 
-    if buy_score >= 4 and buy_score > sell_score:
+    if (
+        buy_score >= 4
+        and
+        buy_score > sell_score
+    ):
+
         signal = "BUY"
 
-    elif sell_score >= 4 and sell_score > buy_score:
+    elif (
+        sell_score >= 4
+        and
+        sell_score > buy_score
+    ):
+
         signal = "SELL"
 
     else:
+
         signal = "NO SIGNAL"
 
     return {
@@ -337,6 +367,7 @@ def build_message(result):
     entry = candle["close"]
 
     buy_score = result["buy_score"]
+
     sell_score = result["sell_score"]
 
     candle_time = datetime.fromtimestamp(
@@ -359,8 +390,13 @@ def build_message(result):
 
     if signal == "BUY":
 
-        sl = entry * (1 - SL_PERCENT / 100)
-        tp = entry * (1 + TP_PERCENT / 100)
+        sl = entry * (
+            1 - SL_PERCENT / 100
+        )
+
+        tp = entry * (
+            1 + TP_PERCENT / 100
+        )
 
         message += (
             "\n🟢 BUY SIGNAL\n"
@@ -372,8 +408,13 @@ def build_message(result):
 
     elif signal == "SELL":
 
-        sl = entry * (1 + SL_PERCENT / 100)
-        tp = entry * (1 - TP_PERCENT / 100)
+        sl = entry * (
+            1 + SL_PERCENT / 100
+        )
+
+        tp = entry * (
+            1 - TP_PERCENT / 100
+        )
 
         message += (
             "\n🔴 SELL SIGNAL\n"
@@ -400,21 +441,19 @@ def build_message(result):
 
 def main():
 
-    print("================================")
-    print("⚡ ATI CRYPTO BOT - STAGE 8")
-    print("================================")
+    print(
+        "================================"
+    )
 
-    if not BOT_TOKEN:
-        print("❌ TELEGRAM_BOT_TOKEN missing")
-        return
+    print(
+        "⚡ ATI CRYPTO BOT - STAGE 8"
+    )
 
-    if not CHAT_ID:
-        print("❌ TELEGRAM_CHAT_ID missing")
-        return
+    print(
+        "================================"
+    )
 
     try:
-
-        print("📡 Getting Tabdeal trades...")
 
         trades = get_trades()
 
@@ -422,13 +461,17 @@ def main():
             f"✅ Trades received: {len(trades)}"
         )
 
-        candles = build_5m_candles(trades)
+        candles = build_5m_candles(
+            trades
+        )
 
         print(
             f"🕯 5M candles built: {len(candles)}"
         )
 
-        closed = get_closed_candles(candles)
+        closed = get_closed_candles(
+            candles
+        )
 
         print(
             f"✅ Closed candles: {len(closed)}"
@@ -443,22 +486,27 @@ def main():
 
             return
 
-        result = calculate_signal(closed)
+        result = calculate_signal(
+            closed
+        )
 
         if not result:
 
-            print("❌ Signal calculation failed")
-            return
+            raise ValueError(
+                "Signal calculation failed"
+            )
 
-        message = build_message(result)
+        message = build_message(
+            result
+        )
 
-        print("\n" + message)
+        print(message)
 
         send_telegram(message)
 
-        print("================================")
-        print("✅ ATI STAGE 8 FINISHED")
-        print("================================")
+        print(
+            "✅ ATI STAGE 8 FINISHED"
+        )
 
     except Exception as e:
 
@@ -471,7 +519,9 @@ def main():
 
         print(error_message)
 
-        send_telegram(error_message)
+        send_telegram(
+            error_message
+        )
 
 
 if __name__ == "__main__":
