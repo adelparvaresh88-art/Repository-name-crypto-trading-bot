@@ -26,38 +26,47 @@ jobs:
 
       - name: Check Secrets
         env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           TABDIL_API_KEY: ${{ secrets.TABDIL_API_KEY }}
           TABDIL_API_SECRET: ${{ secrets.TABDIL_API_SECRET }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          if [ -z "$TELEGRAM_BOT_TOKEN" ]; then
-            echo "❌ TELEGRAM_BOT_TOKEN missing"
+          echo "Checking ATI secrets..."
+
+          if [ -n "$TABDIL_API_KEY" ]; then
+            echo "TABDIL_API_KEY: PRESENT"
+          else
+            echo "TABDIL_API_KEY: MISSING"
             exit 1
           fi
 
-          if [ -z "$TELEGRAM_CHAT_ID" ]; then
-            echo "❌ TELEGRAM_CHAT_ID missing"
+          if [ -n "$TABDIL_API_SECRET" ]; then
+            echo "TABDIL_API_SECRET: PRESENT"
+          else
+            echo "TABDIL_API_SECRET: MISSING"
             exit 1
           fi
 
-          if [ -z "$TABDIL_API_KEY" ]; then
-            echo "❌ TABDIL_API_KEY missing"
+          if [ -n "$TELEGRAM_BOT_TOKEN" ]; then
+            echo "TELEGRAM_BOT_TOKEN: PRESENT"
+          else
+            echo "TELEGRAM_BOT_TOKEN: MISSING"
             exit 1
           fi
 
-          if [ -z "$TABDIL_API_SECRET" ]; then
-            echo "❌ TABDIL_API_SECRET missing"
+          if [ -n "$TELEGRAM_CHAT_ID" ]; then
+            echo "TELEGRAM_CHAT_ID: PRESENT"
+          else
+            echo "TELEGRAM_CHAT_ID: MISSING"
             exit 1
           fi
 
-          echo "✅ All required secrets are present"
-
-      - name: Run Bot
+      - name: Run ATI Bot
         env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           TABDIL_API_KEY: ${{ secrets.TABDIL_API_KEY }}
           TABDIL_API_SECRET: ${{ secrets.TABDIL_API_SECRET }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
+          echo "Starting ATI Bot..."
           python main.py
