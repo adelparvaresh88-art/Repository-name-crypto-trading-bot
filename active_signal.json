@@ -1,9 +1,9 @@
 {
-  "signal": "SELL",
-  "entry": 85592.71,
-  "sl": 86020.67354999999,
-  "tp": 84736.7829,
-  "candle_time": "2026-09-22T01:40:00+00:00",
-  "created_at": "2026-09-22T01:45:45.340444+00:00",
-  "active_message_sent": true
+  "signal": "BUY",
+  "entry": 86214.15,
+  "sl": 85783.07925,
+  "tp": 87076.29149999999,
+  "candle_time": "2026-09-22T08:45:00+00:00",
+  "created_at": "2026-09-22T08:47:40.035713+00:00",
+  "active_message_sent": false
 }
