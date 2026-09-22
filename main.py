@@ -1,33 +1,59 @@
 import os
-import requests
 from decimal import Decimal, ROUND_DOWN
 from datetime import datetime, timezone
 
+from tabdeal.spot import Spot
+from tabdeal.enums import OrderSides, OrderTypes
+
+
 # =========================================================
-# ATI CRYPTO BOT - REAL TRADING
+# SETTINGS
 # =========================================================
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-TABDEAL_API_KEY = os.getenv("TABDIL_API_KEY")
-TABDEAL_API_SECRET = os.getenv("TABDIL_API_SECRET")
-
-BASE_URL = "https://api1.tabdeal.org"
+API_KEY = os.getenv("TABDIL_API_KEY")
+API_SECRET = os.getenv("TABDIL_API_SECRET")
 
 SYMBOL = "BTCUSDT"
 
-# REAL TRADE SIZE
 TRADE_USDT = Decimal("2.00")
 
 SL_PERCENT = Decimal("0.50")
 TP_PERCENT = Decimal("1.00")
 
-# Strong signal only
 SIGNAL_THRESHOLD = 4
 
-# Safety
-MAX_BTC_POSITION_USDT = Decimal("2.50")
+# IMPORTANT:
+# Real trading is enabled in this version.
+REAL_TRADING = True
+
+
+# =========================================================
+# TABDEAL CLIENT
+# =========================================================
+
+def get_client():
+
+    if not API_KEY:
+        raise RuntimeError(
+            "TABDIL_API_KEY is missing"
+        )
+
+    if not API_SECRET:
+        raise RuntimeError(
+            "TABDIL_API_SECRET is missing"
+        )
+
+    return Spot(
+        API_KEY,
+        API_SECRET,
+        base_url="https://api1.tabdeal.org",
+        version="v1",
+        timeout=20,
+        receive_window=5000
+    )
 
 
 # =========================================================
@@ -36,13 +62,23 @@ MAX_BTC_POSITION_USDT = Decimal("2.50")
 
 def send_telegram(message):
 
-    if not BOT_TOKEN or not CHAT_ID:
-        print("Telegram credentials missing")
+    if not BOT_TOKEN:
+        print("Telegram token missing")
         return False
 
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    if not CHAT_ID:
+        print("Telegram chat ID missing")
+        return False
+
+    import requests
+
+    url = (
+        f"https://api.telegram.org/"
+        f"bot{BOT_TOKEN}/sendMessage"
+    )
 
     try:
+
         response = requests.post(
             url,
             data={
@@ -52,43 +88,41 @@ def send_telegram(message):
             timeout=20
         )
 
-        print("Telegram:", response.status_code)
+        print(
+            "Telegram HTTP:",
+            response.status_code
+        )
 
         return response.ok
 
     except Exception as e:
 
-        print("Telegram error:", e)
+        print(
+            "Telegram error:",
+            e
+        )
 
         return False
 
 
 # =========================================================
-# TABDEAL PUBLIC MARKET
+# MARKET DATA
 # =========================================================
 
-def get_trades():
+def get_trades(client):
 
-    url = f"{BASE_URL}/r/api/v1/trades"
-
-    response = requests.get(
-        url,
-        params={
-            "symbol": SYMBOL,
-            "limit": 1000
-        },
-        timeout=20
+    data = client.trades(
+        symbol=SYMBOL,
+        limit=1000
     )
-
-    print("Tabdeal market HTTP:", response.status_code)
-
-    response.raise_for_status()
-
-    data = response.json()
 
     if isinstance(data, dict):
 
-        for key in ["data", "result", "trades"]:
+        for key in [
+            "data",
+            "result",
+            "trades"
+        ]:
 
             if key in data:
 
@@ -97,8 +131,8 @@ def get_trades():
 
     if not isinstance(data, list):
 
-        raise ValueError(
-            f"Unexpected market response: {data}"
+        raise RuntimeError(
+            f"Unexpected trades response: {data}"
         )
 
     return data
@@ -128,7 +162,9 @@ def build_5m_candles(trades):
                 trade.get("time")
             )
 
-            bucket = timestamp - (
+            bucket = (
+                timestamp
+                -
                 timestamp % (5 * 60 * 1000)
             )
 
@@ -193,7 +229,6 @@ def build_5m_candles(trades):
 def get_closed_candles(candles):
 
     if len(candles) < 6:
-
         return []
 
     now_ms = int(
@@ -202,18 +237,16 @@ def get_closed_candles(candles):
         ).timestamp() * 1000
     )
 
-    current_bucket = now_ms - (
+    current_bucket = (
+        now_ms
+        -
         now_ms % (5 * 60 * 1000)
     )
 
     return [
-
         candle
-
         for candle in candles
-
         if candle["time"] < current_bucket
-
     ]
 
 
@@ -224,7 +257,6 @@ def get_closed_candles(candles):
 def calculate_signal(candles):
 
     if len(candles) < 6:
-
         return None
 
     c1 = candles[-1]
@@ -239,11 +271,9 @@ def calculate_signal(candles):
     # 1 - PRICE DIRECTION
 
     if c1["close"] > c2["close"]:
-
         buy_score += 1
 
     if c1["close"] < c2["close"]:
-
         sell_score += 1
 
     # 2 - MARKET STRUCTURE
@@ -253,7 +283,6 @@ def calculate_signal(candles):
         and
         c1["low"] > c2["low"]
     ):
-
         buy_score += 1
 
     if (
@@ -261,7 +290,6 @@ def calculate_signal(candles):
         and
         c1["low"] < c2["low"]
     ):
-
         sell_score += 1
 
     # 3 - CANDLE STRENGTH
@@ -283,7 +311,6 @@ def calculate_signal(candles):
             and
             body_ratio >= 0.45
         ):
-
             buy_score += 1
 
         if (
@@ -291,7 +318,6 @@ def calculate_signal(candles):
             and
             body_ratio >= 0.45
         ):
-
             sell_score += 1
 
     # 4 - MOMENTUM
@@ -309,7 +335,6 @@ def calculate_signal(candles):
         and
         previous_move > 0
     ):
-
         buy_score += 1
 
     if (
@@ -317,7 +342,6 @@ def calculate_signal(candles):
         and
         previous_move < 0
     ):
-
         sell_score += 1
 
     # 5 - BREAKOUT
@@ -337,14 +361,12 @@ def calculate_signal(candles):
     )
 
     if c1["close"] > previous_high:
-
         buy_score += 1
 
     if c1["close"] < previous_low:
-
         sell_score += 1
 
-    # STRONG FILTER
+    # STRONG SIGNAL
 
     if (
         buy_score >= SIGNAL_THRESHOLD
@@ -375,87 +397,114 @@ def calculate_signal(candles):
         "sell_score": sell_score,
 
         "candle": c1
-
     }
 
 
 # =========================================================
-# MARKET PRICE
+# ACCOUNT
 # =========================================================
 
-def get_current_price():
+def get_account(client):
 
-    trades = get_trades()
+    account = client.account()
 
-    if not trades:
+    if not isinstance(account, dict):
 
-        raise ValueError(
-            "No market trades"
+        raise RuntimeError(
+            f"Unexpected account response: {account}"
         )
 
-    return Decimal(
-        str(trades[-1]["price"])
+    return account
+
+
+# =========================================================
+# BALANCE PARSER
+# =========================================================
+
+def get_free_balance(
+    account,
+    asset
+):
+
+    balances = account.get(
+        "balances",
+        []
     )
 
+    if isinstance(balances, dict):
 
-# =========================================================
-# ACCOUNT API
-#
-# IMPORTANT:
-# These authenticated functions intentionally remain
-# isolated. They must use the exact Tabdeal authenticated
-# endpoint/schema configured for this account.
-# =========================================================
-
-def auth_headers():
-
-    if not TABDEAL_API_KEY:
-
-        raise ValueError(
-            "TABDIL_API_KEY is missing"
+        balances = balances.get(
+            "data",
+            balances
         )
 
-    if not TABDEAL_API_SECRET:
+    if not isinstance(
+        balances,
+        list
+    ):
 
-        raise ValueError(
-            "TABDIL_API_SECRET is missing"
+        return Decimal("0")
+
+    for item in balances:
+
+        if not isinstance(
+            item,
+            dict
+        ):
+            continue
+
+        item_asset = (
+            item.get("asset")
+            or
+            item.get("currency")
+            or
+            item.get("symbol")
         )
 
-    return {
+        if (
+            item_asset
+            and
+            str(item_asset).upper()
+            == asset.upper()
+        ):
 
-        "X-MBX-APIKEY":
-            TABDEAL_API_KEY
+            value = (
+                item.get("free")
+                or
+                item.get("available")
+                or
+                item.get("balance")
+                or
+                "0"
+            )
 
-    }
+            try:
+
+                return Decimal(
+                    str(value)
+                )
+
+            except Exception:
+
+                return Decimal("0")
+
+    return Decimal("0")
 
 
 # =========================================================
-# OPEN ORDERS CHECK
+# OPEN ORDERS
 # =========================================================
 
-def get_open_orders():
+def get_open_orders(client):
 
-    url = f"{BASE_URL}/api/v1/openOrders"
-
-    response = requests.get(
-        url,
-        headers=auth_headers(),
-        params={
-            "symbol": SYMBOL
-        },
-        timeout=20
+    orders = client.get_open_orders(
+        symbol=SYMBOL
     )
 
-    print(
-        "Open orders HTTP:",
-        response.status_code
-    )
-
-    response.raise_for_status()
-
-    data = response.json()
-
-    if isinstance(data, dict):
+    if isinstance(
+        orders,
+        dict
+    ):
 
         for key in [
             "data",
@@ -463,95 +512,168 @@ def get_open_orders():
             "orders"
         ]:
 
-            if key in data:
+            if key in orders:
 
-                data = data[key]
+                orders = orders[key]
                 break
 
-    if isinstance(data, list):
+    if not isinstance(
+        orders,
+        list
+    ):
 
-        return data
+        return []
+
+    return orders
+
+
+# =========================================================
+# OPEN OCO ORDERS
+# =========================================================
+
+def get_open_oco_orders(client):
+
+    try:
+
+        orders = client.get_oco_open_orders()
+
+        if isinstance(
+            orders,
+            dict
+        ):
+
+            for key in [
+                "data",
+                "result",
+                "orders",
+                "orderLists"
+            ]:
+
+                if key in orders:
+
+                    orders = orders[key]
+                    break
+
+        if isinstance(
+            orders,
+            list
+        ):
+
+            return orders
+
+    except Exception as e:
+
+        print(
+            "OCO check error:",
+            e
+        )
 
     return []
 
 
 # =========================================================
-# ORDER STATUS MESSAGE
+# DUPLICATE TRADE PROTECTION
 # =========================================================
 
-def order_id_from_response(data):
+def trading_state(client):
 
-    if not isinstance(data, dict):
+    """
+    Returns:
 
-        return "UNKNOWN"
+    True = already exposed / active
+    False = safe for new BUY
+    """
 
-    for key in [
-        "orderId",
-        "order_id",
-        "id"
-    ]:
+    # ------------------------------------------
+    # 1. OPEN NORMAL ORDERS
+    # ------------------------------------------
 
-        if key in data:
+    open_orders = get_open_orders(
+        client
+    )
 
-            return str(
-                data[key]
-            )
+    if open_orders:
 
-    return "UNKNOWN"
-
-
-# =========================================================
-# REAL MARKET ORDER
-# =========================================================
-
-def create_market_order(
-    side,
-    quantity
-):
-
-    url = f"{BASE_URL}/api/v1/order"
-
-    params = {
-
-        "symbol": SYMBOL,
-
-        "side": side,
-
-        "type": "MARKET",
-
-        "quantity": str(
-            quantity
+        print(
+            "🛡 Open normal order exists."
         )
 
-    }
+        return True
 
-    # NOTE:
-    # Tabdeal authenticated requests require signing.
-    # This function deliberately does NOT invent a
-    # signature format.
-    #
-    # Before enabling this call in production, the
-    # exact signing method from the current Tabdeal
-    # API/SDK must be applied.
+    # ------------------------------------------
+    # 2. OPEN OCO
+    # ------------------------------------------
 
-    raise RuntimeError(
-        "REAL ORDER BLOCKED: "
-        "Tabdeal authentication/signature "
-        "must be configured from the current "
-        "official API specification before "
-        "placing a live order."
+    open_oco = get_open_oco_orders(
+        client
+    )
+
+    if open_oco:
+
+        print(
+            "🛡 Open OCO exists."
+        )
+
+        return True
+
+    # ------------------------------------------
+    # 3. BTC BALANCE
+    # ------------------------------------------
+
+    account = get_account(
+        client
+    )
+
+    btc_balance = get_free_balance(
+        account,
+        "BTC"
+    )
+
+    print(
+        "Free BTC:",
+        btc_balance
+    )
+
+    # Small dust is ignored.
+    if btc_balance > Decimal("0.000001"):
+
+        print(
+            "🛡 BTC position already exists."
+        )
+
+        return True
+
+    return False
+
+
+# =========================================================
+# MARKET PRICE
+# =========================================================
+
+def get_current_price(trades):
+
+    if not trades:
+
+        raise RuntimeError(
+            "No current market price"
+        )
+
+    return Decimal(
+        str(
+            trades[-1]["price"]
+        )
     )
 
 
 # =========================================================
-# BUY QUANTITY
+# BTC QUANTITY
 # =========================================================
 
-def calculate_btc_quantity(price):
+def calculate_quantity(price):
 
     if price <= 0:
 
-        raise ValueError(
+        raise RuntimeError(
             "Invalid BTC price"
         )
 
@@ -559,7 +681,7 @@ def calculate_btc_quantity(price):
         TRADE_USDT / price
     )
 
-    # Conservative rounding.
+    # Conservative BTC precision.
     quantity = quantity.quantize(
         Decimal("0.000001"),
         rounding=ROUND_DOWN
@@ -567,79 +689,184 @@ def calculate_btc_quantity(price):
 
     if quantity <= 0:
 
-        raise ValueError(
-            "Calculated BTC quantity is zero"
+        raise RuntimeError(
+            "BTC quantity became zero"
         )
 
     return quantity
 
 
 # =========================================================
-# DUPLICATE BUY PROTECTION
+# REAL BUY
 # =========================================================
 
-def has_open_position():
+def place_buy(
+    client,
+    quantity
+):
 
-    """
-    Safety rule:
-
-    If there are open orders, do not create
-    another BUY.
-
-    A future authenticated balance check should
-    also be added before enabling live execution.
-    """
-
-    try:
-
-        orders = get_open_orders()
-
-        if orders:
-
-            print(
-                "⚠️ Open order exists."
-            )
-
-            return True
-
-        return False
-
-    except Exception as e:
-
-        print(
-            "Open order check failed:",
-            e
+    client_order_id = (
+        "ATI_BUY_"
+        +
+        datetime.now(
+            timezone.utc
+        ).strftime(
+            "%Y%m%d%H%M%S"
         )
+    )
 
-        # FAIL CLOSED
-        # If we cannot verify account state,
-        # do NOT trade.
+    print(
+        "🚀 REAL BUY"
+    )
 
-        return True
+    print(
+        "Quantity:",
+        quantity
+    )
+
+    result = client.new_order(
+
+        symbol=SYMBOL,
+
+        side=OrderSides.BUY,
+
+        type=OrderTypes.MARKET,
+
+        quantity=str(
+            quantity
+        ),
+
+        client_order_id=
+            client_order_id
+    )
+
+    return result
 
 
 # =========================================================
-# TELEGRAM SIGNAL
+# OCO
 # =========================================================
 
-def build_signal_message(result):
+def place_oco(
+    client,
+    quantity,
+    entry
+):
+
+    sl = (
+        entry
+        *
+        (
+            Decimal("1")
+            -
+            SL_PERCENT / Decimal("100")
+        )
+    )
+
+    tp = (
+        entry
+        *
+        (
+            Decimal("1")
+            +
+            TP_PERCENT / Decimal("100")
+        )
+    )
+
+    # BTC/USDT price precision
+    sl = sl.quantize(
+        Decimal("0.01"),
+        rounding=ROUND_DOWN
+    )
+
+    tp = tp.quantize(
+        Decimal("0.01"),
+        rounding=ROUND_DOWN
+    )
+
+    # Stop-limit slightly below stop price.
+    stop_limit = (
+        sl
+        *
+        Decimal("0.999")
+    )
+
+    stop_limit = stop_limit.quantize(
+        Decimal("0.01"),
+        rounding=ROUND_DOWN
+    )
+
+    print(
+        "OCO TP:",
+        tp
+    )
+
+    print(
+        "OCO SL:",
+        sl
+    )
+
+    print(
+        "OCO STOP LIMIT:",
+        stop_limit
+    )
+
+    result = client.new_oco_order(
+
+        symbol=SYMBOL,
+
+        side=OrderSides.SELL,
+
+        quantity=str(
+            quantity
+        ),
+
+        price=str(
+            tp
+        ),
+
+        stop_price=str(
+            sl
+        ),
+
+        stop_limit_price=str(
+            stop_limit
+        ),
+
+        list_client_order_id=(
+            "ATI_OCO_"
+            +
+            datetime.now(
+                timezone.utc
+            ).strftime(
+                "%Y%m%d%H%M%S"
+            )
+        )
+    )
+
+    return result, sl, tp
+
+
+# =========================================================
+# TELEGRAM MESSAGE
+# =========================================================
+
+def signal_message(result):
 
     candle = result["candle"]
-
-    signal = result["signal"]
 
     entry = Decimal(
         str(candle["close"])
     )
 
-    buy_score = result["buy_score"]
-
-    sell_score = result["sell_score"]
+    signal = result["signal"]
 
     candle_time = datetime.fromtimestamp(
         candle["time"] / 1000,
         tz=timezone.utc
-    ).strftime("%H:%M UTC")
+    ).strftime(
+        "%H:%M UTC"
+    )
 
     message = (
 
@@ -655,9 +882,11 @@ def build_signal_message(result):
 
         f"📊 SIGNAL: {signal}\n"
 
-        f"📈 BUY SCORE: {buy_score}/5\n"
+        f"📈 BUY SCORE: "
+        f"{result['buy_score']}/5\n"
 
-        f"📉 SELL SCORE: {sell_score}/5\n\n"
+        f"📉 SELL SCORE: "
+        f"{result['sell_score']}/5\n\n"
 
         f"🕐 Candle: {candle_time}\n"
 
@@ -668,7 +897,8 @@ def build_signal_message(result):
     if signal == "BUY":
 
         sl = (
-            entry *
+            entry
+            *
             (
                 Decimal("1")
                 -
@@ -677,7 +907,8 @@ def build_signal_message(result):
         )
 
         tp = (
-            entry *
+            entry
+            *
             (
                 Decimal("1")
                 +
@@ -695,43 +926,17 @@ def build_signal_message(result):
 
             "💵 TRADE SIZE: 2 USDT\n"
 
-            "⚠️ LIVE EXECUTION: BLOCKED "
-            "UNTIL API SIGNING IS VERIFIED"
+            "🔐 REAL TRADING: ENABLED"
 
         )
 
     elif signal == "SELL":
 
-        sl = (
-            entry *
-            (
-                Decimal("1")
-                +
-                SL_PERCENT / Decimal("100")
-            )
-        )
-
-        tp = (
-            entry *
-            (
-                Decimal("1")
-                -
-                TP_PERCENT / Decimal("100")
-            )
-        )
-
         message += (
 
-            "\n🔴 SELL SIGNAL\n"
+            "\n🔴 SELL SIGNAL\n\n"
 
-            f"🛑 SL: ${sl:,.2f}\n"
-
-            f"🎯 TP: ${tp:,.2f}\n\n"
-
-            "💵 TRADE SIZE: existing BTC\n"
-
-            "⚠️ LIVE EXECUTION: BLOCKED "
-            "UNTIL API SIGNING IS VERIFIED"
+            "🔐 REAL TRADING: ENABLED"
 
         )
 
@@ -739,9 +944,7 @@ def build_signal_message(result):
 
         message += (
 
-            "\n⏳ NO STRONG SIGNAL\n\n"
-
-            "💵 TRADE SIZE: 2 USDT"
+            "\n⏳ NO STRONG SIGNAL"
 
         )
 
@@ -759,7 +962,7 @@ def main():
     )
 
     print(
-        "⚡ ATI CRYPTO BOT - REAL TRADING BUILD"
+        "⚡ ATI CRYPTO BOT - REAL MODE V2"
     )
 
     print(
@@ -772,10 +975,71 @@ def main():
 
     try:
 
-        trades = get_trades()
+        # --------------------------------------
+        # CLIENT
+        # --------------------------------------
+
+        client = get_client()
 
         print(
-            f"Trades received: {len(trades)}"
+            "✅ Tabdeal authenticated client ready"
+        )
+
+        # --------------------------------------
+        # ACCOUNT CHECK
+        # --------------------------------------
+
+        account = get_account(
+            client
+        )
+
+        usdt_balance = get_free_balance(
+            account,
+            "USDT"
+        )
+
+        btc_balance = get_free_balance(
+            account,
+            "BTC"
+        )
+
+        print(
+            "USDT:",
+            usdt_balance
+        )
+
+        print(
+            "BTC:",
+            btc_balance
+        )
+
+        if usdt_balance < TRADE_USDT:
+
+            send_telegram(
+
+                "🛡 ATI SAFETY\n\n"
+
+                "Trade skipped.\n"
+
+                f"USDT balance is "
+                f"{usdt_balance}, "
+                f"but 2 USDT is required."
+
+            )
+
+            return
+
+        # --------------------------------------
+        # MARKET
+        # --------------------------------------
+
+        trades = get_trades(
+            client
+        )
+
+        print(
+            f"Trades received: "
+            f"{len(trades)}"
         )
 
         candles = build_5m_candles(
@@ -783,7 +1047,8 @@ def main():
         )
 
         print(
-            f"5M candles built: {len(candles)}"
+            f"5M candles built: "
+            f"{len(candles)}"
         )
 
         closed = get_closed_candles(
@@ -791,7 +1056,8 @@ def main():
         )
 
         print(
-            f"Closed candles: {len(closed)}"
+            f"Closed candles: "
+            f"{len(closed)}"
         )
 
         if len(closed) < 6:
@@ -803,27 +1069,33 @@ def main():
 
             return
 
+        # --------------------------------------
+        # SIGNAL
+        # --------------------------------------
+
         result = calculate_signal(
             closed
         )
 
         if not result:
 
-            raise ValueError(
+            raise RuntimeError(
                 "Signal calculation failed"
             )
 
-        message = build_signal_message(
+        message = signal_message(
             result
         )
 
         print(message)
 
-        send_telegram(message)
+        send_telegram(
+            message
+        )
 
-        # =================================================
-        # LIVE TRADE GATE
-        # =================================================
+        # --------------------------------------
+        # NO SIGNAL
+        # --------------------------------------
 
         if result["signal"] == "NO SIGNAL":
 
@@ -833,66 +1105,197 @@ def main():
 
             return
 
-        # Safety:
-        # Do not send duplicate orders.
+        # --------------------------------------
+        # SAFETY / DUPLICATE CHECK
+        # --------------------------------------
 
-        if has_open_position():
+        if trading_state(
+            client
+        ):
 
             send_telegram(
 
                 "🛡 ATI SAFETY\n\n"
 
-                "Trade skipped.\n"
+                "Trade skipped.\n\n"
 
-                "An open order/position state "
-                "could not be safely cleared."
+                "An active order, OCO, "
+                "or BTC position already exists.\n"
+
+                "🚫 Duplicate trade prevented."
 
             )
 
             return
 
-        price = get_current_price()
-
-        quantity = calculate_btc_quantity(
-            price
-        )
-
-        print(
-            f"Calculated BTC quantity: "
-            f"{quantity}"
-        )
-
-        # =================================================
-        # IMPORTANT:
-        # This call is deliberately blocked until
-        # Tabdeal signing is verified.
-        # =================================================
+        # --------------------------------------
+        # BUY
+        # --------------------------------------
 
         if result["signal"] == "BUY":
 
-            create_market_order(
-                "BUY",
+            price = get_current_price(
+                trades
+            )
+
+            quantity = calculate_quantity(
+                price
+            )
+
+            print(
+                "BTC quantity:",
                 quantity
             )
 
-        elif result["signal"] == "SELL":
+            if not REAL_TRADING:
 
-            create_market_order(
-                "SELL",
+                print(
+                    "REAL TRADING DISABLED"
+                )
+
+                return
+
+            # ----------------------------------
+            # REAL MARKET BUY
+            # ----------------------------------
+
+            buy_result = place_buy(
+                client,
                 quantity
             )
+
+            print(
+                "BUY RESPONSE:",
+                buy_result
+            )
+
+            # ----------------------------------
+            # USE ACTUAL FILLED QUANTITY
+            # ----------------------------------
+
+            filled_quantity = quantity
+
+            if isinstance(
+                buy_result,
+                dict
+            ):
+
+                for key in [
+                    "executedQty",
+                    "executed_quantity",
+                    "filledQty"
+                ]:
+
+                    if key in buy_result:
+
+                        try:
+
+                            filled_quantity = Decimal(
+                                str(
+                                    buy_result[key]
+                                )
+                            )
+
+                        except Exception:
+                            pass
+
+            if filled_quantity <= 0:
+
+                raise RuntimeError(
+                    "BUY returned zero filled quantity"
+                )
+
+            # ----------------------------------
+            # OCO
+            # ----------------------------------
+
+            oco_result, sl, tp = place_oco(
+
+                client,
+
+                filled_quantity,
+
+                price
+
+            )
+
+            print(
+                "OCO RESPONSE:",
+                oco_result
+            )
+
+            send_telegram(
+
+                "✅ ATI REAL TRADE EXECUTED\n\n"
+
+                "₿ BTC/USDT\n"
+
+                "🟢 BUY\n"
+
+                f"💵 Size: "
+                f"{TRADE_USDT} USDT\n"
+
+                f"📦 BTC: "
+                f"{filled_quantity}\n"
+
+                f"💰 Entry: "
+                f"${price:,.2f}\n"
+
+                f"🛑 SL: "
+                f"${sl:,.2f}\n"
+
+                f"🎯 TP: "
+                f"${tp:,.2f}\n\n"
+
+                "🛡 OCO protection active."
+
+            )
+
+            return
+
+        # --------------------------------------
+        # SELL
+        # --------------------------------------
+
+        if result["signal"] == "SELL":
+
+            # Conservative rule:
+            # Never sell unknown/manual BTC holdings.
+            #
+            # SELL is only reported for now.
+            # The BUY position is protected by OCO.
+
+            send_telegram(
+
+                "🔴 ATI SELL SIGNAL\n\n"
+
+                "SELL detected.\n"
+
+                "🛡 Manual/unknown BTC holdings "
+                "will NOT be sold automatically.\n\n"
+
+                "Existing bot BUY positions "
+                "are protected by OCO."
+
+            )
+
+            return
 
     except Exception as e:
 
         error_message = (
 
-            "🚨 ATI BOT ERROR\n\n"
+            "🚨 ATI REAL BOT ERROR\n\n"
 
-            f"{type(e).__name__}: {e}"
+            f"{type(e).__name__}: {e}\n\n"
+
+            "🛡 NO FURTHER ORDER SENT"
 
         )
 
-        print(error_message)
+        print(
+            error_message
+        )
 
         send_telegram(
             error_message
