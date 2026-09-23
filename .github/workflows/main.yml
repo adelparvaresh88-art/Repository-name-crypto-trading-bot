@@ -1,94 +1,69 @@
 name: Run ATI Bot
 
 on:
-  workflow_dispatch:
+workflow_dispatch:
+schedule:
+- cron: "*/5 * * * *"
 
 jobs:
-  run-bot:
-    runs-on: ubuntu-latest
+run-bot:
+runs-on: ubuntu-latest
 
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+steps:
+  - name: Checkout repository
+    uses: actions/checkout@v4
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
+  - name: Setup Python
+    uses: actions/setup-python@v5
+    with:
+      python-version: "3.11"
+      cache: "pip"
 
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install requests
-          pip install --force-reinstall tabdeal-python==0.4.7
+  - name: Install dependencies
+    run: |
+      python -m pip install --upgrade pip
+      pip install -r requirements.txt
 
-      - name: Inspect Tabdeal SDK
-        run: |
-          echo "===== TABDEAL SDK INFORMATION ====="
-          python --version
+  - name: Check required secrets
+    env:
+      TABDEAL_API_KEY: ${{ secrets.TABDEAL_API_KEY }}
+      TABDEAL_API_SECRET: ${{ secrets.TABDEAL_API_SECRET }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+    run: |
+      echo "Checking secrets..."
 
-          echo ""
-          echo "===== INSTALLED PACKAGE ====="
-          python -m pip show tabdeal-python
+      if [ -z "$TABDEAL_API_KEY" ]; then
+        echo "❌ TABDEAL_API_KEY is missing"
+      else
+        echo "✅ TABDEAL_API_KEY is present"
+      fi
 
-          echo ""
-          echo "===== TABDEAL MODULE LOCATION ====="
-          python -c "import tabdeal; print(tabdeal.__file__)"
+      if [ -z "$TABDEAL_API_SECRET" ]; then
+        echo "❌ TABDEAL_API_SECRET is missing"
+      else
+        echo "✅ TABDEAL_API_SECRET is present"
+      fi
 
-          echo ""
-          echo "===== TABDEAL MODULE CONTENT ====="
-          python -c "import os, tabdeal; print(os.listdir(os.path.dirname(tabdeal.__file__)))"
+      if [ -z "$TELEGRAM_BOT_TOKEN" ]; then
+        echo "❌ TELEGRAM_BOT_TOKEN is missing"
+      else
+        echo "✅ TELEGRAM_BOT_TOKEN is present"
+      fi
 
-          echo ""
-          echo "===== AVAILABLE TABDEAL MODULES ====="
-          python -c "import pkgutil, tabdeal; print([m.name for m in pkgutil.iter_modules(tabdeal.__path__)])"
+      if [ -z "$TELEGRAM_CHAT_ID" ]; then
+        echo "❌ TELEGRAM_CHAT_ID is missing"
+      else
+        echo "✅ TELEGRAM_CHAT_ID is present"
+      fi
 
-      - name: Check Secrets
-        env:
-          TABDEAL_API_KEY: ${{ secrets.TABDEAL_API_KEY }}
-          TABDEAL_API_SECRET: ${{ secrets.TABDEAL_API_SECRET }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          LIVE_TRADING: ${{ secrets.LIVE_TRADING }}
-          ORDER_QTY: ${{ secrets.ORDER_QTY }}
-        run: |
-          echo "===== ATI BOT SECRET CHECK ====="
-
-          if [ -z "$TABDEAL_API_KEY" ]; then
-            echo "❌ TABDEAL_API_KEY: MISSING"
-          else
-            echo "✅ TABDEAL_API_KEY: PRESENT"
-          fi
-
-          if [ -z "$TABDEAL_API_SECRET" ]; then
-            echo "❌ TABDEAL_API_SECRET: MISSING"
-          else
-            echo "✅ TABDEAL_API_SECRET: PRESENT"
-          fi
-
-          if [ -z "$TELEGRAM_BOT_TOKEN" ]; then
-            echo "❌ TELEGRAM_BOT_TOKEN: MISSING"
-          else
-            echo "✅ TELEGRAM_BOT_TOKEN: PRESENT"
-          fi
-
-          if [ -z "$TELEGRAM_CHAT_ID" ]; then
-            echo "❌ TELEGRAM_CHAT_ID: MISSING"
-          else
-            echo "✅ TELEGRAM_CHAT_ID: PRESENT"
-          fi
-
-          echo "LIVE_TRADING: $LIVE_TRADING"
-          echo "ORDER_QTY: $ORDER_QTY"
-
-      - name: Run ATI Bot
-        env:
-          TABDEAL_API_KEY: ${{ secrets.TABDEAL_API_KEY }}
-          TABDEAL_API_SECRET: ${{ secrets.TABDEAL_API_SECRET }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          LIVE_TRADING: ${{ secrets.LIVE_TRADING }}
-          ORDER_QTY: ${{ secrets.ORDER_QTY }}
-        run: |
-          echo "===== START ATI BOT ====="
-          python main.py
+  - name: Run ATI Bot
+    env:
+      TABDEAL_API_KEY: ${{ secrets.TABDEAL_API_KEY }}
+      TABDEAL_API_SECRET: ${{ secrets.TABDEAL_API_SECRET }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+    run: |
+      python --version
+      echo "Starting ATI Bot..."
+      python main.py
