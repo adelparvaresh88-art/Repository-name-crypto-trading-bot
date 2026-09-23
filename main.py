@@ -5,15 +5,12 @@ from datetime import datetime, timezone
 from tabdeal.enums import OrderSides, OrderTypes
 from tabdeal.future import Future
 
-============================================================
 
-ATI CRYPTO BOT
-
-TABDEAL FUTURES
-
-BTCUSDT / 5 MIN
-
-============================================================
+# ============================================================
+# ATI CRYPTO BOT
+# TABDEAL FUTURES
+# BTCUSDT - 5 MIN CLOSED CANDLE
+# ============================================================
 
 SYMBOL = "BTCUSDT"
 TIMEFRAME = "5m"
@@ -33,369 +30,431 @@ TP_PERCENT = 0.010
 
 SIGNAL_THRESHOLD = 4
 
-============================================================
+BINANCE_KLINES = "https://api.binance.com/api/v3/klines"
 
-TELEGRAM
 
-============================================================
+# ============================================================
+# TELEGRAM
+# ============================================================
 
 def send_telegram(message):
 
-if not BOT_TOKEN:
-    print("❌ TELEGRAM_BOT_TOKEN missing")
-    return False
+    if not BOT_TOKEN:
+        print("❌ TELEGRAM_BOT_TOKEN missing")
+        return False
 
-if not CHAT_ID:
-    print("❌ TELEGRAM_CHAT_ID missing")
-    return False
+    if not CHAT_ID:
+        print("❌ TELEGRAM_CHAT_ID missing")
+        return False
 
-try:
+    try:
 
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
 
-    response = requests.post(
-        url,
-        data={
-            "chat_id": CHAT_ID,
-            "text": message
-        },
+        response = requests.post(
+            url,
+            data={
+                "chat_id": CHAT_ID,
+                "text": message
+            },
+            timeout=20
+        )
+
+        print("Telegram:", response.status_code)
+
+        if response.status_code == 200:
+
+            data = response.json()
+
+            if data.get("ok") is True:
+                print("✅ TELEGRAM SEND OK")
+                return True
+
+        print("❌ TELEGRAM SEND FAILED")
+        print(response.text)
+
+        return False
+
+    except Exception as e:
+
+        print("❌ TELEGRAM ERROR:", e)
+        return False
+
+
+# ============================================================
+# MARKET DATA
+# ============================================================
+
+def get_closed_candles():
+
+    params = {
+        "symbol": SYMBOL,
+        "interval": TIMEFRAME,
+        "limit": 30
+    }
+
+    response = requests.get(
+        BINANCE_KLINES,
+        params=params,
         timeout=20
     )
 
-    print("Telegram HTTP:", response.status_code)
-    print("Telegram response:", response.text)
+    response.raise_for_status()
 
-    if response.status_code == 200:
+    candles = response.json()
 
-        data = response.json()
+    if len(candles) < 10:
+        raise Exception("Not enough candles")
 
-        if data.get("ok") is True:
-            print("✅ TELEGRAM SEND: OK")
-            return True
+    # آخرین کندل ممکن است هنوز باز باشد.
+    # بنابراین آن را حذف می‌کنیم.
+    closed = candles[:-1]
 
-    print("❌ TELEGRAM SEND FAILED")
-    return False
+    return closed
 
-except Exception as e:
 
-    print("❌ TELEGRAM ERROR:", e)
-    return False
+# ============================================================
+# SIGNAL ENGINE
+# ============================================================
 
-============================================================
+def calculate_signal():
 
-MARKET DATA
+    candles = get_closed_candles()
 
-============================================================
+    c1 = candles[-1]
+    c2 = candles[-2]
+    c3 = candles[-3]
+    c4 = candles[-4]
 
-def get_price():
+    o1 = float(c1[1])
+    h1 = float(c1[2])
+    l1 = float(c1[3])
+    close1 = float(c1[4])
 
-url = "https://api1.tabdeal.org/r/api/v1/ticker/price"
+    o2 = float(c2[1])
+    h2 = float(c2[2])
+    l2 = float(c2[3])
+    close2 = float(c2[4])
 
-response = requests.get(
-    url,
-    params={"symbol": SYMBOL},
-    timeout=20
-)
+    close3 = float(c3[4])
+    close4 = float(c4[4])
 
-response.raise_for_status()
+    buy_score = 0
+    sell_score = 0
 
-data = response.json()
+    # --------------------------------------------------------
+    # 1. آخرین کندل
+    # --------------------------------------------------------
 
-if isinstance(data, list):
+    if close1 > o1:
+        buy_score += 1
 
-    for item in data:
+    if close1 < o1:
+        sell_score += 1
 
-        if item.get("symbol") == SYMBOL:
-            return float(item["price"])
+    # --------------------------------------------------------
+    # 2. مقایسه با کندل قبلی
+    # --------------------------------------------------------
 
-if isinstance(data, dict):
+    if close1 > close2:
+        buy_score += 1
 
-    if "price" in data:
-        return float(data["price"])
+    if close1 < close2:
+        sell_score += 1
 
-raise Exception(f"Price not found: {data}")
+    # --------------------------------------------------------
+    # 3. ساختار دو کندل
+    # --------------------------------------------------------
 
-============================================================
+    if h1 > h2 and l1 > l2:
+        buy_score += 1
 
-SIMPLE SIGNAL ENGINE
+    if h1 < h2 and l1 < l2:
+        sell_score += 1
 
-============================================================
+    # --------------------------------------------------------
+    # 4. مومنتوم کوتاه
+    # --------------------------------------------------------
 
-def get_signal():
+    if close1 > close3:
+        buy_score += 1
 
-"""
-این بخش فعلاً برای اتصال امن ربات است.
-سیگنال واقعی مرحله بعدی می‌تواند همان منطق
-5/5 فعلی ATI باشد.
-"""
+    if close1 < close3:
+        sell_score += 1
 
-try:
+    # --------------------------------------------------------
+    # 5. روند کوتاه
+    # --------------------------------------------------------
 
-    price = get_price()
+    if close1 > close4:
+        buy_score += 1
 
-    # ----------------------------------------------------
-    # فعلاً هیچ معامله‌ای بدون سیگنال تأییدشده انجام نمی‌شود.
-    # ----------------------------------------------------
+    if close1 < close4:
+        sell_score += 1
+
+    # --------------------------------------------------------
+    # STRONG SIGNAL
+    # --------------------------------------------------------
+
+    signal = "NO SIGNAL"
+
+    if buy_score >= SIGNAL_THRESHOLD and buy_score > sell_score:
+        signal = "BUY"
+
+    elif sell_score >= SIGNAL_THRESHOLD and sell_score > buy_score:
+        signal = "SELL"
 
     return {
-        "signal": "NO SIGNAL",
-        "price": price,
-        "buy_score": 0,
-        "sell_score": 0
+        "signal": signal,
+        "buy_score": buy_score,
+        "sell_score": sell_score,
+        "price": close1,
+        "candle_time": c1[0]
     }
 
-except Exception as e:
 
-    raise Exception(f"Market data error: {e}")
+# ============================================================
+# TABDEAL FUTURES CLIENT
+# ============================================================
 
-============================================================
+def get_tabdeal_client():
 
-TABDEAL FUTURES
+    if not API_KEY:
+        raise Exception("TABDEAL_API_KEY is missing")
 
-============================================================
+    if not API_SECRET:
+        raise Exception("TABDEAL_API_SECRET is missing")
 
-def create_future_client():
+    return Future(API_KEY, API_SECRET)
 
-if not API_KEY:
-    raise Exception("TABDEAL_API_KEY is missing")
 
-if not API_SECRET:
-    raise Exception("TABDEAL_API_SECRET is missing")
+# ============================================================
+# FUTURES ORDER
+# ============================================================
 
-return Future(API_KEY, API_SECRET)
+def send_market_order(signal):
 
-============================================================
+    client = get_tabdeal_client()
 
-REAL FUTURES MARKET ORDER
+    if signal == "BUY":
+        side = OrderSides.BUY
 
-============================================================
+    elif signal == "SELL":
+        side = OrderSides.SELL
 
-def send_market_order(side):
+    else:
+        raise Exception("Invalid signal")
 
-client = create_future_client()
-
-if side == "BUY":
-    order_side = OrderSides.BUY
-
-elif side == "SELL":
-    order_side = OrderSides.SELL
-
-else:
-    raise Exception(f"Invalid order side: {side}")
-
-print(
-    f"🚨 LIVE ORDER REQUEST: "
-    f"{side} {SYMBOL} quantity={ORDER_QTY}"
-)
-
-order = client.new_order(
-    symbol=SYMBOL,
-    side=order_side,
-    type=OrderTypes.MARKET,
-    quantity=ORDER_QTY
-)
-
-return order
-
-============================================================
-
-SIGNAL MESSAGE
-
-============================================================
-
-def build_signal_message(signal_data):
-
-price = signal_data["price"]
-
-signal = signal_data["signal"]
-
-buy_score = signal_data["buy_score"]
-
-sell_score = signal_data["sell_score"]
-
-candle_time = datetime.now(timezone.utc).strftime(
-    "%Y-%m-%d %H:%M UTC"
-)
-
-message = (
-    "⚡ ATI CRYPTO BOT\n\n"
-    "₿ BTC/USDT\n"
-    f"⏱ Timeframe: {TIMEFRAME}\n"
-    "✅ CLOSED CANDLE\n"
-    "💪 STRONG SIGNAL FILTER\n\n"
-    f"📊 SIGNAL: {signal}\n"
-    f"📈 BUY SCORE: {buy_score}/5\n"
-    f"📉 SELL SCORE: {sell_score}/5\n\n"
-    f"🕐 Time: {candle_time}\n"
-    f"💰 Price: ${price:,.2f}\n"
-)
-
-if signal == "BUY":
-
-    sl = price * (1 - SL_PERCENT)
-    tp = price * (1 + TP_PERCENT)
-
-    message += (
-        "\n🟢 BUY SIGNAL\n"
-        f"🛑 SL: ${sl:,.2f}\n"
-        f"🎯 TP: ${tp:,.2f}\n"
+    print(
+        f"🚨 ORDER: {signal} "
+        f"{SYMBOL} "
+        f"QTY={ORDER_QTY}"
     )
 
-elif signal == "SELL":
-
-    sl = price * (1 + SL_PERCENT)
-    tp = price * (1 - TP_PERCENT)
-
-    message += (
-        "\n🔴 SELL SIGNAL\n"
-        f"🛑 SL: ${sl:,.2f}\n"
-        f"🎯 TP: ${tp:,.2f}\n"
+    order = client.new_order(
+        symbol=SYMBOL,
+        side=side,
+        type=OrderTypes.MARKET,
+        quantity=ORDER_QTY
     )
 
-else:
+    return order
 
-    message += "\n⏳ NO TRADE\n"
 
-return message
+# ============================================================
+# MESSAGE
+# ============================================================
 
-============================================================
+def build_message(data):
 
-MAIN
+    signal = data["signal"]
+    buy = data["buy_score"]
+    sell = data["sell_score"]
+    price = data["price"]
 
-============================================================
+    candle_dt = datetime.fromtimestamp(
+        data["candle_time"] / 1000,
+        timezone.utc
+    )
+
+    message = (
+        "⚡ ATI CRYPTO BOT\n\n"
+        "₿ BTC/USDT\n"
+        "⏱ Timeframe: 5m\n"
+        "✅ CLOSED CANDLE\n"
+        "💪 STRONG SIGNAL FILTER\n\n"
+        f"📊 SIGNAL: {signal}\n"
+        f"📈 BUY SCORE: {buy}/5\n"
+        f"📉 SELL SCORE: {sell}/5\n\n"
+        f"🕐 Candle: {candle_dt.strftime('%H:%M UTC')}\n"
+        f"💰 Price: ${price:,.2f}\n"
+    )
+
+    if signal == "BUY":
+
+        sl = price * (1 - SL_PERCENT)
+        tp = price * (1 + TP_PERCENT)
+
+        message += (
+            "\n🟢 BUY SIGNAL\n"
+            f"🛑 SL: ${sl:,.2f}\n"
+            f"🎯 TP: ${tp:,.2f}\n"
+        )
+
+    elif signal == "SELL":
+
+        sl = price * (1 + SL_PERCENT)
+        tp = price * (1 - TP_PERCENT)
+
+        message += (
+            "\n🔴 SELL SIGNAL\n"
+            f"🛑 SL: ${sl:,.2f}\n"
+            f"🎯 TP: ${tp:,.2f}\n"
+        )
+
+    else:
+
+        message += "\n⏳ NO TRADE\n"
+
+    return message
+
+
+# ============================================================
+# MAIN
+# ============================================================
 
 def main():
 
-print("======================================")
-print("ATI CRYPTO BOT")
-print("TABDEAL FUTURES")
-print("BTCUSDT / 5m")
-print("======================================")
+    print("================================")
+    print("ATI CRYPTO BOT")
+    print("TABDEAL FUTURES")
+    print("BTCUSDT / 5m")
+    print("================================")
 
-print("LIVE_TRADING:", LIVE_TRADING)
-print("ORDER_QTY:", ORDER_QTY)
+    print("LIVE_TRADING:", LIVE_TRADING)
+    print("ORDER_QTY:", ORDER_QTY)
 
-# --------------------------------------------------------
-# CHECK TELEGRAM
-# --------------------------------------------------------
+    # --------------------------------------------------------
+    # API CHECK
+    # --------------------------------------------------------
 
-if not BOT_TOKEN:
-    print("❌ TELEGRAM_BOT_TOKEN missing")
+    if not API_KEY:
 
-if not CHAT_ID:
-    print("❌ TELEGRAM_CHAT_ID missing")
+        send_telegram(
+            "🛡 ATI SAFETY\n\n"
+            "❌ TABDEAL_API_KEY is missing.\n"
+            "No order was sent."
+        )
 
-# --------------------------------------------------------
-# CHECK API
-# --------------------------------------------------------
+        return
 
-if not API_KEY:
-    send_telegram(
-        "🛡 ATI SAFETY\n\n"
-        "❌ TABDEAL_API_KEY is missing.\n"
-        "No order was sent."
-    )
-    return
+    if not API_SECRET:
 
-if not API_SECRET:
-    send_telegram(
-        "🛡 ATI SAFETY\n\n"
-        "❌ TABDEAL_API_SECRET is missing.\n"
-        "No order was sent."
-    )
-    return
+        send_telegram(
+            "🛡 ATI SAFETY\n\n"
+            "❌ TABDEAL_API_SECRET is missing.\n"
+            "No order was sent."
+        )
 
-# --------------------------------------------------------
-# MARKET
-# --------------------------------------------------------
+        return
 
-try:
+    # --------------------------------------------------------
+    # SIGNAL
+    # --------------------------------------------------------
 
-    signal_data = get_signal()
+    try:
 
-except Exception as e:
+        data = calculate_signal()
 
-    error = (
-        "🛡 ATI SAFETY\n\n"
-        "❌ Market data error.\n\n"
-        f"{str(e)[:1000]}"
-    )
+        print("SIGNAL:", data["signal"])
+        print("BUY:", data["buy_score"])
+        print("SELL:", data["sell_score"])
+        print("PRICE:", data["price"])
 
-    print(error)
+    except Exception as e:
 
-    send_telegram(error)
+        error = (
+            "🛡 ATI SAFETY\n\n"
+            "❌ SIGNAL ENGINE ERROR\n\n"
+            f"{str(e)[:1500]}"
+        )
 
-    return
+        print(error)
+        send_telegram(error)
 
-# --------------------------------------------------------
-# TELEGRAM SIGNAL
-# --------------------------------------------------------
+        return
 
-message = build_signal_message(signal_data)
+    # --------------------------------------------------------
+    # TELEGRAM
+    # --------------------------------------------------------
 
-send_telegram(message)
+    send_telegram(build_message(data))
 
-signal = signal_data["signal"]
+    signal = data["signal"]
 
-# --------------------------------------------------------
-# NO SIGNAL
-# --------------------------------------------------------
+    # --------------------------------------------------------
+    # NO SIGNAL
+    # --------------------------------------------------------
 
-if signal not in ("BUY", "SELL"):
+    if signal == "NO SIGNAL":
 
-    print("⏳ No strong signal. No order.")
+        print("⏳ NO STRONG SIGNAL")
+        return
 
-    return
+    # --------------------------------------------------------
+    # PAPER MODE
+    # --------------------------------------------------------
 
-# --------------------------------------------------------
-# LIVE TRADING SAFETY
-# --------------------------------------------------------
+    if not LIVE_TRADING:
 
-if not LIVE_TRADING:
+        send_telegram(
+            "🧪 PAPER / TEST MODE\n\n"
+            f"Signal: {signal}\n"
+            f"Buy Score: {data['buy_score']}/5\n"
+            f"Sell Score: {data['sell_score']}/5\n\n"
+            "❌ REAL ORDER NOT SENT\n"
+            "LIVE_TRADING=FALSE"
+        )
 
-    send_telegram(
-        "🧪 PAPER/TEST MODE\n\n"
-        f"Signal: {signal}\n"
-        "❌ REAL ORDER NOT SENT\n\n"
-        "LIVE_TRADING is FALSE."
-    )
+        print("🧪 PAPER MODE")
+        return
 
-    print("🧪 TEST MODE - NO REAL ORDER")
+    # --------------------------------------------------------
+    # REAL ORDER
+    # --------------------------------------------------------
 
-    return
+    try:
 
-# --------------------------------------------------------
-# REAL ORDER
-# --------------------------------------------------------
+        order = send_market_order(signal)
 
-try:
+        print("ORDER RESPONSE:")
+        print(order)
 
-    order = send_market_order(signal)
+        send_telegram(
+            "🚨 ATI LIVE TRADE\n\n"
+            "₿ BTC/USDT\n"
+            f"📊 SIDE: {signal}\n"
+            f"💵 QTY: {ORDER_QTY}\n\n"
+            "✅ MARKET ORDER SENT.\n\n"
+            f"📡 Response:\n{str(order)[:2000]}"
+        )
 
-    print("ORDER RESPONSE:")
-    print(order)
+    except Exception as e:
 
-    send_telegram(
-        "🚨 ATI LIVE TRADE\n\n"
-        f"₿ {SYMBOL}\n"
-        f"📊 SIDE: {signal}\n"
-        f"💰 QTY: {ORDER_QTY}\n\n"
-        "✅ MARKET ORDER SENT TO TABDEAL.\n\n"
-        f"📡 RESPONSE:\n{str(order)[:2500]}"
-    )
+        error = (
+            "🛡 ATI SAFETY\n\n"
+            "❌ ORDER FAILED\n\n"
+            f"Reason:\n{str(e)[:1800]}\n\n"
+            "⚠️ Execution was NOT confirmed."
+        )
 
-except Exception as e:
+        print(error)
+        send_telegram(error)
 
-    error = (
-        "🛡 ATI SAFETY\n\n"
-        "❌ REAL ORDER FAILED.\n\n"
-        f"Reason:\n{str(e)[:2000]}\n\n"
-        "⚠️ NO CONFIRMATION OF EXECUTION."
-    )
 
-    print(error)
+# ============================================================
+# START
+# ============================================================
 
-    send_telegram(error)
-
-if name == "main":
-main()
+if __name__ == "__main__":
+    main()
