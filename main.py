@@ -1,14 +1,13 @@
 import os
+import json
 import requests
 from datetime import datetime, timezone
 
 # ============================================================
-# ATI CRYPTO BOT V14
-# TABDEAL PUBLIC API
-# 5M CLOSED CANDLE
-# PRECISION SIGNAL ENGINE
+# ATI CRYPTO BOT V15
+# TABDEAL BTCUSDT
+# PERSISTENT 5M CANDLE HISTORY
 # PAPER / TEST ONLY
-# REAL TRADING DISABLED
 # ============================================================
 
 BASE_URL = "https://api1.tabdeal.org"
@@ -19,7 +18,10 @@ TIMEFRAME_MINUTES = 5
 TRADES_LIMIT = 1000
 TIMEOUT = 15
 
-# Strong signal threshold
+HISTORY_FILE = "active_signal.json"
+
+MAX_HISTORY = 300
+
 MIN_SCORE = 4
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -46,6 +48,7 @@ def send_telegram(message):
     )
 
     try:
+
         response = requests.post(
             url,
             json={
@@ -63,28 +66,27 @@ def send_telegram(message):
         return False
 
     except Exception as e:
+
         print("❌ Telegram exception:", e)
         return False
 
 
 # ============================================================
-# TABDEAL CURRENT PRICE
+# CURRENT PRICE
 # ============================================================
 
 def get_current_price():
 
     url = f"{BASE_URL}/r/api/v1/depth"
 
-    params = {
-        "symbol": SYMBOL,
-        "limit": 5
-    }
-
     try:
 
         response = requests.get(
             url,
-            params=params,
+            params={
+                "symbol": SYMBOL,
+                "limit": 5
+            },
             timeout=TIMEOUT
         )
 
@@ -110,23 +112,21 @@ def get_current_price():
 
 
 # ============================================================
-# TABDEAL RECENT TRADES
+# RECENT TRADES
 # ============================================================
 
 def get_trades():
 
     url = f"{BASE_URL}/r/api/v1/trades"
 
-    params = {
-        "symbol": SYMBOL,
-        "limit": TRADES_LIMIT
-    }
-
     try:
 
         response = requests.get(
             url,
-            params=params,
+            params={
+                "symbol": SYMBOL,
+                "limit": TRADES_LIMIT
+            },
             timeout=TIMEOUT
         )
 
@@ -146,7 +146,7 @@ def get_trades():
 
 
 # ============================================================
-# BUILD 5M CANDLES
+# BUILD 5M CANDLES FROM TRADES
 # ============================================================
 
 def build_5m_candles(trades):
@@ -160,7 +160,7 @@ def build_5m_candles(trades):
         try:
 
             price = float(trade["price"])
-            quantity = float(trade.get("qty", 0))
+            qty = float(trade.get("qty", 0))
             timestamp = int(trade["time"])
 
         except (KeyError, TypeError, ValueError):
@@ -179,7 +179,7 @@ def build_5m_candles(trades):
                 "high": price,
                 "low": price,
                 "close": price,
-                "volume": quantity
+                "volume": qty
             }
 
         else:
@@ -198,25 +198,143 @@ def build_5m_candles(trades):
 
             candle["close"] = price
 
-            candle["volume"] += quantity
+            candle["volume"] += qty
 
     result = list(candles.values())
 
     result.sort(
-        key=lambda candle: candle["time"]
+        key=lambda x: x["time"]
     )
 
     return result
 
 
 # ============================================================
-# CLOSED CANDLES
+# HISTORY LOAD
+# ============================================================
+
+def load_history():
+
+    if not os.path.exists(HISTORY_FILE):
+
+        return []
+
+    try:
+
+        with open(
+            HISTORY_FILE,
+            "r",
+            encoding="utf-8"
+        ) as file:
+
+            data = json.load(file)
+
+        if isinstance(data, list):
+            return data
+
+        return []
+
+    except Exception as e:
+
+        print("⚠️ History read error:", e)
+        return []
+
+
+# ============================================================
+# HISTORY SAVE
+# ============================================================
+
+def save_history(history):
+
+    history = sorted(
+        history,
+        key=lambda x: x["time"]
+    )
+
+    # Remove duplicate candle timestamps
+    unique = {}
+
+    for candle in history:
+        unique[str(candle["time"])] = candle
+
+    history = list(unique.values())
+
+    history.sort(
+        key=lambda x: x["time"]
+    )
+
+    # Keep latest history
+    history = history[-MAX_HISTORY:]
+
+    try:
+
+        with open(
+            HISTORY_FILE,
+            "w",
+            encoding="utf-8"
+        ) as file:
+
+            json.dump(
+                history,
+                file,
+                indent=2
+            )
+
+        print(
+            f"✅ History saved: {len(history)} candles"
+        )
+
+    except Exception as e:
+
+        print("❌ History save error:", e)
+
+
+# ============================================================
+# MERGE NEW CANDLES INTO HISTORY
+# ============================================================
+
+def merge_history(history, new_candles):
+
+    merged = {}
+
+    # Existing history
+    for candle in history:
+
+        try:
+            key = int(candle["time"])
+            merged[key] = candle
+
+        except Exception:
+            continue
+
+    # New data
+    for candle in new_candles:
+
+        try:
+            key = int(candle["time"])
+            merged[key] = candle
+
+        except Exception:
+            continue
+
+    result = list(merged.values())
+
+    result.sort(
+        key=lambda x: x["time"]
+    )
+
+    return result[-MAX_HISTORY:]
+
+
+# ============================================================
+# REMOVE CURRENT OPEN CANDLE
 # ============================================================
 
 def get_closed_candles(candles):
 
     now_ms = int(
-        datetime.now(timezone.utc).timestamp() * 1000
+        datetime.now(timezone.utc).timestamp()
+        * 1000
     )
 
     bucket_size = TIMEFRAME_MINUTES * 60 * 1000
@@ -228,18 +346,18 @@ def get_closed_candles(candles):
     return [
         candle
         for candle in candles
-        if candle["time"] < current_bucket
+        if int(candle["time"]) < current_bucket
     ]
 
 
 # ============================================================
-# CANDLE FUNCTIONS
+# CANDLE HELPERS
 # ============================================================
 
 def candle_range(c):
 
     return max(
-        c["high"] - c["low"],
+        float(c["high"]) - float(c["low"]),
         0.00000001
     )
 
@@ -247,48 +365,50 @@ def candle_range(c):
 def candle_body(c):
 
     return abs(
-        c["close"] - c["open"]
+        float(c["close"])
+        - float(c["open"])
     )
 
 
 def body_ratio(c):
 
-    return (
-        candle_body(c)
-        / candle_range(c)
-    )
+    return candle_body(c) / candle_range(c)
+
+
+def bullish(c):
+
+    return float(c["close"]) > float(c["open"])
+
+
+def bearish(c):
+
+    return float(c["close"]) < float(c["open"])
 
 
 def upper_wick(c):
 
     return (
-        c["high"]
-        - max(c["open"], c["close"])
+        float(c["high"])
+        - max(
+            float(c["open"]),
+            float(c["close"])
+        )
     )
 
 
 def lower_wick(c):
 
     return (
-        min(c["open"], c["close"])
-        - c["low"]
+        min(
+            float(c["open"]),
+            float(c["close"])
+        )
+        - float(c["low"])
     )
 
 
-def is_bullish(c):
-
-    return c["close"] > c["open"]
-
-
-def is_bearish(c):
-
-    return c["close"] < c["open"]
-
-
 # ============================================================
-# SIMPLE MOVING AVERAGE
-# Used internally only for trend calculation.
-# No indicator is displayed on Telegram.
+# SMA
 # ============================================================
 
 def sma(candles, length):
@@ -297,7 +417,7 @@ def sma(candles, length):
         return None
 
     values = [
-        c["close"]
+        float(c["close"])
         for c in candles[-length:]
     ]
 
@@ -305,19 +425,18 @@ def sma(candles, length):
 
 
 # ============================================================
-# V14 PRECISION SIGNAL ENGINE
+# V15 SIGNAL ENGINE
 # ============================================================
 
 def calculate_signal(candles):
 
-    if len(candles) < 12:
+    if len(candles) < 20:
 
         return {
             "signal": "NO SIGNAL",
             "buy": 0,
             "sell": 0,
-            "trend": "UNKNOWN",
-            "reason": "Not enough candles"
+            "trend": "WAITING"
         }
 
     c1 = candles[-1]
@@ -335,49 +454,56 @@ def calculate_signal(candles):
 
     sma5 = sma(candles, 5)
     sma10 = sma(candles, 10)
+    sma20 = sma(candles, 20)
 
     trend = "SIDEWAYS"
 
-    if sma5 is not None and sma10 is not None:
+    if (
+        sma5 is not None
+        and sma10 is not None
+        and sma20 is not None
+    ):
 
         if (
-            c1["close"] > sma5
+            float(c1["close"]) > sma5
             and sma5 > sma10
+            and sma10 > sma20
         ):
+
             buy += 1
-            trend = "UP"
+            trend = "UPTREND"
 
         elif (
-            c1["close"] < sma5
+            float(c1["close"]) < sma5
             and sma5 < sma10
+            and sma10 < sma20
         ):
+
             sell += 1
-            trend = "DOWN"
+            trend = "DOWNTREND"
 
     # ========================================================
-    # 2. PRICE STRUCTURE
-    # Higher High + Higher Low
-    # Lower High + Lower Low
+    # 2. STRUCTURE
     # ========================================================
 
     higher_high = (
-        c1["high"] > c2["high"]
-        and c2["high"] >= c3["high"]
+        float(c1["high"]) > float(c2["high"])
+        and float(c2["high"]) >= float(c3["high"])
     )
 
     higher_low = (
-        c1["low"] > c2["low"]
-        and c2["low"] >= c3["low"]
+        float(c1["low"]) > float(c2["low"])
+        and float(c2["low"]) >= float(c3["low"])
     )
 
     lower_high = (
-        c1["high"] < c2["high"]
-        and c2["high"] <= c3["high"]
+        float(c1["high"]) < float(c2["high"])
+        and float(c2["high"]) <= float(c3["high"])
     )
 
     lower_low = (
-        c1["low"] < c2["low"]
-        and c2["low"] <= c3["low"]
+        float(c1["low"]) < float(c2["low"])
+        and float(c2["low"]) <= float(c3["low"])
     )
 
     if higher_high and higher_low:
@@ -390,22 +516,18 @@ def calculate_signal(candles):
     # 3. MOMENTUM
     # ========================================================
 
-    bullish_momentum = (
-        c1["close"] > c2["close"]
-        and c2["close"] > c3["close"]
-        and c3["close"] >= c4["close"]
-    )
-
-    bearish_momentum = (
-        c1["close"] < c2["close"]
-        and c2["close"] < c3["close"]
-        and c3["close"] <= c4["close"]
-    )
-
-    if bullish_momentum:
+    if (
+        float(c1["close"])
+        > float(c2["close"])
+        > float(c3["close"])
+    ):
         buy += 1
 
-    if bearish_momentum:
+    if (
+        float(c1["close"])
+        < float(c2["close"])
+        < float(c3["close"])
+    ):
         sell += 1
 
     # ========================================================
@@ -413,97 +535,84 @@ def calculate_signal(candles):
     # ========================================================
 
     previous_high = max(
-        c2["high"],
-        c3["high"],
-        c4["high"],
-        c5["high"]
+        float(c2["high"]),
+        float(c3["high"]),
+        float(c4["high"]),
+        float(c5["high"])
     )
 
     previous_low = min(
-        c2["low"],
-        c3["low"],
-        c4["low"],
-        c5["low"]
+        float(c2["low"]),
+        float(c3["low"]),
+        float(c4["low"]),
+        float(c5["low"])
     )
 
-    bullish_breakout = (
-        c1["close"] > previous_high
-    )
-
-    bearish_breakout = (
-        c1["close"] < previous_low
-    )
-
-    if bullish_breakout:
+    if float(c1["close"]) > previous_high:
         buy += 1
 
-    if bearish_breakout:
+    if float(c1["close"]) < previous_low:
         sell += 1
 
     # ========================================================
-    # 5. CANDLE POWER
+    # 5. CANDLE STRENGTH
     # ========================================================
 
     ratio = body_ratio(c1)
 
-    bullish_power = (
-        is_bullish(c1)
+    if (
+        bullish(c1)
         and ratio >= 0.60
-        and lower_wick(c1) <= candle_body(c1) * 0.80
-    )
-
-    bearish_power = (
-        is_bearish(c1)
-        and ratio >= 0.60
-        and upper_wick(c1) <= candle_body(c1) * 0.80
-    )
-
-    if bullish_power:
+        and lower_wick(c1)
+        <= candle_body(c1) * 0.80
+    ):
         buy += 1
 
-    if bearish_power:
+    if (
+        bearish(c1)
+        and ratio >= 0.60
+        and upper_wick(c1)
+        <= candle_body(c1) * 0.80
+    ):
         sell += 1
 
     # ========================================================
-    # FINAL DECISION
+    # FINAL FILTER
     # ========================================================
 
     signal = "NO SIGNAL"
 
     if buy >= MIN_SCORE and buy > sell:
-
         signal = "BUY"
 
     elif sell >= MIN_SCORE and sell > buy:
-
         signal = "SELL"
 
     return {
         "signal": signal,
         "buy": buy,
         "sell": sell,
-        "trend": trend,
-        "ratio": ratio
+        "trend": trend
     }
 
 
 # ============================================================
-# STOP LOSS / TAKE PROFIT
+# SL / TP
 # ============================================================
 
 def calculate_sl_tp(signal, candles):
 
-    entry = candles[-1]["close"]
+    entry = float(candles[-1]["close"])
 
     recent = candles[-5:]
 
     recent_high = max(
-        c["high"]
+        float(c["high"])
         for c in recent
     )
 
     recent_low = min(
-        c["low"]
+        float(c["low"])
         for c in recent
     )
 
@@ -514,17 +623,10 @@ def calculate_sl_tp(signal, candles):
         if risk <= 0:
             risk = entry * 0.004
 
-        stop_loss = recent_low
+        sl = recent_low
+        tp = entry + risk * 2
 
-        take_profit = (
-            entry + risk * 2.0
-        )
-
-        return (
-            entry,
-            stop_loss,
-            take_profit
-        )
+        return entry, sl, tp
 
     if signal == "SELL":
 
@@ -533,23 +635,12 @@ def calculate_sl_tp(signal, candles):
         if risk <= 0:
             risk = entry * 0.004
 
-        stop_loss = recent_high
+        sl = recent_high
+        tp = entry - risk * 2
 
-        take_profit = (
-            entry - risk * 2.0
-        )
+        return entry, sl, tp
 
-        return (
-            entry,
-            stop_loss,
-            take_profit
-        )
-
-    return (
-        entry,
-        None,
-        None
-    )
+    return entry, None, None
 
 
 # ============================================================
@@ -571,8 +662,8 @@ def fmt(value):
 def main():
 
     print("=" * 60)
-    print("ATI CRYPTO BOT V14")
-    print("PRECISION 5M SIGNAL ENGINE")
+    print("ATI CRYPTO BOT V15")
+    print("PERSISTENT 5M HISTORY")
     print("PAPER / TEST")
     print("=" * 60)
 
@@ -592,8 +683,6 @@ def main():
 Tabdeal price API failed.
 
 🛑 NO TRADE
-
-🛡 PAPER / TEST
 """
         )
 
@@ -615,33 +704,63 @@ Tabdeal price API failed.
 Tabdeal trades API failed.
 
 🛑 NO TRADE
-
-🛡 PAPER / TEST
 """
         )
 
         return
 
     # --------------------------------------------------------
-    # CANDLES
+    # BUILD NEW CANDLES
     # --------------------------------------------------------
 
-    candles = build_5m_candles(
-        trades
+    new_candles = build_5m_candles(trades)
+
+    # --------------------------------------------------------
+    # LOAD OLD HISTORY
+    # --------------------------------------------------------
+
+    history = load_history()
+
+    print(
+        "Old history:",
+        len(history)
     )
+
+    # --------------------------------------------------------
+    # MERGE
+    # --------------------------------------------------------
+
+    history = merge_history(
+        history,
+        new_candles
+    )
+
+    # --------------------------------------------------------
+    # CLOSED ONLY
+    # --------------------------------------------------------
 
     closed = get_closed_candles(
-        candles
+        history
     )
 
-    print("Trades:", len(trades))
-    print("Candles:", len(candles))
-    print("Closed:", len(closed))
+    # --------------------------------------------------------
+    # SAVE
+    # --------------------------------------------------------
 
-    if len(closed) < 12:
+    save_history(closed)
 
-        send_telegram(
-            f"""⚡ ATI CRYPTO BOT V14
+    print(
+        "Closed history:",
+        len(closed)
+    )
+
+    # --------------------------------------------------------
+    # WAIT FOR HISTORY
+    # --------------------------------------------------------
+
+    if len(closed) < 20:
+
+        message = f"""⚡ ATI CRYPTO BOT V15
 
 ₿ BTC/USDT
 ⏱ Timeframe: 5m
@@ -651,14 +770,18 @@ Tabdeal trades API failed.
 
 💰 Current: {fmt(current_price)}
 
-📊 CLOSED CANDLES: {len(closed)}
+📚 STORED 5M CANDLES:
+{len(closed)}/20
 
-⏳ WAITING FOR MORE DATA
+⏳ BUILDING HISTORY
 
 🛡 MODE: PAPER / TEST
 🚫 REAL TRADING DISABLED
+
+📡 TELEGRAM: OK
 """
-        )
+
+        send_telegram(message)
 
         return
 
@@ -671,16 +794,18 @@ Tabdeal trades API failed.
     )
 
     signal = result["signal"]
-    buy_score = result["buy"]
-    sell_score = result["sell"]
+    buy = result["buy"]
+    sell = result["sell"]
     trend = result["trend"]
 
     last = closed[-1]
 
     candle_time = datetime.fromtimestamp(
-        last["time"] / 1000,
+        int(last["time"]) / 1000,
         timezone.utc
-    ).strftime("%Y-%m-%d %H:%M UTC")
+    ).strftime(
+        "%Y-%m-%d %H:%M UTC"
+    )
 
     entry, sl, tp = calculate_sl_tp(
         signal,
@@ -691,25 +816,27 @@ Tabdeal trades API failed.
     # MESSAGE
     # --------------------------------------------------------
 
-    message = f"""⚡ ATI CRYPTO BOT V14
+    message = f"""⚡ ATI CRYPTO BOT V15
 
 ₿ BTC/USDT
 ⏱ Timeframe: 5m
 ✅ CLOSED CANDLE
-🧠 PRECISION SIGNAL ENGINE
+🧠 PERSISTENT HISTORY ENGINE
 
 📡 TABDEAL API: OK
 📊 TRADES API: OK
 
 🕐 Candle: {candle_time}
 
+📚 Stored Candles: {len(closed)}
+
 💰 Current: {fmt(current_price)}
 💵 Candle Close: {fmt(entry)}
 
 📊 TREND: {trend}
 
-📈 BUY SCORE: {buy_score}/5
-📉 SELL SCORE: {sell_score}/5
+📈 BUY SCORE: {buy}/5
+📉 SELL SCORE: {sell}/5
 
 """
 
