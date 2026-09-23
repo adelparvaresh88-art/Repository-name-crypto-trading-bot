@@ -1,69 +1,49 @@
 name: Run ATI Bot
 
 on:
-workflow_dispatch:
-schedule:
-- cron: "*/5 * * * *"
+  workflow_dispatch:
+
+  schedule:
+    - cron: "*/5 * * * *"
 
 jobs:
-run-bot:
-runs-on: ubuntu-latest
+  run-bot:
+    runs-on: ubuntu-latest
 
-steps:
-  - name: Checkout repository
-    uses: actions/checkout@v4
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-  - name: Setup Python
-    uses: actions/setup-python@v5
-    with:
-      python-version: "3.11"
-      cache: "pip"
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
 
-  - name: Install dependencies
-    run: |
-      python -m pip install --upgrade pip
-      pip install -r requirements.txt
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
 
-  - name: Check required secrets
-    env:
-      TABDEAL_API_KEY: ${{ secrets.TABDEAL_API_KEY }}
-      TABDEAL_API_SECRET: ${{ secrets.TABDEAL_API_SECRET }}
-      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-    run: |
-      echo "Checking secrets..."
+      - name: Check Secrets
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          if [ -z "$TELEGRAM_BOT_TOKEN" ]; then
+            echo "❌ TELEGRAM_BOT_TOKEN is missing"
+            exit 1
+          fi
 
-      if [ -z "$TABDEAL_API_KEY" ]; then
-        echo "❌ TABDEAL_API_KEY is missing"
-      else
-        echo "✅ TABDEAL_API_KEY is present"
-      fi
+          if [ -z "$TELEGRAM_CHAT_ID" ]; then
+            echo "❌ TELEGRAM_CHAT_ID is missing"
+            exit 1
+          fi
 
-      if [ -z "$TABDEAL_API_SECRET" ]; then
-        echo "❌ TABDEAL_API_SECRET is missing"
-      else
-        echo "✅ TABDEAL_API_SECRET is present"
-      fi
+          echo "✅ Telegram secrets exist"
 
-      if [ -z "$TELEGRAM_BOT_TOKEN" ]; then
-        echo "❌ TELEGRAM_BOT_TOKEN is missing"
-      else
-        echo "✅ TELEGRAM_BOT_TOKEN is present"
-      fi
-
-      if [ -z "$TELEGRAM_CHAT_ID" ]; then
-        echo "❌ TELEGRAM_CHAT_ID is missing"
-      else
-        echo "✅ TELEGRAM_CHAT_ID is present"
-      fi
-
-  - name: Run ATI Bot
-    env:
-      TABDEAL_API_KEY: ${{ secrets.TABDEAL_API_KEY }}
-      TABDEAL_API_SECRET: ${{ secrets.TABDEAL_API_SECRET }}
-      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-    run: |
-      python --version
-      echo "Starting ATI Bot..."
-      python main.py
+      - name: Run ATI Bot
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python main.py
