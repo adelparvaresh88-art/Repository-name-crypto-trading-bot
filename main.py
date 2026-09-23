@@ -6,15 +6,12 @@ import requests
 from urllib.parse import urlencode
 from datetime import datetime, timezone
 
-
-# =========================================================
+# =========================
 # ATI CRYPTO BOT
-# TABDEAL FUTURES - LIVE TRADING
-# BTCUSDT / 5M
-# =========================================================
+# TABDEAL FUTURES
+# =========================
 
 BASE_URL = "https://api1.tabdeal.org"
-
 SYMBOL = "BTCUSDT"
 TIMEFRAME = "5m"
 
@@ -25,37 +22,28 @@ BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 LIVE_TRADING = os.getenv("LIVE_TRADING", "FALSE").upper()
-
 ORDER_QTY = os.getenv("ORDER_QTY", "0.001")
 
-# 0.5% Stop Loss
-SL_PERCENT = float(os.getenv("SL_PERCENT", "0.005"))
+# Risk
+SL_PERCENT = 0.005   # 0.5%
+TP_PERCENT = 0.010   # 1%
 
-# 1% Take Profit
-TP_PERCENT = float(os.getenv("TP_PERCENT", "0.010"))
-
-
-session = requests.Session()
+# فقط سیگنال کاملاً قوی
+SIGNAL_THRESHOLD = 4
 
 
-# =========================================================
+# =========================
 # TELEGRAM
-# =========================================================
+# =========================
 
 def send_telegram(message):
-
     if not BOT_TOKEN or not CHAT_ID:
-        print("Telegram credentials missing")
-        return False
+        return
 
     try:
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
 
-        url = (
-            f"https://api.telegram.org/"
-            f"bot{BOT_TOKEN}/sendMessage"
-        )
-
-        response = requests.post(
+        requests.post(
             url,
             data={
                 "chat_id": CHAT_ID,
@@ -63,75 +51,41 @@ def send_telegram(message):
             },
             timeout=15
         )
-
-        print(
-            "Telegram status:",
-            response.status_code
-        )
-
-        return response.ok
-
-    except Exception as e:
-
-        print(
-            "Telegram error:",
-            str(e)
-        )
-
-        return False
+    except Exception:
+        pass
 
 
-# =========================================================
-# TABDEAL SIGNATURE
-# =========================================================
+# =========================
+# SIGNED REQUEST
+# =========================
 
-def signed_request(
-    method,
-    path,
-    params=None
-):
+def signed_request(method, path, params=None):
 
-    if not API_KEY:
-        raise Exception(
-            "TABDEAL_API_KEY is missing"
-        )
+    if not API_KEY or not API_SECRET:
+        raise Exception("TABDEAL_API_KEY / TABDEAL_API_SECRET missing")
 
-    if not API_SECRET:
-        raise Exception(
-            "TABDEAL_API_SECRET is missing"
-        )
+    params = params or {}
 
-    if params is None:
-        params = {}
+    params["timestamp"] = int(time.time() * 1000)
 
-    params = dict(params)
-
-    params["timestamp"] = int(
-        time.time() * 1000
-    )
-
-    query_string = urlencode(
-        params,
-        doseq=True
-    )
+    query = urlencode(params)
 
     signature = hmac.new(
         API_SECRET.encode("utf-8"),
-        query_string.encode("utf-8"),
+        query.encode("utf-8"),
         hashlib.sha256
     ).hexdigest()
 
     params["signature"] = signature
 
-    url = BASE_URL + path
-
     headers = {
         "X-MBX-APIKEY": API_KEY
     }
 
-    if method == "GET":
+    url = BASE_URL + path
 
-        response = session.get(
+    if method == "GET":
+        response = requests.get(
             url,
             params=params,
             headers=headers,
@@ -139,8 +93,7 @@ def signed_request(
         )
 
     elif method == "POST":
-
-        response = session.post(
+        response = requests.post(
             url,
             data=params,
             headers=headers,
@@ -148,8 +101,7 @@ def signed_request(
         )
 
     elif method == "DELETE":
-
-        response = session.delete(
+        response = requests.delete(
             url,
             params=params,
             headers=headers,
@@ -157,51 +109,23 @@ def signed_request(
         )
 
     else:
-
-        raise Exception(
-            f"Unsupported HTTP method: {method}"
-        )
-
-    print(
-        "API",
-        method,
-        path,
-        "STATUS:",
-        response.status_code
-    )
-
-    print(
-        "API RESPONSE:",
-        response.text[:1500]
-    )
+        raise Exception("Unsupported HTTP method")
 
     if response.status_code >= 400:
-
         raise Exception(
-            f"Tabdeal API error "
-            f"{response.status_code}: "
-            f"{response.text[:1000]}"
+            f"HTTP {response.status_code}: {response.text}"
         )
 
-    try:
-        return response.json()
-
-    except Exception:
-
-        return {
-            "raw": response.text
-        }
+    return response.json()
 
 
-# =========================================================
-# PUBLIC MARKET DATA
-# =========================================================
+# =========================
+# MARKET DATA
+# =========================
 
 def get_trades():
 
-    url = (
-        f"{BASE_URL}/api/v1/trades"
-    )
+    url = f"{BASE_URL}/api/v1/trades"
 
     response = requests.get(
         url,
@@ -214,28 +138,12 @@ def get_trades():
 
     response.raise_for_status()
 
-    data = response.json()
-
-    if isinstance(data, dict):
-
-        if "data" in data:
-            data = data["data"]
-
-        elif "result" in data:
-            data = data["result"]
-
-    if not isinstance(data, list):
-
-        raise Exception(
-            "Unexpected Tabdeal trades response"
-        )
-
-    return data
+    return response.json()
 
 
-# =========================================================
-# BUILD 5 MINUTE CANDLES
-# =========================================================
+# =========================
+# BUILD 5M CANDLES
+# =========================
 
 def build_candles(trades):
 
@@ -243,238 +151,127 @@ def build_candles(trades):
 
     for trade in trades:
 
-        try:
+        price = float(
+            trade.get("price")
+            or trade.get("p")
+        )
 
-            price_value = (
-                trade.get("price")
-                or trade.get("p")
-                or trade.get("rate")
-            )
+        timestamp = int(
+            trade.get("time")
+            or trade.get("T")
+        )
 
-            quantity_value = (
-                trade.get("quantity")
-                or trade.get("q")
-                or trade.get("amount")
-                or 0
-            )
+        minute = timestamp // 300000
+        candle_time = minute * 300000
 
-            timestamp_value = (
-                trade.get("timestamp")
-                or trade.get("time")
-                or trade.get("T")
-            )
+        if candle_time not in candles:
 
-            if (
-                price_value is None
-                or timestamp_value is None
-            ):
-                continue
+            candles[candle_time] = {
+                "time": candle_time,
+                "open": price,
+                "high": price,
+                "low": price,
+                "close": price
+            }
 
-            price = float(
-                price_value
-            )
+        else:
 
-            quantity = float(
-                quantity_value
-            )
-
-            timestamp = int(
-                timestamp_value
-            )
-
-            if timestamp < 10_000_000_000:
-
-                timestamp *= 1000
-
-            bucket = (
-                timestamp // 300000
-            )
-
-            if bucket not in candles:
-
-                candles[bucket] = {
-                    "open": price,
-                    "high": price,
-                    "low": price,
-                    "close": price,
-                    "volume": quantity,
-                    "time": bucket * 1000
-                }
-
-            candle = candles[bucket]
-
-            candle["high"] = max(
-                candle["high"],
+            candles[candle_time]["high"] = max(
+                candles[candle_time]["high"],
                 price
             )
 
-            candle["low"] = min(
-                candle["low"],
+            candles[candle_time]["low"] = min(
+                candles[candle_time]["low"],
                 price
             )
 
-            candle["close"] = price
+            candles[candle_time]["close"] = price
 
-            candle["volume"] += quantity
-
-        except Exception:
-
-            continue
-
-    result = list(
-        candles.values()
-    )
-
-    result.sort(
+    return sorted(
+        candles.values(),
         key=lambda x: x["time"]
     )
 
-    return result
 
-
-# =========================================================
+# =========================
 # SIGNAL
-# =========================================================
+# =========================
 
 def calculate_signal(candles):
 
-    if len(candles) < 6:
+    if len(candles) < 3:
+        return "NO SIGNAL", 0, 0
 
-        return (
-            "NO SIGNAL",
-            0,
-            0
-        )
-
-    # آخرین کندل = ممکن است هنوز باز باشد
-    # بنابراین [-2] استفاده می‌شود
+    # آخرین کندل را استفاده نمی‌کنیم
+    # چون ممکن است هنوز باز باشد
     current = candles[-2]
-
     previous = candles[-3]
 
     buy_score = 0
     sell_score = 0
 
-
-    # -------------------------
     # 1. Candle direction
-    # -------------------------
-
     if current["close"] > current["open"]:
-
         buy_score += 1
 
     elif current["close"] < current["open"]:
-
         sell_score += 1
 
-
-    # -------------------------
-    # 2. Close comparison
-    # -------------------------
-
+    # 2. Close vs previous close
     if current["close"] > previous["close"]:
-
         buy_score += 1
 
     elif current["close"] < previous["close"]:
-
         sell_score += 1
 
-
-    # -------------------------
-    # 3. Higher / lower high
-    # -------------------------
-
+    # 3. Higher high / lower high
     if current["high"] > previous["high"]:
-
         buy_score += 1
 
     elif current["high"] < previous["high"]:
-
         sell_score += 1
 
-
-    # -------------------------
-    # 4. Higher / lower low
-    # -------------------------
-
+    # 4. Higher low / lower low
     if current["low"] > previous["low"]:
-
         buy_score += 1
 
     elif current["low"] < previous["low"]:
-
         sell_score += 1
 
-
-    # -------------------------
-    # 5. Candle strength
-    # -------------------------
-
-    candle_range = (
-        current["high"]
-        - current["low"]
-    )
+    # 5. Strong body
+    candle_range = current["high"] - current["low"]
 
     if candle_range > 0:
 
         body = abs(
-            current["close"]
-            - current["open"]
+            current["close"] - current["open"]
         )
 
-        strength = (
-            body / candle_range
-        )
+        body_strength = body / candle_range
 
-        if strength >= 0.55:
+        if body_strength >= 0.55:
 
             if current["close"] > current["open"]:
-
                 buy_score += 1
 
             elif current["close"] < current["open"]:
-
                 sell_score += 1
 
+    signal = "NO SIGNAL"
 
-    # -------------------------
-    # FINAL SIGNAL
-    # -------------------------
+    if buy_score >= SIGNAL_THRESHOLD and buy_score > sell_score:
+        signal = "BUY"
 
-    if (
-        buy_score >= 4
-        and buy_score > sell_score
-    ):
+    elif sell_score >= SIGNAL_THRESHOLD and sell_score > buy_score:
+        signal = "SELL"
 
-        return (
-            "BUY",
-            buy_score,
-            sell_score
-        )
-
-    if (
-        sell_score >= 4
-        and sell_score > buy_score
-    ):
-
-        return (
-            "SELL",
-            buy_score,
-            sell_score
-        )
-
-    return (
-        "NO SIGNAL",
-        buy_score,
-        sell_score
-    )
+    return signal, buy_score, sell_score
 
 
-# =========================================================
-# POSITION QUERY
-# =========================================================
+# =========================
+# POSITION
+# =========================
 
 def get_positions():
 
@@ -487,137 +284,54 @@ def get_positions():
     )
 
 
-# =========================================================
-# NORMALIZE RESPONSE
-# =========================================================
-
-def normalize_list(data):
-
-    if isinstance(data, list):
-
-        return data
-
-    if isinstance(data, dict):
-
-        for key in (
-            "data",
-            "result",
-            "positions"
-        ):
-
-            value = data.get(key)
-
-            if isinstance(value, list):
-
-                return value
-
-        return [data]
-
-    return []
-
-
-# =========================================================
-# FIND OPEN POSITION
-# =========================================================
-
 def get_open_position():
 
-    data = get_positions()
+    positions = get_positions()
 
-    positions = normalize_list(
-        data
-    )
+    if isinstance(positions, dict):
+        positions = [positions]
+
+    if not isinstance(positions, list):
+        return None
 
     for position in positions:
 
-        try:
+        symbol = str(
+            position.get("symbol", "")
+        ).upper()
 
-            quantity = float(
-                position.get("positionAmt")
-                or position.get("quantity")
-                or position.get("qty")
-                or position.get("amount")
-                or 0
-            )
-
-            if abs(quantity) > 0:
-
-                position_id = (
-                    position.get("positionId")
-                    or position.get("id")
-                )
-
-                entry_price = float(
-                    position.get("entryPrice")
-                    or position.get("avgPrice")
-                    or position.get("price")
-                    or 0
-                )
-
-                return {
-                    "id": position_id,
-                    "quantity": quantity,
-                    "entry_price": entry_price,
-                    "raw": position
-                }
-
-        except Exception:
-
+        if symbol != SYMBOL:
             continue
+
+        amount = (
+            position.get("positionAmt")
+            or position.get("quantity")
+            or position.get("qty")
+            or position.get("amount")
+        )
+
+        if amount is None:
+            continue
+
+        try:
+            amount = float(amount)
+        except Exception:
+            continue
+
+        if abs(amount) > 0:
+
+            return position
 
     return None
 
 
-# =========================================================
-# REAL MARKET ORDER
-# =========================================================
+# =========================
+# MARKET ORDER
+# =========================
 
 def place_market_order(signal):
 
-    if signal == "BUY":
-
-        side = "BUY"
-
-    elif signal == "SELL":
-
-        side = "SELL"
-
-    else:
-
-        raise Exception(
-            "Invalid order signal"
-        )
-
-    quantity = str(
-        ORDER_QTY
-    )
-
-    print(
-        "================================"
-    )
-
-    print(
-        "REAL FUTURES ORDER"
-    )
-
-    print(
-        "SYMBOL:",
-        SYMBOL
-    )
-
-    print(
-        "SIDE:",
-        side
-    )
-
-    print(
-        "QUANTITY:",
-        quantity
-    )
-
-    print(
-        "================================"
-    )
+    side = "BUY" if signal == "BUY" else "SELL"
 
     return signed_request(
         "POST",
@@ -626,508 +340,311 @@ def place_market_order(signal):
             "symbol": SYMBOL,
             "side": side,
             "type": "MARKET",
-            "quantity": quantity
+            "quantity": ORDER_QTY
         }
     )
 
 
-# =========================================================
-# STOP LOSS / TAKE PROFIT
-# =========================================================
+# =========================
+# SL / TP
+# =========================
 
-def calculate_sl_tp(
-    entry_price,
-    signal
-):
+def calculate_sl_tp(entry_price, signal):
 
     if signal == "BUY":
 
-        sl = (
-            entry_price
-            * (1 - SL_PERCENT)
-        )
-
-        tp = (
-            entry_price
-            * (1 + TP_PERCENT)
-        )
+        sl = entry_price * (1 - SL_PERCENT)
+        tp = entry_price * (1 + TP_PERCENT)
 
     else:
 
-        sl = (
-            entry_price
-            * (1 + SL_PERCENT)
-        )
+        sl = entry_price * (1 + SL_PERCENT)
+        tp = entry_price * (1 - TP_PERCENT)
 
-        tp = (
-            entry_price
-            * (1 - TP_PERCENT)
-        )
+    return sl, tp
 
-    return (
-        round(sl, 2),
-        round(tp, 2)
+
+def set_sl_tp(position, signal):
+
+    position_id = (
+        position.get("positionId")
+        or position.get("id")
     )
 
-
-# =========================================================
-# SET SL / TP
-# =========================================================
-
-def set_sl_tp(
-    position,
-    signal
-):
-
-    position_id = position["id"]
-
-    entry_price = position[
-        "entry_price"
-    ]
+    entry_price = float(
+        position.get("entryPrice")
+        or position.get("avgPrice")
+        or position.get("price")
+    )
 
     if not position_id:
+        raise Exception("positionId not found")
 
-        raise Exception(
-            "Position ID was not returned"
-        )
-
-    if entry_price <= 0:
-
-        raise Exception(
-            "Invalid position entry price"
-        )
-
-    sl_price, tp_price = (
-        calculate_sl_tp(
-            entry_price,
-            signal
-        )
-    )
-
-    print(
-        "ENTRY:",
-        entry_price
-    )
-
-    print(
-        "SL:",
-        sl_price
-    )
-
-    print(
-        "TP:",
-        tp_price
+    sl, tp = calculate_sl_tp(
+        entry_price,
+        signal
     )
 
     result = signed_request(
         "POST",
         "/fapi/v1/positionSlTp",
         {
-            "positionId": str(
-                position_id
-            ),
+            "positionId": position_id,
             "symbol": SYMBOL,
-            "slPrice": str(
-                sl_price
-            ),
-            "tpPrice": str(
-                tp_price
-            )
+            "slPrice": f"{sl:.2f}",
+            "tpPrice": f"{tp:.2f}"
         }
     )
 
-    return (
-        result,
-        sl_price,
-        tp_price
-    )
+    return entry_price, sl, tp, result
 
 
-# =========================================================
+# =========================
 # EMERGENCY CLOSE
-# =========================================================
+# =========================
 
 def emergency_close():
 
-    print(
-        "!!! EMERGENCY CLOSE !!!"
+    return signed_request(
+        "DELETE",
+        "/fapi/v1/position",
+        {
+            "symbol": SYMBOL
+        }
     )
 
-    try:
 
-        result = signed_request(
-            "DELETE",
-            "/fapi/v1/position",
-            {
-                "symbol": SYMBOL
-            }
-        )
-
-        return result
-
-    except Exception as e:
-
-        print(
-            "Emergency close failed:",
-            str(e)
-        )
-
-        raise
-
-
-# =========================================================
-# WAIT FOR POSITION
-# =========================================================
-
-def wait_for_position(
-    attempts=10
-):
-
-    for attempt in range(
-        attempts
-    ):
-
-        print(
-            "Checking position:",
-            attempt + 1,
-            "/",
-            attempts
-        )
-
-        try:
-
-            position = (
-                get_open_position()
-            )
-
-            if position:
-
-                return position
-
-        except Exception as e:
-
-            print(
-                "Position check error:",
-                str(e)
-            )
-
-        time.sleep(1)
-
-    return None
-
-
-# =========================================================
+# =========================
 # MAIN
-# =========================================================
+# =========================
 
 def main():
 
-    print(
-        "=========================================="
-    )
-
-    print(
-        "ATI CRYPTO BOT - TABDEAL FUTURES"
-    )
-
-    print(
-        "BTCUSDT / 5M"
-    )
-
-    print(
-        "=========================================="
-    )
-
-
-    # -----------------------------------------------------
-    # CREDENTIAL CHECK
-    # -----------------------------------------------------
-
-    if not API_KEY:
-
-        send_telegram(
-            "🛡 ATI SAFETY\n\n"
-            "Bot stopped.\n\n"
-            "❌ TABDEAL_API_KEY is missing."
-        )
-
-        return
-
-
-    if not API_SECRET:
-
-        send_telegram(
-            "🛡 ATI SAFETY\n\n"
-            "Bot stopped.\n\n"
-            "❌ TABDEAL_API_SECRET is missing."
-        )
-
-        return
-
-
-    if not BOT_TOKEN:
-
-        print(
-            "WARNING: Telegram token missing"
-        )
-
-
-    if not CHAT_ID:
-
-        print(
-            "WARNING: Telegram chat ID missing"
-        )
-
-
     try:
 
-        # -------------------------------------------------
-        # MARKET DATA
-        # -------------------------------------------------
+        # -------------------------
+        # Secrets check
+        # -------------------------
 
-        trades = get_trades()
+        missing = []
 
-        print(
-            "Trades received:",
-            len(trades)
-        )
+        if not API_KEY:
+            missing.append("TABDEAL_API_KEY")
 
-        candles = build_candles(
-            trades
-        )
+        if not API_SECRET:
+            missing.append("TABDEAL_API_SECRET")
 
-        print(
-            "5M candles built:",
-            len(candles)
-        )
+        if not BOT_TOKEN:
+            missing.append("TELEGRAM_BOT_TOKEN")
 
+        if not CHAT_ID:
+            missing.append("TELEGRAM_CHAT_ID")
 
-        if len(candles) < 6:
+        if missing:
 
-            send_telegram(
+            message = (
                 "🛡 ATI SAFETY\n\n"
-                "Bot stopped.\n\n"
-                "❌ Not enough 5M candles."
+                "❌ Missing secrets:\n"
+                + "\n".join(missing)
             )
+
+            send_telegram(message)
+
+            print(message)
 
             return
 
 
-        # -------------------------------------------------
-        # SIGNAL
-        # -------------------------------------------------
+        # -------------------------
+        # Market data
+        # -------------------------
 
-        signal, buy_score, sell_score = (
-            calculate_signal(
-                candles
-            )
+        trades = get_trades()
+
+        candles = build_candles(trades)
+
+        signal, buy_score, sell_score = calculate_signal(
+            candles
         )
 
-        candle = candles[-2]
+        current_candle = candles[-2]
 
         entry_price = float(
-            candle["close"]
+            current_candle["close"]
         )
 
-        candle_time = (
-            datetime.fromtimestamp(
-                candle["time"] / 1000,
-                tz=timezone.utc
-            )
-            .strftime("%H:%M UTC")
-        )
+        candle_time = datetime.fromtimestamp(
+            current_candle["time"] / 1000,
+            tz=timezone.utc
+        ).strftime("%H:%M")
 
 
-        print(
-            "SIGNAL:",
-            signal
-        )
-
-        print(
-            "BUY SCORE:",
-            buy_score
-        )
-
-        print(
-            "SELL SCORE:",
-            sell_score
-        )
-
-
-        # -------------------------------------------------
-        # NO SIGNAL
-        # -------------------------------------------------
+        # -------------------------
+        # No signal
+        # -------------------------
 
         if signal == "NO SIGNAL":
 
-            send_telegram(
+            message = (
                 "⚡ ATI CRYPTO BOT\n\n"
                 "₿ BTC/USDT\n"
                 "⏱ Timeframe: 5m\n"
                 "✅ CLOSED CANDLE\n"
                 "💪 STRONG SIGNAL FILTER\n\n"
-                "📊 SIGNAL: NO SIGNAL\n"
-                f"📈 BUY SCORE: "
-                f"{buy_score}/5\n"
-                f"📉 SELL SCORE: "
-                f"{sell_score}/5\n\n"
-                f"🕐 Candle: "
-                f"{candle_time}\n"
-                f"💰 Price: "
-                f"${entry_price:,.2f}\n\n"
+                f"📊 SIGNAL: NO SIGNAL\n"
+                f"📈 BUY SCORE: {buy_score}/5\n"
+                f"📉 SELL SCORE: {sell_score}/5\n\n"
+                f"🕐 Candle: {candle_time} UTC\n"
+                f"💰 Price: ${entry_price:,.2f}\n\n"
                 "⏳ NO TRADE"
             )
 
+            send_telegram(message)
+
+            print(message)
+
             return
 
 
-        # -------------------------------------------------
-        # CHECK EXISTING POSITION
-        # -------------------------------------------------
+        # -------------------------
+        # Existing position check
+        # -------------------------
 
-        existing_position = (
-            get_open_position()
-        )
+        try:
+
+            existing_position = get_open_position()
+
+        except Exception as e:
+
+            message = (
+                "🛡 ATI SAFETY\n\n"
+                "❌ Position check failed.\n"
+                "No order was sent.\n\n"
+                f"{e}"
+            )
+
+            send_telegram(message)
+
+            print(message)
+
+            return
+
 
         if existing_position:
 
-            send_telegram(
+            message = (
                 "🛡 ATI SAFETY\n\n"
-                "Trade skipped.\n\n"
-                "❌ An existing BTCUSDT "
-                "Futures position is already open."
+                "⚠️ Existing Futures position detected.\n"
+                "No new order was sent."
             )
+
+            send_telegram(message)
+
+            print(message)
 
             return
 
 
-        # -------------------------------------------------
-        # LIVE MODE CHECK
-        # -------------------------------------------------
+        # -------------------------
+        # Signal found
+        # -------------------------
+
+        signal_message = (
+            "🚨 ATI REAL TRADE SIGNAL\n\n"
+            "₿ BTC/USDT FUTURES\n"
+            "⏱ 5m\n"
+            "✅ CLOSED CANDLE\n\n"
+            f"📊 SIGNAL: {signal}\n"
+            f"📈 BUY SCORE: {buy_score}/5\n"
+            f"📉 SELL SCORE: {sell_score}/5\n\n"
+            f"💰 Entry: ${entry_price:,.2f}\n"
+            f"💵 ORDER QTY: {ORDER_QTY}\n"
+            f"🔴 LIVE TRADING: {LIVE_TRADING}"
+        )
+
+        send_telegram(signal_message)
+
+        print(signal_message)
+
+
+        # -------------------------
+        # LIVE TRADING protection
+        # -------------------------
 
         if LIVE_TRADING != "TRUE":
 
-            send_telegram(
-                "🧪 ATI PAPER SIGNAL\n\n"
-                f"📊 SIGNAL: {signal}\n"
-                f"📈 BUY SCORE: "
-                f"{buy_score}/5\n"
-                f"📉 SELL SCORE: "
-                f"{sell_score}/5\n\n"
-                f"💰 Entry: "
-                f"${entry_price:,.2f}\n\n"
+            message = (
+                "🛡 ATI SAFETY\n\n"
                 "⚠️ LIVE_TRADING is not TRUE.\n"
-                "❌ No real order sent."
+                "No real order was sent."
             )
+
+            send_telegram(message)
+
+            print(message)
 
             return
 
 
-        # -------------------------------------------------
-        # REAL ORDER
-        # -------------------------------------------------
+        # -------------------------
+        # REAL MARKET ORDER
+        # -------------------------
 
-        send_telegram(
-            "⚠️ ATI LIVE TRADING\n\n"
-            f"📊 SIGNAL: {signal}\n"
-            f"📈 BUY SCORE: "
-            f"{buy_score}/5\n"
-            f"📉 SELL SCORE: "
-            f"{sell_score}/5\n\n"
-            f"📦 Quantity: "
-            f"{ORDER_QTY}\n\n"
-            "⏳ Sending real Futures order..."
-        )
+        order = place_market_order(signal)
+
+        print("ORDER RESPONSE:")
+        print(order)
 
 
-        order_result = (
-            place_market_order(
-                signal
-            )
-        )
+        # -------------------------
+        # Wait for position
+        # -------------------------
 
+        position = None
 
-        print(
-            "ORDER RESULT:",
-            order_result
-        )
+        for _ in range(10):
 
+            time.sleep(1)
 
-        # -------------------------------------------------
-        # VERIFY POSITION
-        # -------------------------------------------------
+            position = get_open_position()
 
-        position = (
-            wait_for_position(
-                attempts=10
-            )
-        )
+            if position:
+                break
 
 
         if not position:
 
-            send_telegram(
-                "🚨 ATI SAFETY\n\n"
-                "⚠️ Real order response received.\n\n"
-                "❌ Open position could not "
-                "be verified.\n\n"
-                "🛡 Emergency close will be attempted."
+            message = (
+                "🚨 ATI TRADE ERROR\n\n"
+                "Order was submitted but position "
+                "could not be confirmed.\n\n"
+                f"Order:\n{order}"
             )
 
-            try:
+            send_telegram(message)
 
-                emergency_close()
-
-                send_telegram(
-                    "🛡 ATI SAFETY\n\n"
-                    "Emergency close attempted."
-                )
-
-            except Exception as close_error:
-
-                send_telegram(
-                    "🚨 CRITICAL SAFETY ERROR\n\n"
-                    "Position verification failed.\n"
-                    "Emergency close also failed.\n\n"
-                    f"{str(close_error)[:900]}"
-                )
+            print(message)
 
             return
 
 
-        # -------------------------------------------------
-        # INSTALL SL / TP
-        # -------------------------------------------------
+        # -------------------------
+        # SL / TP
+        # -------------------------
 
         try:
 
-            (
-                sltp_result,
-                sl_price,
-                tp_price
-            ) = set_sl_tp(
+            entry, sl, tp, sltp_result = set_sl_tp(
                 position,
                 signal
             )
 
-            print(
-                "SL/TP RESULT:",
-                sltp_result
-            )
-
-
-        except Exception as sltp_error:
-
-            print(
-                "SL/TP ERROR:",
-                str(sltp_error)
-            )
+        except Exception as e:
 
             send_telegram(
-                "🚨 ATI SAFETY\n\n"
-                "REAL POSITION OPENED.\n\n"
-                "❌ SL/TP installation FAILED.\n\n"
-                "🛡 Emergency close will be attempted."
+                "🚨 ATI EMERGENCY\n\n"
+                "❌ SL/TP installation failed.\n"
+                "Attempting emergency close..."
             )
 
             try:
@@ -1136,77 +653,61 @@ def main():
 
                 send_telegram(
                     "🛡 ATI SAFETY\n\n"
-                    "Emergency close attempted "
-                    "after SL/TP failure."
+                    "✅ Emergency close completed.\n"
+                    "Position was closed because SL/TP "
+                    "could not be installed."
                 )
 
             except Exception as close_error:
 
                 send_telegram(
-                    "🚨 CRITICAL SAFETY ERROR\n\n"
-                    "SL/TP failed.\n"
-                    "Emergency close also failed.\n\n"
-                    f"{str(close_error)[:900]}"
+                    "🚨 CRITICAL ATI ERROR\n\n"
+                    "❌ SL/TP failed.\n"
+                    "❌ Emergency close also failed.\n\n"
+                    f"{close_error}"
                 )
+
+            print(e)
 
             return
 
 
-        # -------------------------------------------------
+        # -------------------------
         # SUCCESS
-        # -------------------------------------------------
-
-        actual_entry = position[
-            "entry_price"
-        ]
+        # -------------------------
 
         message = (
-            "🚨 ATI CRYPTO BOT\n"
-            "🔥 REAL FUTURES TRADE\n\n"
-            "₿ BTC/USDT\n"
-            "⏱ Timeframe: 5m\n"
-            "✅ CLOSED CANDLE\n"
-            "💪 STRONG SIGNAL\n\n"
-            f"📊 SIGNAL: {signal}\n"
-            f"📈 BUY SCORE: "
-            f"{buy_score}/5\n"
-            f"📉 SELL SCORE: "
-            f"{sell_score}/5\n\n"
-            f"💰 Entry: "
-            f"${actual_entry:,.2f}\n"
-            f"📦 Quantity: "
-            f"{ORDER_QTY}\n\n"
-            f"🛑 SL: "
-            f"${sl_price:,.2f}\n"
-            f"🎯 TP: "
-            f"${tp_price:,.2f}\n\n"
-            "✅ SL/TP installed\n"
-            "⚡ LIVE TRADING: TRUE"
+            "✅ ATI REAL TRADE OPENED\n\n"
+            "₿ BTC/USDT FUTURES\n"
+            f"📊 SIDE: {signal}\n"
+            "⏱ 5m\n\n"
+            f"💰 ENTRY: ${entry:,.2f}\n"
+            f"🛑 SL: ${sl:,.2f}\n"
+            f"🎯 TP: ${tp:,.2f}\n"
+            f"💵 QTY: {ORDER_QTY}\n\n"
+            "🔴 LIVE TRADING: TRUE\n"
+            "✅ REAL ORDER SENT\n"
+            "✅ SL INSTALLED\n"
+            "✅ TP INSTALLED"
         )
 
-        send_telegram(
-            message
-        )
+        send_telegram(message)
+
+        print(message)
 
 
     except Exception as e:
 
-        print(
-            "BOT ERROR:",
-            repr(e)
+        error_message = (
+            "🚨 ATI BOT ERROR\n\n"
+            f"{type(e).__name__}\n"
+            f"{e}"
         )
 
-        send_telegram(
-            "🛡 ATI SAFETY\n\n"
-            "Bot stopped.\n\n"
-            f"❌ {str(e)[:1200]}"
-        )
+        send_telegram(error_message)
 
+        print(error_message)
 
-# =========================================================
-# START
-# =========================================================
 
 if __name__ == "__main__":
-
     main()
