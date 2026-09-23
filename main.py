@@ -1,13 +1,11 @@
 import os
-import json
-import time
 import requests
 from datetime import datetime, timezone
 
 # ============================================================
-# ATI CRYPTO BOT - STAGE 8
-# TABDEAL FUTURES - LIVE TRADING
-# BTCUSDT / 5 MINUTES
+# ATI CRYPTO BOT - STAGE 8 LIVE
+# TABDEAL FUTURES
+# BTCUSDT / 5m
 # ============================================================
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -16,28 +14,22 @@ CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 TABDEAL_API_KEY = os.getenv("TABDEAL_API_KEY")
 TABDEAL_API_SECRET = os.getenv("TABDEAL_API_SECRET")
 
-# ------------------------------------------------------------
-# LIVE SWITCH
-# ------------------------------------------------------------
-# Must be exactly TRUE before real orders are allowed.
 LIVE_TRADING = os.getenv("LIVE_TRADING", "FALSE").upper() == "TRUE"
 
 SYMBOL = "BTCUSDT"
 TIMEFRAME = "5m"
 
-# Amount of BTC per real trade.
-# IMPORTANT: Change this only after checking your Tabdeal Futures
-# minimum quantity and available USDT margin.
 ORDER_QTY = os.getenv("ORDER_QTY", "0.001")
 
-# Strong signal requirement
 STRONG_SCORE = 5
 
-# ------------------------------------------------------------
-# Telegram
-# ------------------------------------------------------------
+
+# ============================================================
+# TELEGRAM
+# ============================================================
 
 def send_telegram(message):
+
     if not BOT_TOKEN or not CHAT_ID:
         print("Telegram credentials missing.")
         return False
@@ -45,7 +37,7 @@ def send_telegram(message):
     try:
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
 
-        response = requests.post(
+        r = requests.post(
             url,
             data={
                 "chat_id": CHAT_ID,
@@ -54,18 +46,18 @@ def send_telegram(message):
             timeout=15
         )
 
-        print("Telegram:", response.status_code)
+        print("Telegram:", r.status_code)
 
-        return response.ok
+        return r.ok
 
     except Exception as e:
         print("Telegram error:", e)
         return False
 
 
-# ------------------------------------------------------------
-# Tabdeal client
-# ------------------------------------------------------------
+# ============================================================
+# TABDEAL CLIENT
+# ============================================================
 
 def create_tabdeal_client():
 
@@ -77,6 +69,7 @@ def create_tabdeal_client():
 
     try:
         from tabdeal.future import Future
+
         return Future(
             TABDEAL_API_KEY,
             TABDEAL_API_SECRET
@@ -88,60 +81,37 @@ def create_tabdeal_client():
         )
 
 
-# ------------------------------------------------------------
-# Check API connection
-# ------------------------------------------------------------
+# ============================================================
+# API PING
+# ============================================================
 
 def check_tabdeal_connection(client):
 
     try:
+
         client.ping()
+
         print("Tabdeal Futures API: OK")
+
         return True
 
     except Exception as e:
+
         print("Tabdeal Futures API ERROR:", e)
+
         return False
 
 
-# ------------------------------------------------------------
-# Get Futures exchange information
-# ------------------------------------------------------------
-
-def get_exchange_info(client):
-
-    try:
-        info = client.exchange_info()
-
-        print("Exchange info received.")
-
-        return info
-
-    except Exception as e:
-        print("Exchange info error:", e)
-        return None
-
-
-# ------------------------------------------------------------
-# Detect existing BTCUSDT position
-# ------------------------------------------------------------
+# ============================================================
+# POSITION CHECK
+# ============================================================
 
 def get_existing_position(client):
-
-    """
-    Tries to find an existing BTCUSDT Futures position.
-
-    Tabdeal SDK versions can expose account/position endpoints
-    differently, so this function safely tries common methods.
-
-    If the position cannot be verified, trading is BLOCKED.
-    """
 
     methods = [
         "position_information",
         "get_position",
-        "position_risk",
-        "account"
+        "position_risk"
     ]
 
     for method_name in methods:
@@ -155,6 +125,7 @@ def get_existing_position(client):
 
             try:
                 result = method(symbol=SYMBOL)
+
             except TypeError:
                 result = method()
 
@@ -171,12 +142,10 @@ def get_existing_position(client):
         except Exception as e:
 
             print(
-                f"Position method {method_name} failed:",
+                f"Position check failed: {method_name}",
                 e
             )
 
-    # IMPORTANT:
-    # Unknown position state means NO TRADE.
     raise RuntimeError(
         "Open position state could not be safely verified."
     )
@@ -189,7 +158,6 @@ def extract_position(data):
 
     if isinstance(data, dict):
 
-        # Direct position object
         if "positionAmt" in data:
             return data
 
@@ -209,9 +177,7 @@ def extract_position(data):
             if not isinstance(item, dict):
                 continue
 
-            symbol = item.get("symbol")
-
-            if symbol and symbol != SYMBOL:
+            if item.get("symbol") not in (None, SYMBOL):
                 continue
 
             if "positionAmt" in item:
@@ -228,29 +194,34 @@ def position_is_open(position):
     if position is None:
         return False
 
-    possible_values = [
+    values = [
         position.get("positionAmt"),
         position.get("quantity"),
         position.get("qty"),
         position.get("size")
     ]
 
-    for value in possible_values:
+    for value in values:
 
         if value is None:
             continue
 
         try:
-            return abs(float(value)) > 0
+
+            if abs(float(value)) > 0:
+                return True
+
+            return False
+
         except Exception:
             continue
 
     return False
 
 
-# ------------------------------------------------------------
-# REAL MARKET ORDER
-# ------------------------------------------------------------
+# ============================================================
+# REAL ORDER
+# ============================================================
 
 def place_real_market_order(client, signal):
 
@@ -265,6 +236,7 @@ def place_real_market_order(client, signal):
     signal = signal.upper()
 
     if signal not in ("BUY", "SELL"):
+
         return {
             "success": False,
             "blocked": True,
@@ -272,7 +244,7 @@ def place_real_market_order(client, signal):
         }
 
     # --------------------------------------------------------
-    # Check existing position BEFORE sending order
+    # SAFETY CHECK
     # --------------------------------------------------------
 
     try:
@@ -296,21 +268,17 @@ def place_real_market_order(client, signal):
         }
 
     # --------------------------------------------------------
-    # Side
+    # SEND MARKET ORDER
     # --------------------------------------------------------
 
     try:
+
         from tabdeal.enums import OrderSides, OrderTypes
 
-        side = (
-            OrderSides.BUY
-            if signal == "BUY"
-            else OrderSides.SELL
-        )
-
-        # ----------------------------------------------------
-        # REAL ORDER
-        # ----------------------------------------------------
+        if signal == "BUY":
+            side = OrderSides.BUY
+        else:
+            side = OrderSides.SELL
 
         order = client.new_order(
             symbol=SYMBOL,
@@ -319,7 +287,7 @@ def place_real_market_order(client, signal):
             quantity=str(ORDER_QTY)
         )
 
-        print("REAL ORDER RESPONSE:")
+        print("REAL ORDER:")
         print(order)
 
         return {
@@ -339,17 +307,11 @@ def place_real_market_order(client, signal):
         }
 
 
-# ------------------------------------------------------------
-# Candle data
-# ------------------------------------------------------------
+# ============================================================
+# MARKET DATA
+# ============================================================
 
 def get_market_data():
-
-    """
-    Uses Tabdeal public market API.
-
-    Returns recent trades and builds 5m candles.
-    """
 
     url = "https://api1.tabdeal.org/v1/trades"
 
@@ -366,19 +328,18 @@ def get_market_data():
 
         response.raise_for_status()
 
-        data = response.json()
-
-        return data
+        return response.json()
 
     except Exception as e:
 
         print("Market data error:", e)
+
         return None
 
 
-# ------------------------------------------------------------
-# Build simple 5m candles
-# ------------------------------------------------------------
+# ============================================================
+# BUILD 5M CANDLES
+# ============================================================
 
 def build_candles(trades):
 
@@ -391,30 +352,27 @@ def build_candles(trades):
 
         try:
 
-            if isinstance(trade, dict):
-
-                price = float(
-                    trade.get("price")
-                    or trade.get("p")
-                )
-
-                timestamp = (
-                    trade.get("time")
-                    or trade.get("timestamp")
-                    or trade.get("T")
-                )
-
-            else:
+            if not isinstance(trade, dict):
                 continue
+
+            price = float(
+                trade.get("price")
+                or trade.get("p")
+            )
+
+            timestamp = (
+                trade.get("time")
+                or trade.get("timestamp")
+                or trade.get("T")
+            )
 
             if timestamp is None:
                 continue
 
             timestamp = int(timestamp)
 
-            # milliseconds -> seconds
             if timestamp > 10_000_000_000:
-                timestamp = timestamp // 1000
+                timestamp //= 1000
 
             candle_time = timestamp - (
                 timestamp % 300
@@ -432,46 +390,34 @@ def build_candles(trades):
 
             else:
 
-                candle = candles[candle_time]
+                c = candles[candle_time]
 
-                candle["high"] = max(
-                    candle["high"],
+                c["high"] = max(
+                    c["high"],
                     price
                 )
 
-                candle["low"] = min(
-                    candle["low"],
+                c["low"] = min(
+                    c["low"],
                     price
                 )
 
-                candle["close"] = price
+                c["close"] = price
 
         except Exception:
             continue
 
-    result = sorted(
+    return sorted(
         candles.values(),
         key=lambda x: x["time"]
     )
 
-    return result
 
-
-# ------------------------------------------------------------
-# Stage 8 Signal Engine
-# ------------------------------------------------------------
+# ============================================================
+# STAGE 8 SIGNAL
+# ============================================================
 
 def calculate_signal(candles):
-
-    """
-    Stage 8 strong-signal filter.
-
-    BUY requires 5/5.
-    SELL requires 5/5.
-
-    This keeps the existing philosophy:
-    no weak signal -> no trade.
-    """
 
     if len(candles) < 10:
 
@@ -481,13 +427,15 @@ def calculate_signal(candles):
             "sell_score": 0
         }
 
+    # Last CLOSED candle
     c = candles[-2]
+
     prev = candles[-3]
 
-    close = float(c["close"])
     open_price = float(c["open"])
     high = float(c["high"])
     low = float(c["low"])
+    close = float(c["close"])
 
     prev_close = float(prev["close"])
 
@@ -501,21 +449,21 @@ def calculate_signal(candles):
     if close > open_price:
         buy_score += 1
 
-    if close < open_price:
+    elif close < open_price:
         sell_score += 1
 
     # --------------------------------------------------------
-    # 2. Close versus previous close
+    # 2. Previous candle comparison
     # --------------------------------------------------------
 
     if close > prev_close:
         buy_score += 1
 
-    if close < prev_close:
+    elif close < prev_close:
         sell_score += 1
 
     # --------------------------------------------------------
-    # 3. Candle position
+    # 3. Close position
     # --------------------------------------------------------
 
     candle_range = high - low
@@ -533,44 +481,44 @@ def calculate_signal(candles):
             sell_score += 1
 
     # --------------------------------------------------------
-    # 4. Recent momentum
+    # 4. Momentum
     # --------------------------------------------------------
 
-    recent_closes = [
+    recent = [
         float(x["close"])
         for x in candles[-6:]
     ]
 
-    if len(recent_closes) >= 5:
+    if len(recent) >= 5:
 
-        if recent_closes[-1] > recent_closes[0]:
+        if recent[-1] > recent[0]:
             buy_score += 1
 
-        if recent_closes[-1] < recent_closes[0]:
+        elif recent[-1] < recent[0]:
             sell_score += 1
 
     # --------------------------------------------------------
-    # 5. Higher/lower recent structure
+    # 5. Structure
     # --------------------------------------------------------
 
-    recent_highs = [
+    highs = [
         float(x["high"])
         for x in candles[-5:]
     ]
 
-    recent_lows = [
+    lows = [
         float(x["low"])
         for x in candles[-5:]
     ]
 
-    if close >= max(recent_highs[:-1]):
+    if close >= max(highs[:-1]):
         buy_score += 1
 
-    if close <= min(recent_lows[:-1]):
+    if close <= min(lows[:-1]):
         sell_score += 1
 
     # --------------------------------------------------------
-    # Strong signal
+    # STRONG SIGNAL
     # --------------------------------------------------------
 
     if buy_score >= STRONG_SCORE:
@@ -594,15 +542,18 @@ def calculate_signal(candles):
     }
 
 
-# ------------------------------------------------------------
-# Telegram message
-# ------------------------------------------------------------
+# ============================================================
+# TELEGRAM MESSAGE
+# ============================================================
 
 def build_message(signal_data, order_result=None):
 
     signal = signal_data["signal"]
+
     buy_score = signal_data["buy_score"]
+
     sell_score = signal_data["sell_score"]
+
     price = signal_data.get("price", 0)
 
     candle = signal_data.get("candle")
@@ -630,6 +581,14 @@ def build_message(signal_data, order_result=None):
 
         signal_text = "⏳ NO STRONG SIGNAL"
 
+    if LIVE_TRADING:
+
+        mode = "🔴 MODE: LIVE"
+
+    else:
+
+        mode = "🧪 MODE: PAPER/TEST"
+
     message = f"""
 ⚡ ATI CRYPTO BOT - STAGE 8
 
@@ -646,27 +605,8 @@ def build_message(signal_data, order_result=None):
 💰 Entry: ${price:,.2f}
 
 {signal_text}
-"""
 
-    if signal in ("BUY", "SELL"):
-
-        if LIVE_TRADING:
-
-            message += """
-🔴 MODE: LIVE
-⚠️ REAL FUTURES ORDER
-"""
-
-        else:
-
-            message += """
-🧪 MODE: PAPER/TEST
-"""
-
-    else:
-
-        message += """
-⏳ NO TRADE
+{mode}
 """
 
     if order_result:
@@ -674,17 +614,19 @@ def build_message(signal_data, order_result=None):
         if order_result.get("success"):
 
             message += """
+            
 ✅ REAL ORDER SENT
 """
 
-            message += f"""
-📦 Order:
-{str(order_result.get("order"))}
-"""
+            message += (
+                "\n📦 ORDER:\n"
+                + str(order_result.get("order"))
+            )
 
         else:
 
             message += f"""
+
 🛡 ATI SAFETY
 
 ❌ Trade skipped.
@@ -694,30 +636,20 @@ def build_message(signal_data, order_result=None):
     return message.strip()
 
 
-# ------------------------------------------------------------
+# ============================================================
 # MAIN
-# ------------------------------------------------------------
+# ============================================================
 
 def main():
 
     print("=" * 60)
-    print("ATI CRYPTO BOT - STAGE 8")
+    print("ATI CRYPTO BOT - STAGE 8 LIVE")
     print("TABDEAL FUTURES")
     print("BTCUSDT / 5m")
     print("=" * 60)
 
     # --------------------------------------------------------
-    # Telegram test
-    # --------------------------------------------------------
-
-    if not BOT_TOKEN:
-        print("TELEGRAM_BOT_TOKEN is missing.")
-
-    if not CHAT_ID:
-        print("TELEGRAM_CHAT_ID is missing.")
-
-    # --------------------------------------------------------
-    # Tabdeal client
+    # CREATE CLIENT
     # --------------------------------------------------------
 
     try:
@@ -726,55 +658,58 @@ def main():
 
     except Exception as e:
 
-        message = f"""
+        print(e)
+
+        send_telegram(
+            f"""
 🛡 ATI SAFETY
 
 Bot stopped.
 
 ❌ {e}
-"""
+""".strip()
+        )
 
-        send_telegram(message)
-
-        print(e)
         return
 
     # --------------------------------------------------------
-    # API connection
+    # API CHECK
     # --------------------------------------------------------
 
     if not check_tabdeal_connection(client):
 
-        message = """
+        send_telegram(
+            """
 🛡 ATI SAFETY
 
 Bot stopped.
 
 ❌ Tabdeal Futures API connection failed.
 No order was sent.
-"""
+""".strip()
+        )
 
-        send_telegram(message)
         return
 
     # --------------------------------------------------------
-    # Market data
+    # MARKET DATA
     # --------------------------------------------------------
 
     trades = get_market_data()
 
     if not trades:
 
-        message = """
+        send_telegram(
+            """
 🛡 ATI SAFETY
 
 Bot stopped.
 
 ❌ Market data unavailable.
 No order was sent.
-"""
+""".strip()
+        )
 
-        send_telegram(message)
         return
 
     candles = build_candles(trades)
@@ -783,27 +718,39 @@ No order was sent.
 
     if len(candles) < 10:
 
-        message = """
+        send_telegram(
+            """
 🛡 ATI SAFETY
 
 Bot stopped.
 
 ❌ Not enough 5m candles.
 No order was sent.
-"""
+""".strip()
+        )
 
-        send_telegram(message)
         return
 
     # --------------------------------------------------------
-    # Signal
+    # SIGNAL
     # --------------------------------------------------------
 
     signal_data = calculate_signal(candles)
 
-    print("Signal:", signal_data["signal"])
-    print("BUY:", signal_data["buy_score"])
-    print("SELL:", signal_data["sell_score"])
+    print(
+        "SIGNAL:",
+        signal_data["signal"]
+    )
+
+    print(
+        "BUY SCORE:",
+        signal_data["buy_score"]
+    )
+
+    print(
+        "SELL SCORE:",
+        signal_data["sell_score"]
+    )
 
     # --------------------------------------------------------
     # NO SIGNAL
@@ -811,9 +758,9 @@ No order was sent.
 
     if signal_data["signal"] == "NO SIGNAL":
 
-        message = build_message(signal_data)
-
-        send_telegram(message)
+        send_telegram(
+            build_message(signal_data)
+        )
 
         return
 
@@ -827,15 +774,15 @@ No order was sent.
     )
 
     # --------------------------------------------------------
-    # Telegram result
+    # TELEGRAM RESULT
     # --------------------------------------------------------
 
-    message = build_message(
-        signal_data,
-        order_result
+    send_telegram(
+        build_message(
+            signal_data,
+            order_result
+        )
     )
-
-    send_telegram(message)
 
     print("=" * 60)
     print("BOT FINISHED")
