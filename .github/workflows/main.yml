@@ -31,10 +31,32 @@ jobs:
           LIVE_TRADING: ${{ secrets.LIVE_TRADING }}
           ORDER_QTY: ${{ secrets.ORDER_QTY }}
         run: |
-          if [ -z "$TABDEAL_API_KEY" ]; then echo "TABDEAL_API_KEY: MISSING"; else echo "TABDEAL_API_KEY: PRESENT"; fi
-          if [ -z "$TABDEAL_API_SECRET" ]; then echo "TABDEAL_API_SECRET: MISSING"; else echo "TABDEAL_API_SECRET: PRESENT"; fi
-          if [ -z "$TELEGRAM_BOT_TOKEN" ]; then echo "TELEGRAM_BOT_TOKEN: MISSING"; else echo "TELEGRAM_BOT_TOKEN: PRESENT"; fi
-          if [ -z "$TELEGRAM_CHAT_ID" ]; then echo "TELEGRAM_CHAT_ID: MISSING"; else echo "TELEGRAM_CHAT_ID: PRESENT"; fi
+          echo "===== ATI BOT SECRET CHECK ====="
+
+          if [ -z "$TABDEAL_API_KEY" ]; then
+            echo "❌ TABDEAL_API_KEY: MISSING"
+          else
+            echo "✅ TABDEAL_API_KEY: PRESENT"
+          fi
+
+          if [ -z "$TABDEAL_API_SECRET" ]; then
+            echo "❌ TABDEAL_API_SECRET: MISSING"
+          else
+            echo "✅ TABDEAL_API_SECRET: PRESENT"
+          fi
+
+          if [ -z "$TELEGRAM_BOT_TOKEN" ]; then
+            echo "❌ TELEGRAM_BOT_TOKEN: MISSING"
+          else
+            echo "✅ TELEGRAM_BOT_TOKEN: PRESENT"
+          fi
+
+          if [ -z "$TELEGRAM_CHAT_ID" ]; then
+            echo "❌ TELEGRAM_CHAT_ID: MISSING"
+          else
+            echo "✅ TELEGRAM_CHAT_ID: PRESENT"
+          fi
+
           echo "LIVE_TRADING: $LIVE_TRADING"
           echo "ORDER_QTY: $ORDER_QTY"
 
@@ -47,4 +69,6 @@ jobs:
           LIVE_TRADING: ${{ secrets.LIVE_TRADING }}
           ORDER_QTY: ${{ secrets.ORDER_QTY }}
         run: |
+          echo "===== START ATI CRYPTO BOT ====="
+          python --version
           python main.py
