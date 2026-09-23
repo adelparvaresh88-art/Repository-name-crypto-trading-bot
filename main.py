@@ -3,14 +3,7 @@ import json
 import requests
 from datetime import datetime, timezone
 
-# =========================================================
-# ATI CRYPTO BOT V19
-# BTCUSDT / 5 MIN
-# PRICE ACTION + BOS + PULLBACK
-# PAPER / TEST ONLY
-# =========================================================
-
-VERSION = "V19"
+VERSION = "V20"
 
 BASE_URL = "https://api1.tabdeal.org"
 SYMBOL = "BTCUSDT"
@@ -18,7 +11,6 @@ TIMEFRAME_MS = 5 * 60 * 1000
 
 HISTORY_FILE = "active_signal.json"
 STATE_FILE = "bot_state.json"
-
 MAX_HISTORY = 500
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -26,35 +18,24 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 session = requests.Session()
 session.headers.update({
-    "User-Agent": "ATI-CRYPTO-BOT-V19"
+    "User-Agent": "ATI-CRYPTO-BOT-V20"
 })
 
 
 # =========================================================
-# HTTP
+# API
 # =========================================================
 
 def get_json(url, params=None):
-    response = session.get(
-        url,
-        params=params,
-        timeout=20
-    )
-    response.raise_for_status()
-    return response.json()
+    r = session.get(url, params=params, timeout=20)
+    r.raise_for_status()
+    return r.json()
 
-
-# =========================================================
-# CURRENT PRICE
-# =========================================================
 
 def get_current_price():
     data = get_json(
         f"{BASE_URL}/r/api/v1/depth",
-        {
-            "symbol": SYMBOL,
-            "limit": 5
-        }
+        {"symbol": SYMBOL, "limit": 5}
     )
 
     bids = data.get("bids", [])
@@ -69,17 +50,10 @@ def get_current_price():
     return (bid + ask) / 2
 
 
-# =========================================================
-# TRADES
-# =========================================================
-
 def get_trades():
     data = get_json(
         f"{BASE_URL}/r/api/v1/trades",
-        {
-            "symbol": SYMBOL,
-            "limit": 1000
-        }
+        {"symbol": SYMBOL, "limit": 1000}
     )
 
     if not isinstance(data, list):
@@ -89,7 +63,7 @@ def get_trades():
 
 
 # =========================================================
-# PARSE TRADE
+# TRADE PARSER
 # =========================================================
 
 def parse_trade(item):
@@ -164,7 +138,7 @@ def parse_trade(item):
 
 
 # =========================================================
-# BUILD 5 MIN CANDLES
+# BUILD 5M CANDLES
 # =========================================================
 
 def build_candles(trades):
@@ -182,7 +156,9 @@ def build_candles(trades):
         price = trade["price"]
         quantity = trade["quantity"]
 
-        bucket = (ts // TIMEFRAME_MS) * TIMEFRAME_MS
+        bucket = (
+            ts // TIMEFRAME_MS
+        ) * TIMEFRAME_MS
 
         if bucket not in buckets:
 
@@ -197,21 +173,20 @@ def build_candles(trades):
 
         else:
 
-            candle = buckets[bucket]
+            c = buckets[bucket]
 
-            candle["high"] = max(
-                candle["high"],
+            c["high"] = max(
+                c["high"],
                 price
             )
 
-            candle["low"] = min(
-                candle["low"],
+            c["low"] = min(
+                c["low"],
                 price
             )
 
-            candle["close"] = price
-
-            candle["volume"] += quantity
+            c["close"] = price
+            c["volume"] += quantity
 
     return sorted(
         buckets.values(),
@@ -220,7 +195,7 @@ def build_candles(trades):
 
 
 # =========================================================
-# JSON STORAGE
+# STORAGE
 # =========================================================
 
 def load_json(filename, default):
@@ -263,42 +238,26 @@ def save_json(filename, data):
     os.replace(temp, filename)
 
 
-# =========================================================
-# MERGE HISTORY
-# =========================================================
-
 def merge_history(old_history, new_candles):
 
     merged = {}
 
     if isinstance(old_history, list):
 
-        for candle in old_history:
+        for c in old_history:
 
             try:
-
-                timestamp = int(
-                    candle["timestamp"]
-                )
-
-                merged[timestamp] = candle
-
+                ts = int(c["timestamp"])
+                merged[ts] = c
             except Exception:
-
                 continue
 
-    for candle in new_candles:
+    for c in new_candles:
 
         try:
-
-            timestamp = int(
-                candle["timestamp"]
-            )
-
-            merged[timestamp] = candle
-
+            ts = int(c["timestamp"])
+            merged[ts] = c
         except Exception:
-
             continue
 
     result = sorted(
@@ -308,10 +267,6 @@ def merge_history(old_history, new_candles):
 
     return result[-MAX_HISTORY:]
 
-
-# =========================================================
-# CLOSED CANDLES
-# =========================================================
 
 def get_closed_candles(history):
 
@@ -324,9 +279,8 @@ def get_closed_candles(history):
     ) * TIMEFRAME_MS
 
     return [
-        candle
-        for candle in history
-        if int(candle["timestamp"]) < current_bucket
+        c for c in history
+        if int(c["timestamp"]) < current_bucket
     ]
 
 
@@ -376,7 +330,7 @@ def bearish(c):
 
 
 # =========================================================
-# SWING HIGH
+# SWINGS
 # =========================================================
 
 def swing_highs(candles):
@@ -414,10 +368,6 @@ def swing_highs(candles):
     return result
 
 
-# =========================================================
-# SWING LOW
-# =========================================================
-
 def swing_lows(candles):
 
     result = []
@@ -454,7 +404,7 @@ def swing_lows(candles):
 
 
 # =========================================================
-# MARKET STRUCTURE
+# STRUCTURE
 # =========================================================
 
 def get_structure(candles):
@@ -473,11 +423,9 @@ def get_structure(candles):
         l2 = lows[-1]["price"]
 
         if h2 > h1 and l2 > l1:
-
             trend = "UPTREND"
 
         elif h2 < h1 and l2 < l1:
-
             trend = "DOWNTREND"
 
     return {
@@ -488,7 +436,46 @@ def get_structure(candles):
 
 
 # =========================================================
-# BREAK OF STRUCTURE
+# BREAKOUT
+# =========================================================
+
+def breakout_quality(candles, direction):
+
+    if len(candles) < 8:
+        return False
+
+    current = candles[-1]
+    previous = candles[-6:-1]
+
+    if direction == "BUY":
+
+        resistance = max(
+            H(c) for c in previous
+        )
+
+        return (
+            C(current) > resistance
+            and bullish(current)
+            and body_ratio(current) >= 0.50
+        )
+
+    if direction == "SELL":
+
+        support = min(
+            L(c) for c in previous
+        )
+
+        return (
+            C(current) < support
+            and bearish(current)
+            and body_ratio(current) >= 0.50
+        )
+
+    return False
+
+
+# =========================================================
+# BOS
 # =========================================================
 
 def get_bos(candles, structure):
@@ -498,23 +485,26 @@ def get_bos(candles, structure):
     highs = structure["highs"]
     lows = structure["lows"]
 
+    resistance = (
+        highs[-1]["price"]
+        if highs else None
+    )
+
+    support = (
+        lows[-1]["price"]
+        if lows else None
+    )
+
     bullish_bos = False
     bearish_bos = False
 
-    resistance = None
-    support = None
-
-    if highs:
-        resistance = highs[-1]["price"]
-
-    if lows:
-        support = lows[-1]["price"]
-
     if resistance is not None:
+
         if last_close > resistance:
             bullish_bos = True
 
     if support is not None:
+
         if last_close < support:
             bearish_bos = True
 
@@ -546,10 +536,10 @@ def get_momentum(candles):
         / previous
     ) * 100
 
-    if change >= 0.18:
+    if change >= 0.12:
         return "BULLISH"
 
-    if change <= -0.18:
+    if change <= -0.12:
         return "BEARISH"
 
     return "NEUTRAL"
@@ -561,68 +551,24 @@ def get_momentum(candles):
 
 def get_candle_strength(candles):
 
-    current = candles[-1]
+    c = candles[-1]
 
-    ratio = body_ratio(current)
+    ratio = body_ratio(c)
 
-    if ratio < 0.55:
+    if ratio < 0.50:
         return "WEAK"
 
-    if bullish(current):
+    if bullish(c):
         return "BULLISH"
 
-    if bearish(current):
+    if bearish(c):
         return "BEARISH"
 
     return "WEAK"
 
 
 # =========================================================
-# BREAKOUT QUALITY
-# =========================================================
-
-def breakout_quality(candles, direction):
-
-    if len(candles) < 8:
-        return False
-
-    current = candles[-1]
-
-    previous = candles[-6:-1]
-
-    if direction == "BUY":
-
-        level = max(
-            H(c)
-            for c in previous
-        )
-
-        if (
-            C(current) > level
-            and bullish(current)
-            and body_ratio(current) >= 0.55
-        ):
-            return True
-
-    if direction == "SELL":
-
-        level = min(
-            L(c)
-            for c in previous
-        )
-
-        if (
-            C(current) < level
-            and bearish(current)
-            and body_ratio(current) >= 0.55
-        ):
-            return True
-
-    return False
-
-
-# =========================================================
-# PULLBACK BUY
+# PULLBACK / RETEST
 # =========================================================
 
 def pullback_buy(candles):
@@ -642,10 +588,6 @@ def pullback_buy(candles):
     )
 
 
-# =========================================================
-# PULLBACK SELL
-# =========================================================
-
 def pullback_sell(candles):
 
     if len(candles) < 5:
@@ -664,7 +606,7 @@ def pullback_sell(candles):
 
 
 # =========================================================
-# RANGE LOCATION
+# RANGE POSITION
 # =========================================================
 
 def price_location(candles):
@@ -672,13 +614,11 @@ def price_location(candles):
     recent = candles[-20:]
 
     top = max(
-        H(c)
-        for c in recent
+        H(c) for c in recent
     )
 
     bottom = min(
-        L(c)
-        for c in recent
+        L(c) for c in recent
     )
 
     current = C(candles[-1])
@@ -695,7 +635,7 @@ def price_location(candles):
 
 
 # =========================================================
-# SIGNAL ENGINE
+# V20 SIGNAL ENGINE
 # =========================================================
 
 def signal_engine(candles):
@@ -704,10 +644,10 @@ def signal_engine(candles):
 
         return {
             "signal": "NO SIGNAL",
-            "trend": "UNKNOWN",
+            "trend": "WAITING",
             "buy_score": 0,
             "sell_score": 0,
-            "structure": "UNKNOWN",
+            "structure": "WAITING",
             "bos": "NONE",
             "pullback": "NONE",
             "momentum": "NEUTRAL",
@@ -735,18 +675,10 @@ def signal_engine(candles):
         candles
     )
 
-    buy_score = 0
-    sell_score = 0
+    buy_pullback = pullback_buy(candles)
+    sell_pullback = pullback_sell(candles)
 
-    buy_structure = (
-        trend == "UPTREND"
-    )
-
-    sell_structure = (
-        trend == "DOWNTREND"
-    )
-
-    buy_bos = (
+    buy_breakout = (
         bos["bullish"]
         or breakout_quality(
             candles,
@@ -754,7 +686,7 @@ def signal_engine(candles):
         )
     )
 
-    sell_bos = (
+    sell_breakout = (
         bos["bearish"]
         or breakout_quality(
             candles,
@@ -762,18 +694,14 @@ def signal_engine(candles):
         )
     )
 
-    buy_pullback = pullback_buy(
-        candles
-    )
+    buy_score = 0
+    sell_score = 0
 
-    sell_pullback = pullback_sell(
-        candles
-    )
+    # -----------------------------------------------------
+    # BUY
+    # -----------------------------------------------------
 
-    if buy_structure:
-        buy_score += 1
-
-    if buy_bos:
+    if trend == "UPTREND":
         buy_score += 1
 
     if momentum == "BULLISH":
@@ -782,13 +710,17 @@ def signal_engine(candles):
     if candle_strength == "BULLISH":
         buy_score += 1
 
+    if buy_breakout:
+        buy_score += 1
+
     if buy_pullback:
         buy_score += 1
 
-    if sell_structure:
-        sell_score += 1
+    # -----------------------------------------------------
+    # SELL
+    # -----------------------------------------------------
 
-    if sell_bos:
+    if trend == "DOWNTREND":
         sell_score += 1
 
     if momentum == "BEARISH":
@@ -797,81 +729,145 @@ def signal_engine(candles):
     if candle_strength == "BEARISH":
         sell_score += 1
 
+    if sell_breakout:
+        sell_score += 1
+
     if sell_pullback:
         sell_score += 1
 
-    # Avoid buying at extreme highs
-    if location >= 88:
+    # -----------------------------------------------------
+    # EXTREME FILTER
+    # -----------------------------------------------------
+
+    if location >= 90:
+
         buy_score = min(
             buy_score,
             3
         )
 
-    # Avoid selling at extreme lows
-    if location <= 12:
+    if location <= 10:
+
         sell_score = min(
             sell_score,
             3
         )
 
-    # Sideways = no trade
-    if trend == "SIDEWAYS":
+    # -----------------------------------------------------
+    # BUY CONFIRMATION
+    # -----------------------------------------------------
 
-        return {
-            "signal": "NO SIGNAL",
-            "trend": trend,
-            "buy_score": buy_score,
-            "sell_score": sell_score,
-            "structure": "UNCLEAR",
-            "bos": "NONE",
-            "pullback": "NONE",
-            "momentum": momentum,
-            "candle": candle_strength,
-            "location": location,
-            "reason": "Sideways market"
-        }
-
-    # Strong BUY
-    if (
+    buy_confirmed = (
         buy_score >= 4
         and buy_score > sell_score
-        and location < 88
-    ):
+        and location < 90
+        and momentum == "BULLISH"
+        and candle_strength == "BULLISH"
+        and (
+            buy_breakout
+            or buy_pullback
+        )
+    )
+
+    # -----------------------------------------------------
+    # SELL CONFIRMATION
+    # -----------------------------------------------------
+
+    sell_confirmed = (
+        sell_score >= 4
+        and sell_score > buy_score
+        and location > 10
+        and momentum == "BEARISH"
+        and candle_strength == "BEARISH"
+        and (
+            sell_breakout
+            or sell_pullback
+        )
+    )
+
+    if buy_confirmed:
 
         return {
             "signal": "BUY",
-            "trend": trend,
+            "trend": (
+                "UPTREND"
+                if trend == "UPTREND"
+                else "BULLISH SETUP"
+            ),
             "buy_score": buy_score,
             "sell_score": sell_score,
             "structure": "BULLISH",
-            "bos": "CONFIRMED" if buy_bos else "NO",
-            "pullback": "CONFIRMED" if buy_pullback else "NO",
+            "bos": (
+                "CONFIRMED"
+                if bos["bullish"]
+                else "BREAKOUT"
+                if buy_breakout
+                else "NO"
+            ),
+            "pullback": (
+                "CONFIRMED"
+                if buy_pullback
+                else "NO"
+            ),
             "momentum": momentum,
             "candle": candle_strength,
             "location": location,
-            "reason": "Strong bullish confirmation"
+            "reason": "Strong BUY confirmation"
         }
 
-    # Strong SELL
-    if (
-        sell_score >= 4
-        and sell_score > buy_score
-        and location > 12
-    ):
+    if sell_confirmed:
 
         return {
             "signal": "SELL",
-            "trend": trend,
+            "trend": (
+                "DOWNTREND"
+                if trend == "DOWNTREND"
+                else "BEARISH SETUP"
+            ),
             "buy_score": buy_score,
             "sell_score": sell_score,
             "structure": "BEARISH",
-            "bos": "CONFIRMED" if sell_bos else "NO",
-            "pullback": "CONFIRMED" if sell_pullback else "NO",
+            "bos": (
+                "CONFIRMED"
+                if bos["bearish"]
+                else "BREAKDOWN"
+                if sell_breakout
+                else "NO"
+            ),
+            "pullback": (
+                "CONFIRMED"
+                if sell_pullback
+                else "NO"
+            ),
             "momentum": momentum,
             "candle": candle_strength,
             "location": location,
-            "reason": "Strong bearish confirmation"
+            "reason": "Strong SELL confirmation"
         }
+
+    # -----------------------------------------------------
+    # NO SIGNAL
+    # -----------------------------------------------------
+
+    if location >= 90:
+
+        reason = "Price near range high"
+
+    elif location <= 10:
+
+        reason = "Price near range low"
+
+    elif momentum == "BULLISH":
+
+        reason = "Bullish momentum waiting for confirmation"
+
+    elif momentum == "BEARISH":
+
+        reason = "Bearish momentum waiting for confirmation"
+
+    else:
+
+        reason = "Waiting for structure confirmation"
 
     return {
         "signal": "NO SIGNAL",
@@ -880,16 +876,16 @@ def signal_engine(candles):
         "sell_score": sell_score,
         "structure": (
             "BULLISH"
-            if buy_structure
+            if buy_score > sell_score
             else "BEARISH"
-            if sell_structure
+            if sell_score > buy_score
             else "UNCLEAR"
         ),
         "bos": (
             "BULLISH"
-            if buy_bos
+            if buy_breakout
             else "BEARISH"
-            if sell_bos
+            if sell_breakout
             else "NONE"
         ),
         "pullback": (
@@ -902,7 +898,7 @@ def signal_engine(candles):
         "momentum": momentum,
         "candle": candle_strength,
         "location": location,
-        "reason": "Waiting for confirmation"
+        "reason": reason
     }
 
 
@@ -916,24 +912,22 @@ def calculate_sl_tp(candles, signal):
 
     recent = candles[-8:]
 
-    recent_high = max(
-        H(c)
-        for c in recent
+    high = max(
+        H(c) for c in recent
     )
 
-    recent_low = min(
-        L(c)
-        for c in recent
+    low = min(
+        L(c) for c in recent
     )
 
     if signal == "BUY":
 
-        risk = entry - recent_low
+        risk = entry - low
 
         if risk <= 0:
             risk = entry * 0.004
 
-        sl = recent_low
+        sl = low
         tp = entry + (
             risk * 2
         )
@@ -942,12 +936,12 @@ def calculate_sl_tp(candles, signal):
 
     if signal == "SELL":
 
-        risk = recent_high - entry
+        risk = high - entry
 
         if risk <= 0:
             risk = entry * 0.004
 
-        sl = recent_high
+        sl = high
         tp = entry - (
             risk * 2
         )
@@ -979,7 +973,7 @@ def send_telegram(message):
         "/sendMessage"
     )
 
-    response = session.post(
+    r = session.post(
         url,
         data={
             "chat_id": TELEGRAM_CHAT_ID,
@@ -988,9 +982,9 @@ def send_telegram(message):
         timeout=20
     )
 
-    response.raise_for_status()
+    r.raise_for_status()
 
-    result = response.json()
+    result = r.json()
 
     if not result.get("ok"):
         raise ValueError(
@@ -1028,10 +1022,7 @@ def candle_time(timestamp):
 
 def main():
 
-    # -----------------------------------------
     # PRICE
-    # -----------------------------------------
-
     try:
 
         current_price = get_current_price()
@@ -1051,10 +1042,7 @@ def main():
 
         raise
 
-    # -----------------------------------------
     # TRADES
-    # -----------------------------------------
-
     try:
 
         trades = get_trades()
@@ -1079,10 +1067,7 @@ def main():
             "No trades returned"
         )
 
-    # -----------------------------------------
     # CANDLES
-    # -----------------------------------------
-
     candles = build_candles(
         trades
     )
@@ -1092,10 +1077,7 @@ def main():
             "No candles created"
         )
 
-    # -----------------------------------------
     # HISTORY
-    # -----------------------------------------
-
     history = load_json(
         HISTORY_FILE,
         []
@@ -1115,10 +1097,7 @@ def main():
         history
     )
 
-    # -----------------------------------------
-    # NOT ENOUGH HISTORY
-    # -----------------------------------------
-
+    # HISTORY WAIT
     if len(closed) < 30:
 
         message = (
@@ -1126,7 +1105,7 @@ def main():
             "₿ BTC/USDT\n"
             "⏱ Timeframe: 5m\n"
             "✅ CLOSED CANDLE\n"
-            "🧠 PRICE ACTION ENGINE\n\n"
+            "🧠 SMART PRICE ACTION ENGINE\n\n"
             "📡 TABDEAL API: OK\n"
             "📊 TRADES API: OK\n\n"
             f"📚 Stored Candles: {len(closed)}\n\n"
@@ -1141,21 +1120,12 @@ def main():
 
         return
 
-    # -----------------------------------------
     # SIGNAL
-    # -----------------------------------------
-
     result = signal_engine(
         closed
     )
 
     signal = result["signal"]
-
-    trend = result["trend"]
-
-    buy_score = result["buy_score"]
-
-    sell_score = result["sell_score"]
 
     entry, sl, tp = calculate_sl_tp(
         closed,
@@ -1164,10 +1134,7 @@ def main():
 
     last = closed[-1]
 
-    # -----------------------------------------
-    # TRADE MESSAGE
-    # -----------------------------------------
-
+    # TRADE BLOCK
     if signal == "BUY":
 
         signal_text = "🟢 STRONG BUY"
@@ -1196,32 +1163,30 @@ def main():
 
         trade_block = "⏳ NO TRADE"
 
-    # -----------------------------------------
-    # FINAL TELEGRAM MESSAGE
-    # -----------------------------------------
-
+    # TELEGRAM MESSAGE
     message = (
         f"⚡ ATI CRYPTO BOT {VERSION}\n\n"
         "₿ BTC/USDT\n"
         "⏱ Timeframe: 5m\n"
         "✅ CLOSED CANDLE\n"
-        "🧠 BOS + PULLBACK ENGINE\n\n"
+        "🧠 SMART BREAKOUT ENGINE\n\n"
         "📡 TABDEAL API: OK\n"
         "📊 TRADES API: OK\n\n"
         f"🕐 Candle: {candle_time(last['timestamp'])}\n\n"
         f"📚 Stored Candles: {len(closed)}\n\n"
         f"💰 Current: {money(current_price)}\n"
         f"💵 Candle Close: {money(last['close'])}\n\n"
-        f"📊 TREND: {trend}\n"
+        f"📊 TREND: {result['trend']}\n"
         f"🏗 STRUCTURE: {result['structure']}\n"
         f"💥 BOS: {result['bos']}\n"
         f"↩️ PULLBACK: {result['pullback']}\n"
         f"🚀 MOMENTUM: {result['momentum']}\n"
         f"🕯 CANDLE: {result['candle']}\n"
         f"📍 RANGE POSITION: {result['location']:.1f}%\n\n"
-        f"📈 BUY SCORE: {buy_score}/5\n"
-        f"📉 SELL SCORE: {sell_score}/5\n\n"
-        f"📊 SIGNAL: {signal_text}\n\n"
+        f"📈 BUY SCORE: {result['buy_score']}/5\n"
+        f"📉 SELL SCORE: {result['sell_score']}/5\n\n"
+        f"📊 SIGNAL: {signal_text}\n"
+        f"📝 REASON: {result['reason']}\n\n"
         f"{trade_block}\n\n"
         "🛡 MODE: PAPER / TEST\n"
         "🚫 REAL TRADING DISABLED\n\n"
@@ -1230,10 +1195,7 @@ def main():
 
     send_telegram(message)
 
-    # -----------------------------------------
-    # SAVE STATE
-    # -----------------------------------------
-
+    # STATE
     state = load_json(
         STATE_FILE,
         {}
