@@ -4,35 +4,25 @@ from datetime import datetime, timezone
 
 # =========================================================
 # ATI CRYPTO BOT
-# TABDEAL FUTURES - STABLE TEST VERSION
+# TABDEAL - BTCUSDT
+# PRICE + CLOSED CANDLE + TELEGRAM
 # =========================================================
 
+BASE_URL = "https://api1.tabdeal.org"
 SYMBOL = "BTCUSDT"
-TIMEFRAME = "5m"
+INTERVAL = "5m"
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-TABDEAL_API_KEY = os.getenv("TABDEAL_API_KEY")
-TABDEAL_API_SECRET = os.getenv("TABDEAL_API_SECRET")
 
-# ---------------------------------------------------------
-# SAFETY
-# ---------------------------------------------------------
-# False = NO REAL ORDER
-# True  = REAL ORDER
-REAL_TRADING = False
-
-# مقدار بسیار کوچک برای تست
-ORDER_QTY = "0.001"
-
-# ---------------------------------------------------------
+# =========================================================
 # TELEGRAM
-# ---------------------------------------------------------
+# =========================================================
 
-def telegram(message):
+def send_telegram(message):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print("TELEGRAM ERROR: TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID is missing")
+        print("TELEGRAM ERROR: missing token or chat id")
         return False
 
     url = (
@@ -40,207 +30,232 @@ def telegram(message):
         f"{TELEGRAM_BOT_TOKEN}/sendMessage"
     )
 
-    payload = {
+    data = {
         "chat_id": TELEGRAM_CHAT_ID,
         "text": message
     }
 
     try:
-        response = requests.post(
-            url,
-            json=payload,
-            timeout=15
-        )
+        response = requests.post(url, data=data, timeout=20)
 
-        print("Telegram status:", response.status_code)
-        print("Telegram response:", response.text)
+        print("TELEGRAM STATUS:", response.status_code)
+        print("TELEGRAM RESPONSE:", response.text[:500])
 
         return response.ok
 
     except Exception as e:
-        print("Telegram exception:", repr(e))
+        print("TELEGRAM ERROR:", str(e))
         return False
 
 
-# ---------------------------------------------------------
-# PUBLIC TABDEAL PRICE
-# ---------------------------------------------------------
+# =========================================================
+# TABDEAL API
+# =========================================================
 
-def get_price():
-
-    urls = [
-        "https://api1.tabdeal.org/api/v1/ticker/price",
-        "https://api.tabdeal.org/api/v1/ticker/price"
+def get_ticker():
+    endpoints = [
+        f"{BASE_URL}/v1/ticker/{SYMBOL}",
+        f"{BASE_URL}/api/v1/ticker/{SYMBOL}",
+        f"{BASE_URL}/v1/ticker/24hr?symbol={SYMBOL}",
+        f"{BASE_URL}/api/v1/ticker/24hr?symbol={SYMBOL}",
     ]
 
-    for url in urls:
-
+    for url in endpoints:
         try:
+            print("PRICE API:", url)
 
-            response = requests.get(
-                url,
-                params={"symbol": SYMBOL},
-                timeout=15
-            )
+            response = requests.get(url, timeout=15)
 
-            print("Price URL:", url)
-            print("Price status:", response.status_code)
-            print("Price response:", response.text[:500])
+            print("STATUS:", response.status_code)
 
-            if response.ok:
+            if response.status_code != 200:
+                continue
 
-                data = response.json()
+            data = response.json()
+            print("TICKER RESPONSE:", data)
 
-                if isinstance(data, dict):
+            price = extract_price(data)
 
-                    price = (
-                        data.get("price")
-                        or data.get("lastPrice")
-                        or data.get("last")
-                    )
-
-                    if price:
-                        return float(price)
+            if price is not None:
+                return price
 
         except Exception as e:
-            print("Price error:", repr(e))
+            print("TICKER ERROR:", str(e))
 
     return None
 
 
-# ---------------------------------------------------------
-# CANDLE DATA
-# ---------------------------------------------------------
+def extract_price(data):
 
-def get_candles():
+    if isinstance(data, dict):
 
-    urls = [
-        "https://api1.tabdeal.org/api/v1/klines",
-        "https://api.tabdeal.org/api/v1/klines"
+        possible_keys = [
+            "last",
+            "lastPrice",
+            "price",
+            "close",
+            "c",
+            "last_price"
+        ]
+
+        for key in possible_keys:
+            value = data.get(key)
+
+            if value is not None:
+                try:
+                    return float(value)
+                except Exception:
+                    pass
+
+        # بعضی APIها اطلاعات را داخل data قرار می‌دهند
+        for key in ["data", "result", "ticker"]:
+
+            nested = data.get(key)
+
+            if isinstance(nested, dict):
+                price = extract_price(nested)
+
+                if price is not None:
+                    return price
+
+    return None
+
+
+# =========================================================
+# CANDLES
+# =========================================================
+
+def get_candles(limit=50):
+
+    endpoints = [
+        f"{BASE_URL}/v1/klines?symbol={SYMBOL}&interval={INTERVAL}&limit={limit}",
+        f"{BASE_URL}/api/v1/klines?symbol={SYMBOL}&interval={INTERVAL}&limit={limit}",
+        f"{BASE_URL}/v1/candles?symbol={SYMBOL}&interval={INTERVAL}&limit={limit}",
+        f"{BASE_URL}/api/v1/candles?symbol={SYMBOL}&interval={INTERVAL}&limit={limit}",
     ]
 
-    for url in urls:
+    for url in endpoints:
 
         try:
 
-            response = requests.get(
-                url,
-                params={
-                    "symbol": SYMBOL,
-                    "interval": TIMEFRAME,
-                    "limit": 30
-                },
-                timeout=15
-            )
+            print("CANDLE API:", url)
 
-            print("Kline URL:", url)
-            print("Kline status:", response.status_code)
+            response = requests.get(url, timeout=20)
 
-            if not response.ok:
+            print("CANDLE STATUS:", response.status_code)
+
+            if response.status_code != 200:
                 continue
 
             data = response.json()
 
-            if isinstance(data, list) and len(data) >= 10:
-                return data
+            candles = extract_candles(data)
+
+            if candles:
+                return candles
 
         except Exception as e:
-            print("Kline error:", repr(e))
+            print("CANDLE ERROR:", str(e))
 
-    return None
+    return []
 
 
-# ---------------------------------------------------------
-# SIMPLE PRICE-ACTION SIGNAL
-# ---------------------------------------------------------
+def extract_candles(data):
+
+    if isinstance(data, list):
+        return data
+
+    if isinstance(data, dict):
+
+        for key in ["data", "result", "candles", "klines"]:
+
+            value = data.get(key)
+
+            if isinstance(value, list):
+                return value
+
+    return []
+
+
+# =========================================================
+# SIMPLE SIGNAL
+# =========================================================
 
 def calculate_signal(candles):
 
-    if not candles or len(candles) < 10:
+    if len(candles) < 6:
         return "NO SIGNAL", 0, 0
 
     try:
 
-        # Tabdeal/Binance style kline:
-        # [open_time, open, high, low, close, volume, ...]
+        closes = []
 
-        closes = [
-            float(c[4])
-            for c in candles
-        ]
+        for candle in candles:
 
-        highs = [
-            float(c[2])
-            for c in candles
-        ]
+            if isinstance(candle, list) and len(candle) >= 5:
+                closes.append(float(candle[4]))
 
-        lows = [
-            float(c[3])
-            for c in candles
-        ]
+            elif isinstance(candle, dict):
 
-        # آخرین کندل بسته شده
-        close = closes[-2]
+                close = (
+                    candle.get("close")
+                    or candle.get("c")
+                )
 
-        previous_close = closes[-3]
+                if close is not None:
+                    closes.append(float(close))
 
-        recent_high = max(highs[-7:-2])
-        recent_low = min(lows[-7:-2])
+        if len(closes) < 6:
+            return "NO SIGNAL", 0, 0
+
+        # آخرین کندل بسته‌شده
+        last = closes[-2]
+
+        previous = closes[-3]
+
+        # میانگین کوتاه
+        recent = closes[-6:-1]
+
+        average = sum(recent) / len(recent)
 
         buy_score = 0
         sell_score = 0
 
-        # 1 - momentum
-        if close > previous_close:
+        # حرکت قیمت
+        if last > previous:
             buy_score += 1
-
-        if close < previous_close:
+        elif last < previous:
             sell_score += 1
 
-        # 2 - breakout
-        if close > recent_high:
+        # قیمت نسبت به میانگین
+        if last > average:
             buy_score += 1
-
-        if close < recent_low:
+        elif last < average:
             sell_score += 1
 
-        # 3 - short trend
-        short_avg = sum(closes[-6:-2]) / 4
+        # قدرت حرکت
+        movement = ((last - previous) / previous) * 100
 
-        if close > short_avg:
+        if movement > 0.05:
             buy_score += 1
 
-        if close < short_avg:
+        if movement < -0.05:
             sell_score += 1
 
-        # 4 - candle strength
-        candle_open = float(candles[-2][1])
-        candle_high = float(candles[-2][2])
-        candle_low = float(candles[-2][3])
-
-        candle_range = candle_high - candle_low
-
-        if candle_range > 0:
-
-            body = abs(close - candle_open)
-            body_ratio = body / candle_range
-
-            if body_ratio >= 0.55:
-
-                if close > candle_open:
-                    buy_score += 1
-
-                elif close < candle_open:
-                    sell_score += 1
-
-        # 5 - price location
-        if close > recent_high * 0.998:
+        # روند سه کندل
+        if closes[-4] < closes[-3] < closes[-2]:
             buy_score += 1
 
-        if close < recent_low * 1.002:
+        if closes[-4] > closes[-3] > closes[-2]:
             sell_score += 1
 
-        # Strong signal only
+        # شکست محدوده کوتاه
+        if last > max(closes[-6:-2]):
+            buy_score += 1
+
+        if last < min(closes[-6:-2]):
+            sell_score += 1
+
         if buy_score >= 4 and buy_score > sell_score:
             signal = "BUY"
 
@@ -254,253 +269,140 @@ def calculate_signal(candles):
 
     except Exception as e:
 
-        print("Signal calculation error:", repr(e))
+        print("SIGNAL ERROR:", str(e))
 
         return "NO SIGNAL", 0, 0
 
 
-# ---------------------------------------------------------
-# TABDEAL OFFICIAL SDK CONNECTION TEST
-# ---------------------------------------------------------
-
-def test_tabdeal_connection():
-
-    if not TABDEAL_API_KEY:
-        return False, "TABDEAL_API_KEY is missing"
-
-    if not TABDEAL_API_SECRET:
-        return False, "TABDEAL_API_SECRET is missing"
-
-    try:
-
-        from tabdeal.future import Future
-
-        client = Future(
-            TABDEAL_API_KEY,
-            TABDEAL_API_SECRET
-        )
-
-        # Public connection test
-        client.ping()
-
-        # Futures market information
-        client.exchange_info()
-
-        return True, "TABDEAL FUTURES API CONNECTED"
-
-    except ImportError:
-
-        return False, (
-            "tabdeal-python is not installed. "
-            "Add tabdeal-python to requirements.txt"
-        )
-
-    except Exception as e:
-
-        return False, f"TABDEAL API ERROR: {repr(e)}"
-
-
-# ---------------------------------------------------------
-# REAL ORDER FUNCTION
-# ---------------------------------------------------------
-
-def send_real_order(signal):
-
-    if not REAL_TRADING:
-        return False, "REAL_TRADING=False"
-
-    if signal not in ("BUY", "SELL"):
-        return False, "No valid trading signal"
-
-    if not TABDEAL_API_KEY or not TABDEAL_API_SECRET:
-        return False, "Tabdeal API keys are missing"
-
-    try:
-
-        from tabdeal.future import Future
-        from tabdeal.enums import OrderSides, OrderTypes
-
-        client = Future(
-            TABDEAL_API_KEY,
-            TABDEAL_API_SECRET
-        )
-
-        if signal == "BUY":
-            side = OrderSides.BUY
-        else:
-            side = OrderSides.SELL
-
-        order = client.new_order(
-            symbol=SYMBOL,
-            side=side,
-            type=OrderTypes.MARKET,
-            quantity=ORDER_QTY
-        )
-
-        print("REAL ORDER RESPONSE:")
-        print(order)
-
-        return True, str(order)
-
-    except Exception as e:
-
-        print("REAL ORDER ERROR:", repr(e))
-
-        return False, repr(e)
-
-
-# ---------------------------------------------------------
+# =========================================================
 # MAIN
-# ---------------------------------------------------------
+# =========================================================
 
 def main():
 
     print("=" * 60)
     print("ATI CRYPTO BOT")
-    print("TABDEAL FUTURES")
+    print("TABDEAL BTCUSDT")
     print("=" * 60)
 
     # -----------------------------------------------------
-    # Telegram test
+    # PRICE
     # -----------------------------------------------------
 
-    telegram_ok = telegram(
-        "⚡ ATI CRYPTO BOT\n\n"
-        "Starting bot...\n"
-        "Tabdeal Futures connection test."
-    )
-
-    print("Telegram OK:", telegram_ok)
-
-    # -----------------------------------------------------
-    # API connection
-    # -----------------------------------------------------
-
-    api_ok, api_message = test_tabdeal_connection()
-
-    print(api_message)
-
-    # -----------------------------------------------------
-    # Price
-    # -----------------------------------------------------
-
-    price = get_price()
+    price = get_ticker()
 
     if price is None:
 
-        message = (
-            "🛡 ATI SAFETY\n\n"
-            "❌ BTCUSDT price could not be read.\n\n"
-            f"API: {api_message}"
-        )
+        message = """🛡 ATI SAFETY
 
-        telegram(message)
+❌ BTCUSDT price could not be read.
+
+The bot could not connect to the Tabdeal public price API.
+No trade was sent.
+"""
+
+        print(message)
+        send_telegram(message)
         return
 
+    print("BTCUSDT PRICE:", price)
+
     # -----------------------------------------------------
-    # Candles
+    # CANDLES
     # -----------------------------------------------------
 
     candles = get_candles()
 
-    if candles is None:
+    if not candles:
 
-        telegram(
-            "🛡 ATI SAFETY\n\n"
-            "❌ 5m candle data could not be read.\n\n"
-            f"BTC/USDT: ${price:,.2f}"
-        )
+        message = f"""🛡 ATI SAFETY
 
+⚠️ BTCUSDT price: ${price:,.2f}
+
+❌ 5m candles could not be read.
+
+No trade was sent.
+"""
+
+        print(message)
+        send_telegram(message)
         return
 
     # -----------------------------------------------------
-    # Signal
+    # SIGNAL
     # -----------------------------------------------------
 
     signal, buy_score, sell_score = calculate_signal(candles)
 
     now = datetime.now(timezone.utc)
 
-    candle_time = "UNKNOWN"
-
-    try:
-        candle_timestamp = int(candles[-2][0]) / 1000
-        candle_time = datetime.fromtimestamp(
-            candle_timestamp,
-            timezone.utc
-        ).strftime("%H:%M UTC")
-    except Exception:
-        pass
-
     # -----------------------------------------------------
-    # Message
+    # MESSAGE
     # -----------------------------------------------------
 
     if signal == "BUY":
 
-        status = (
-            "🟢 BUY SIGNAL\n\n"
-            "⚠️ REAL ORDER IS DISABLED"
-        )
+        sl = price * 0.995
+        tp = price * 1.010
+
+        trade_text = f"""
+🟢 BUY SIGNAL
+
+💰 Entry: ${price:,.2f}
+🛑 SL: ${sl:,.2f}
+🎯 TP: ${tp:,.2f}
+"""
 
     elif signal == "SELL":
 
-        status = (
-            "🔴 SELL SIGNAL\n\n"
-            "⚠️ REAL ORDER IS DISABLED"
-        )
+        sl = price * 1.005
+        tp = price * 0.990
+
+        trade_text = f"""
+🔴 SELL SIGNAL
+
+💰 Entry: ${price:,.2f}
+🛑 SL: ${sl:,.2f}
+🎯 TP: ${tp:,.2f}
+"""
 
     else:
 
-        status = "⏳ NO TRADE"
+        trade_text = """
+⏳ NO TRADE
 
-    message = (
-        "⚡ ATI CRYPTO BOT\n\n"
-        "₿ BTC/USDT\n"
-        "⏱ Timeframe: 5m\n"
-        "✅ CLOSED CANDLE\n"
-        "💪 STRONG SIGNAL FILTER\n\n"
+No strong signal confirmed.
+"""
 
-        f"📊 SIGNAL: {signal}\n"
-        f"📈 BUY SCORE: {buy_score}/5\n"
-        f"📉 SELL SCORE: {sell_score}/5\n\n"
+    message = f"""⚡ ATI CRYPTO BOT
 
-        f"🕐 Candle: {candle_time}\n"
-        f"💰 Price: ${price:,.2f}\n\n"
+₿ BTC/USDT
+⏱ Timeframe: 5m
+✅ CLOSED CANDLE
+💪 STRONG SIGNAL FILTER
 
-        f"{status}\n\n"
+📊 SIGNAL: {signal}
+📈 BUY SCORE: {buy_score}/5
+📉 SELL SCORE: {sell_score}/5
 
-        f"🔐 TABDEAL API: "
-        f"{'CONNECTED' if api_ok else 'ERROR'}\n"
+🕐 UTC: {now.strftime("%Y-%m-%d %H:%M:%S")}
+💰 Price: ${price:,.2f}
+{trade_text}
+🛡 MODE: PAPER / TEST
+🚫 REAL TRADING DISABLED
+"""
 
-        f"📡 TELEGRAM: "
-        f"{'OK' if telegram_ok else 'ERROR'}\n"
-
-        f"🔒 REAL TRADING: "
-        f"{'ON' if REAL_TRADING else 'OFF'}"
-    )
-
-    telegram(message)
+    print(message)
 
     # -----------------------------------------------------
-    # REAL ORDER
+    # TELEGRAM
     # -----------------------------------------------------
 
-    if REAL_TRADING and signal in ("BUY", "SELL"):
+    if send_telegram(message):
+        print("TELEGRAM: MESSAGE SENT")
+    else:
+        print("TELEGRAM: MESSAGE FAILED")
 
-        success, result = send_real_order(signal)
-
-        telegram(
-            "🤖 ATI ORDER RESULT\n\n"
-            f"Signal: {signal}\n"
-            f"Success: {success}\n\n"
-            f"{result}"
-        )
-
-
-# ---------------------------------------------------------
-# RUN
-# ---------------------------------------------------------
 
 if __name__ == "__main__":
     main()
