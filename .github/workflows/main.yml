@@ -2,8 +2,6 @@ name: Run ATI Bot
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "*/5 * * * *"
 
 jobs:
   run-bot:
@@ -22,51 +20,31 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install requests
-          pip install tabdeal-python==0.4.7
+          pip install tabdeal-python
 
       - name: Check Secrets
         env:
-          TABDIL_API_KEY: ${{ secrets.TABDIL_API_KEY }}
-          TABDIL_API_SECRET: ${{ secrets.TABDIL_API_SECRET }}
+          TABDEAL_API_KEY: ${{ secrets.TABDEAL_API_KEY }}
+          TABDEAL_API_SECRET: ${{ secrets.TABDEAL_API_SECRET }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          LIVE_TRADING: ${{ secrets.LIVE_TRADING }}
+          ORDER_QTY: ${{ secrets.ORDER_QTY }}
         run: |
-          echo "Checking ATI secrets..."
-
-          if [ -n "$TABDIL_API_KEY" ]; then
-            echo "TABDIL_API_KEY: PRESENT"
-          else
-            echo "TABDIL_API_KEY: MISSING"
-            exit 1
-          fi
-
-          if [ -n "$TABDIL_API_SECRET" ]; then
-            echo "TABDIL_API_SECRET: PRESENT"
-          else
-            echo "TABDIL_API_SECRET: MISSING"
-            exit 1
-          fi
-
-          if [ -n "$TELEGRAM_BOT_TOKEN" ]; then
-            echo "TELEGRAM_BOT_TOKEN: PRESENT"
-          else
-            echo "TELEGRAM_BOT_TOKEN: MISSING"
-            exit 1
-          fi
-
-          if [ -n "$TELEGRAM_CHAT_ID" ]; then
-            echo "TELEGRAM_CHAT_ID: PRESENT"
-          else
-            echo "TELEGRAM_CHAT_ID: MISSING"
-            exit 1
-          fi
+          if [ -z "$TABDEAL_API_KEY" ]; then echo "TABDEAL_API_KEY: MISSING"; else echo "TABDEAL_API_KEY: PRESENT"; fi
+          if [ -z "$TABDEAL_API_SECRET" ]; then echo "TABDEAL_API_SECRET: MISSING"; else echo "TABDEAL_API_SECRET: PRESENT"; fi
+          if [ -z "$TELEGRAM_BOT_TOKEN" ]; then echo "TELEGRAM_BOT_TOKEN: MISSING"; else echo "TELEGRAM_BOT_TOKEN: PRESENT"; fi
+          if [ -z "$TELEGRAM_CHAT_ID" ]; then echo "TELEGRAM_CHAT_ID: MISSING"; else echo "TELEGRAM_CHAT_ID: PRESENT"; fi
+          echo "LIVE_TRADING: $LIVE_TRADING"
+          echo "ORDER_QTY: $ORDER_QTY"
 
       - name: Run ATI Bot
         env:
-          TABDIL_API_KEY: ${{ secrets.TABDIL_API_KEY }}
-          TABDIL_API_SECRET: ${{ secrets.TABDIL_API_SECRET }}
+          TABDEAL_API_KEY: ${{ secrets.TABDEAL_API_KEY }}
+          TABDEAL_API_SECRET: ${{ secrets.TABDEAL_API_SECRET }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          LIVE_TRADING: ${{ secrets.LIVE_TRADING }}
+          ORDER_QTY: ${{ secrets.ORDER_QTY }}
         run: |
-          echo "Starting ATI Bot..."
           python main.py
