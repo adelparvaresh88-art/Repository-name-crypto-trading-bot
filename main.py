@@ -3,7 +3,7 @@ import json
 import requests
 from datetime import datetime, timezone
 
-VERSION = "V21"
+VERSION = "V22"
 
 BASE_URL = "https://api1.tabdeal.org"
 SYMBOL = "BTCUSDT"
@@ -18,7 +18,7 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 session = requests.Session()
 session.headers.update({
-    "User-Agent": "ATI-CRYPTO-BOT-V21"
+    "User-Agent": "ATI-CRYPTO-BOT-V22"
 })
 
 
@@ -215,17 +215,14 @@ def load_json(filename, default):
         return default
 
     try:
-
         with open(
             filename,
             "r",
             encoding="utf-8"
         ) as f:
-
             return json.load(f)
 
     except Exception:
-
         return default
 
 
@@ -261,11 +258,7 @@ def merge_history(old_history, new_candles):
         for candle in old_history:
 
             try:
-
-                ts = int(
-                    candle["timestamp"]
-                )
-
+                ts = int(candle["timestamp"])
                 merged[ts] = candle
 
             except Exception:
@@ -274,11 +267,7 @@ def merge_history(old_history, new_candles):
     for candle in new_candles:
 
         try:
-
-            ts = int(
-                candle["timestamp"]
-            )
-
+            ts = int(candle["timestamp"])
             merged[ts] = candle
 
         except Exception:
@@ -329,6 +318,7 @@ def C(c):
 
 
 def candle_range(c):
+
     return max(
         H(c) - L(c),
         0.00000001
@@ -336,20 +326,24 @@ def candle_range(c):
 
 
 def body(c):
+
     return abs(
         C(c) - O(c)
     )
 
 
 def body_ratio(c):
+
     return body(c) / candle_range(c)
 
 
 def bullish(c):
+
     return C(c) > O(c)
 
 
 def bearish(c):
+
     return C(c) < O(c)
 
 
@@ -460,21 +454,27 @@ def get_structure(candles):
 
 
 # =========================================================
-# BREAKOUT
+# V22 BREAKOUT ENGINE
 # =========================================================
 
 def breakout_info(candles):
 
-    if len(candles) < 8:
+    if len(candles) < 10:
 
         return {
             "buy": False,
             "sell": False,
+            "strong_buy": False,
+            "strong_sell": False,
             "high": None,
             "low": None
         }
 
     current = candles[-1]
+
+    # IMPORTANT:
+    # Resistance/support are calculated ONLY
+    # from candles BEFORE the current candle.
     previous = candles[-6:-1]
 
     resistance = max(
@@ -487,21 +487,49 @@ def breakout_info(candles):
         for c in previous
     )
 
+    current_close = C(current)
+    current_open = O(current)
+
+    ratio = body_ratio(current)
+
+    # Small confirmation buffer.
+    # This prevents tiny price differences
+    # from being treated as a real breakout.
+    breakout_buffer = resistance * 0.00015
+    breakdown_buffer = support * 0.00015
+
+    buy_break_level = resistance + breakout_buffer
+    sell_break_level = support - breakdown_buffer
+
     buy = (
-        C(current) > resistance
-        and bullish(current)
-        and body_ratio(current) >= 0.50
+        current_close > buy_break_level
+        and current_close > current_open
+        and ratio >= 0.50
     )
 
     sell = (
-        C(current) < support
-        and bearish(current)
-        and body_ratio(current) >= 0.50
+        current_close < sell_break_level
+        and current_close < current_open
+        and ratio >= 0.50
+    )
+
+    strong_buy = (
+        current_close > buy_break_level
+        and current_close > current_open
+        and ratio >= 0.60
+    )
+
+    strong_sell = (
+        current_close < sell_break_level
+        and current_close < current_open
+        and ratio >= 0.60
     )
 
     return {
         "buy": buy,
         "sell": sell,
+        "strong_buy": strong_buy,
+        "strong_sell": strong_sell,
         "high": resistance,
         "low": support
     }
@@ -636,14 +664,19 @@ def price_location(candles):
     if distance <= 0:
         return 50.0
 
-    return (
+    location = (
         (current - bottom)
         / distance
     ) * 100
 
+    return max(
+        0.0,
+        min(100.0, location)
+    )
+
 
 # =========================================================
-# V21 SIGNAL ENGINE
+# V22 SIGNAL ENGINE
 # =========================================================
 
 def signal_engine(candles):
@@ -664,27 +697,17 @@ def signal_engine(candles):
             "reason": "Not enough history"
         }
 
-    structure = get_structure(
-        candles
-    )
+    structure_data = get_structure(candles)
 
-    trend = structure["trend"]
+    trend = structure_data["trend"]
 
-    breakout = breakout_info(
-        candles
-    )
+    breakout = breakout_info(candles)
 
-    momentum = get_momentum(
-        candles
-    )
+    momentum = get_momentum(candles)
 
-    candle_strength = get_candle_strength(
-        candles
-    )
+    candle_strength = get_candle_strength(candles)
 
-    location = price_location(
-        candles
-    )
+    location = price_location(candles)
 
     resistance = breakout["high"]
     support = breakout["low"]
@@ -702,7 +725,10 @@ def signal_engine(candles):
     buy_score = 0
     sell_score = 0
 
+    # =====================================================
     # BUY SCORE
+    # =====================================================
+
     if trend == "UPTREND":
         buy_score += 1
 
@@ -721,7 +747,10 @@ def signal_engine(candles):
     if buy_retest:
         buy_score += 1
 
+    # =====================================================
     # SELL SCORE
+    # =====================================================
+
     if trend == "DOWNTREND":
         sell_score += 1
 
@@ -740,25 +769,27 @@ def signal_engine(candles):
     if sell_retest:
         sell_score += 1
 
-    # -----------------------------------------------------
-    # STRONG BREAKOUT OVERRIDES RANGE-HIGH BLOCK
-    # -----------------------------------------------------
+    # =====================================================
+    # STRONG BREAKOUT
+    # =====================================================
 
-    strong_buy_breakout = (
-        breakout["buy"]
+    strong_buy = (
+        breakout["strong_buy"]
         and momentum == "BULLISH"
-        and candle_strength == "STRONG BULLISH"
+        and buy_score >= 3
+        and buy_score > sell_score
     )
 
-    strong_sell_breakout = (
-        breakout["sell"]
+    strong_sell = (
+        breakout["strong_sell"]
         and momentum == "BEARISH"
-        and candle_strength == "STRONG BEARISH"
+        and sell_score >= 3
+        and sell_score > buy_score
     )
 
-    # -----------------------------------------------------
+    # =====================================================
     # NORMAL BUY
-    # -----------------------------------------------------
+    # =====================================================
 
     normal_buy = (
         buy_score >= 4
@@ -768,26 +799,16 @@ def signal_engine(candles):
             "BULLISH",
             "STRONG BULLISH"
         )
-        and location < 90
         and (
             breakout["buy"]
             or buy_retest
         )
+        and location < 95
     )
 
-    # -----------------------------------------------------
-    # BREAKOUT BUY
-    # -----------------------------------------------------
-
-    breakout_buy = (
-        strong_buy_breakout
-        and buy_score >= 3
-        and buy_score > sell_score
-    )
-
-    # -----------------------------------------------------
+    # =====================================================
     # NORMAL SELL
-    # -----------------------------------------------------
+    # =====================================================
 
     normal_sell = (
         sell_score >= 4
@@ -797,24 +818,18 @@ def signal_engine(candles):
             "BEARISH",
             "STRONG BEARISH"
         )
-        and location > 10
         and (
             breakout["sell"]
             or sell_retest
         )
+        and location > 5
     )
 
-    # -----------------------------------------------------
-    # BREAKDOWN SELL
-    # -----------------------------------------------------
+    # =====================================================
+    # STRONG BUY RESULT
+    # =====================================================
 
-    breakout_sell = (
-        strong_sell_breakout
-        and sell_score >= 3
-        and sell_score > buy_score
-    )
-
-    if breakout_buy:
+    if strong_buy:
 
         return {
             "signal": "BUY",
@@ -831,8 +846,12 @@ def signal_engine(candles):
             "location": location,
             "buy_score": buy_score,
             "sell_score": sell_score,
-            "reason": "Strong bullish breakout"
+            "reason": "Strong bullish breakout confirmed"
         }
+
+    # =====================================================
+    # NORMAL BUY RESULT
+    # =====================================================
 
     if normal_buy:
 
@@ -858,7 +877,11 @@ def signal_engine(candles):
             "reason": "Bullish confirmation"
         }
 
-    if breakout_sell:
+    # =====================================================
+    # STRONG SELL RESULT
+    # =====================================================
+
+    if strong_sell:
 
         return {
             "signal": "SELL",
@@ -875,8 +898,12 @@ def signal_engine(candles):
             "location": location,
             "buy_score": buy_score,
             "sell_score": sell_score,
-            "reason": "Strong bearish breakdown"
+            "reason": "Strong bearish breakdown confirmed"
         }
+
+    # =====================================================
+    # NORMAL SELL RESULT
+    # =====================================================
 
     if normal_sell:
 
@@ -902,21 +929,27 @@ def signal_engine(candles):
             "reason": "Bearish confirmation"
         }
 
-    # -----------------------------------------------------
+    # =====================================================
     # NO SIGNAL REASON
-    # -----------------------------------------------------
+    # =====================================================
 
-    if location >= 90:
-        reason = "Near range high - waiting for strong breakout"
+    if location >= 95 and momentum == "BULLISH":
+        reason = "Near range high - waiting for confirmed breakout"
 
-    elif location <= 10:
-        reason = "Near range low - waiting for strong breakdown"
+    elif location <= 5 and momentum == "BEARISH":
+        reason = "Near range low - waiting for confirmed breakdown"
 
-    elif momentum == "BULLISH":
-        reason = "Bullish momentum - waiting for breakout/retest"
+    elif momentum == "BULLISH" and not breakout["buy"]:
+        reason = "Bullish momentum - waiting for resistance break"
 
-    elif momentum == "BEARISH":
-        reason = "Bearish momentum - waiting for breakdown/retest"
+    elif momentum == "BEARISH" and not breakout["sell"]:
+        reason = "Bearish momentum - waiting for support break"
+
+    elif breakout["buy"]:
+        reason = "Breakout detected - waiting for stronger confirmation"
+
+    elif breakout["sell"]:
+        reason = "Breakdown detected - waiting for stronger confirmation"
 
     else:
         reason = "Waiting for confirmation"
@@ -1000,7 +1033,11 @@ def calculate_sl_tp(candles, signal):
             entry - risk * 2
         )
 
-    return entry, None, None
+    return (
+        entry,
+        None,
+        None
+    )
 
 
 # =========================================================
@@ -1036,11 +1073,17 @@ def send_telegram(message):
 
     response.raise_for_status()
 
-    if not response.json().get("ok"):
+    result = response.json()
+
+    if not result.get("ok"):
         raise ValueError(
             "Telegram API failed"
         )
 
+
+# =========================================================
+# FORMATTERS
+# =========================================================
 
 def money(value):
 
@@ -1066,6 +1109,10 @@ def candle_time(timestamp):
 
 def main():
 
+    # -----------------------------------------------------
+    # PRICE
+    # -----------------------------------------------------
+
     try:
 
         current_price = get_current_price()
@@ -1082,6 +1129,10 @@ def main():
             pass
 
         raise
+
+    # -----------------------------------------------------
+    # TRADES
+    # -----------------------------------------------------
 
     try:
 
@@ -1105,6 +1156,10 @@ def main():
             "No trades returned"
         )
 
+    # -----------------------------------------------------
+    # CANDLES
+    # -----------------------------------------------------
+
     candles = build_candles(
         trades
     )
@@ -1113,6 +1168,10 @@ def main():
         raise ValueError(
             "No candles created"
         )
+
+    # -----------------------------------------------------
+    # HISTORY
+    # -----------------------------------------------------
 
     history = load_json(
         HISTORY_FILE,
@@ -1133,6 +1192,10 @@ def main():
         history
     )
 
+    # -----------------------------------------------------
+    # NOT ENOUGH HISTORY
+    # -----------------------------------------------------
+
     if len(closed) < 30:
 
         message = (
@@ -1140,7 +1203,7 @@ def main():
             "₿ BTC/USDT\n"
             "⏱ Timeframe: 5m\n"
             "✅ CLOSED CANDLE\n"
-            "🧠 BREAKOUT + RETEST ENGINE\n\n"
+            "🧠 SMART BREAKOUT ENGINE\n\n"
             "📡 TABDEAL API: OK\n"
             "📊 TRADES API: OK\n\n"
             f"📚 Stored Candles: {len(closed)}\n\n"
@@ -1154,6 +1217,10 @@ def main():
         send_telegram(message)
         return
 
+    # -----------------------------------------------------
+    # SIGNAL
+    # -----------------------------------------------------
+
     result = signal_engine(
         closed
     )
@@ -1166,6 +1233,10 @@ def main():
     )
 
     last = closed[-1]
+
+    # -----------------------------------------------------
+    # MESSAGE
+    # -----------------------------------------------------
 
     if signal == "BUY":
 
@@ -1199,7 +1270,7 @@ def main():
         "₿ BTC/USDT\n"
         "⏱ Timeframe: 5m\n"
         "✅ CLOSED CANDLE\n"
-        "🧠 BREAKOUT + RETEST ENGINE\n\n"
+        "🧠 SMART BREAKOUT ENGINE\n\n"
         "📡 TABDEAL API: OK\n"
         "📊 TRADES API: OK\n\n"
         f"🕐 Candle: {candle_time(last['timestamp'])}\n\n"
@@ -1223,7 +1294,15 @@ def main():
         "📡 TELEGRAM: OK"
     )
 
+    # -----------------------------------------------------
+    # TELEGRAM
+    # -----------------------------------------------------
+
     send_telegram(message)
+
+    # -----------------------------------------------------
+    # STATE
+    # -----------------------------------------------------
 
     state = load_json(
         STATE_FILE,
@@ -1247,6 +1326,10 @@ def main():
         state
     )
 
+
+# =========================================================
+# START
+# =========================================================
 
 if __name__ == "__main__":
     main()
