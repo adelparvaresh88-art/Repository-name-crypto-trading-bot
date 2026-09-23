@@ -20,11 +20,28 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install requests
-          pip install --upgrade --force-reinstall tabdeal-python==0.4.7
+          pip install --force-reinstall tabdeal-python==0.4.7
 
-      - name: Verify Tabdeal SDK
+      - name: Inspect Tabdeal SDK
         run: |
-          python -c "from tabdeal.future import Future; print('✅ Tabdeal Futures SDK: OK')"
+          echo "===== TABDEAL SDK INFORMATION ====="
+          python --version
+
+          echo ""
+          echo "===== INSTALLED PACKAGE ====="
+          python -m pip show tabdeal-python
+
+          echo ""
+          echo "===== TABDEAL MODULE LOCATION ====="
+          python -c "import tabdeal; print(tabdeal.__file__)"
+
+          echo ""
+          echo "===== TABDEAL MODULE CONTENT ====="
+          python -c "import os, tabdeal; print(os.listdir(os.path.dirname(tabdeal.__file__)))"
+
+          echo ""
+          echo "===== AVAILABLE TABDEAL MODULES ====="
+          python -c "import pkgutil, tabdeal; print([m.name for m in pkgutil.iter_modules(tabdeal.__path__)])"
 
       - name: Check Secrets
         env:
@@ -35,6 +52,8 @@ jobs:
           LIVE_TRADING: ${{ secrets.LIVE_TRADING }}
           ORDER_QTY: ${{ secrets.ORDER_QTY }}
         run: |
+          echo "===== ATI BOT SECRET CHECK ====="
+
           if [ -z "$TABDEAL_API_KEY" ]; then
             echo "❌ TABDEAL_API_KEY: MISSING"
           else
@@ -71,5 +90,5 @@ jobs:
           LIVE_TRADING: ${{ secrets.LIVE_TRADING }}
           ORDER_QTY: ${{ secrets.ORDER_QTY }}
         run: |
-          python --version
+          echo "===== START ATI BOT ====="
           python main.py
