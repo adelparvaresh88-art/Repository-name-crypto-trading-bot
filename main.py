@@ -2,12 +2,6 @@ import os
 import requests
 from datetime import datetime, timezone
 
-# =========================================================
-# ATI CRYPTO BOT
-# TABDEAL - BTCUSDT
-# PRICE + CLOSED CANDLE + TELEGRAM
-# =========================================================
-
 BASE_URL = "https://api1.tabdeal.org"
 SYMBOL = "BTCUSDT"
 INTERVAL = "5m"
@@ -16,27 +10,22 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 
-# =========================================================
-# TELEGRAM
-# =========================================================
-
 def send_telegram(message):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         print("TELEGRAM ERROR: missing token or chat id")
         return False
 
-    url = (
-        f"https://api.telegram.org/bot"
-        f"{TELEGRAM_BOT_TOKEN}/sendMessage"
-    )
-
-    data = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": message
-    }
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
 
     try:
-        response = requests.post(url, data=data, timeout=20)
+        response = requests.post(
+            url,
+            data={
+                "chat_id": TELEGRAM_CHAT_ID,
+                "text": message
+            },
+            timeout=20
+        )
 
         print("TELEGRAM STATUS:", response.status_code)
         print("TELEGRAM RESPONSE:", response.text[:500])
@@ -44,23 +33,19 @@ def send_telegram(message):
         return response.ok
 
     except Exception as e:
-        print("TELEGRAM ERROR:", str(e))
+        print("TELEGRAM ERROR:", e)
         return False
 
 
-# =========================================================
-# TABDEAL API
-# =========================================================
-
-def get_ticker():
-    endpoints = [
+def get_price():
+    urls = [
         f"{BASE_URL}/v1/ticker/{SYMBOL}",
         f"{BASE_URL}/api/v1/ticker/{SYMBOL}",
         f"{BASE_URL}/v1/ticker/24hr?symbol={SYMBOL}",
-        f"{BASE_URL}/api/v1/ticker/24hr?symbol={SYMBOL}",
+        f"{BASE_URL}/api/v1/ticker/24hr?symbol={SYMBOL}"
     ]
 
-    for url in endpoints:
+    for url in urls:
         try:
             print("PRICE API:", url)
 
@@ -72,33 +57,28 @@ def get_ticker():
                 continue
 
             data = response.json()
-            print("TICKER RESPONSE:", data)
-
             price = extract_price(data)
 
             if price is not None:
                 return price
 
         except Exception as e:
-            print("TICKER ERROR:", str(e))
+            print("PRICE ERROR:", e)
 
     return None
 
 
 def extract_price(data):
-
     if isinstance(data, dict):
 
-        possible_keys = [
+        for key in [
             "last",
             "lastPrice",
             "price",
             "close",
             "c",
             "last_price"
-        ]
-
-        for key in possible_keys:
+        ]:
             value = data.get(key)
 
             if value is not None:
@@ -107,9 +87,7 @@ def extract_price(data):
                 except Exception:
                     pass
 
-        # بعضی APIها اطلاعات را داخل data قرار می‌دهند
         for key in ["data", "result", "ticker"]:
-
             nested = data.get(key)
 
             if isinstance(nested, dict):
@@ -121,23 +99,16 @@ def extract_price(data):
     return None
 
 
-# =========================================================
-# CANDLES
-# =========================================================
-
 def get_candles(limit=50):
-
-    endpoints = [
+    urls = [
         f"{BASE_URL}/v1/klines?symbol={SYMBOL}&interval={INTERVAL}&limit={limit}",
         f"{BASE_URL}/api/v1/klines?symbol={SYMBOL}&interval={INTERVAL}&limit={limit}",
         f"{BASE_URL}/v1/candles?symbol={SYMBOL}&interval={INTERVAL}&limit={limit}",
-        f"{BASE_URL}/api/v1/candles?symbol={SYMBOL}&interval={INTERVAL}&limit={limit}",
+        f"{BASE_URL}/api/v1/candles?symbol={SYMBOL}&interval={INTERVAL}&limit={limit}"
     ]
 
-    for url in endpoints:
-
+    for url in urls:
         try:
-
             print("CANDLE API:", url)
 
             response = requests.get(url, timeout=20)
@@ -149,91 +120,58 @@ def get_candles(limit=50):
 
             data = response.json()
 
-            candles = extract_candles(data)
+            if isinstance(data, list):
+                return data
 
-            if candles:
-                return candles
+            if isinstance(data, dict):
+                for key in ["data", "result", "candles", "klines"]:
+                    if isinstance(data.get(key), list):
+                        return data[key]
 
         except Exception as e:
-            print("CANDLE ERROR:", str(e))
+            print("CANDLE ERROR:", e)
 
     return []
 
-
-def extract_candles(data):
-
-    if isinstance(data, list):
-        return data
-
-    if isinstance(data, dict):
-
-        for key in ["data", "result", "candles", "klines"]:
-
-            value = data.get(key)
-
-            if isinstance(value, list):
-                return value
-
-    return []
-
-
-# =========================================================
-# SIMPLE SIGNAL
-# =========================================================
 
 def calculate_signal(candles):
-
     if len(candles) < 6:
         return "NO SIGNAL", 0, 0
 
+    closes = []
+
     try:
-
-        closes = []
-
         for candle in candles:
-
             if isinstance(candle, list) and len(candle) >= 5:
                 closes.append(float(candle[4]))
 
             elif isinstance(candle, dict):
+                value = candle.get("close") or candle.get("c")
 
-                close = (
-                    candle.get("close")
-                    or candle.get("c")
-                )
-
-                if close is not None:
-                    closes.append(float(close))
+                if value is not None:
+                    closes.append(float(value))
 
         if len(closes) < 6:
             return "NO SIGNAL", 0, 0
 
-        # آخرین کندل بسته‌شده
         last = closes[-2]
-
         previous = closes[-3]
 
-        # میانگین کوتاه
-        recent = closes[-6:-1]
-
-        average = sum(recent) / len(recent)
+        average = sum(closes[-6:-1]) / 5
 
         buy_score = 0
         sell_score = 0
 
-        # حرکت قیمت
         if last > previous:
             buy_score += 1
         elif last < previous:
             sell_score += 1
 
-        # قیمت نسبت به میانگین
         if last > average:
             buy_score += 1
         elif last < average:
             sell_score += 1
 
-        # قدرت حرکت
         movement = ((last - previous) / previous) * 100
 
         if movement > 0.05:
@@ -242,14 +180,12 @@ def calculate_signal(candles):
         if movement < -0.05:
             sell_score += 1
 
-        # روند سه کندل
         if closes[-4] < closes[-3] < closes[-2]:
             buy_score += 1
 
         if closes[-4] > closes[-3] > closes[-2]:
             sell_score += 1
 
-        # شکست محدوده کوتاه
         if last > max(closes[-6:-2]):
             buy_score += 1
 
@@ -268,15 +204,9 @@ def calculate_signal(candles):
         return signal, buy_score, sell_score
 
     except Exception as e:
-
-        print("SIGNAL ERROR:", str(e))
-
+        print("SIGNAL ERROR:", e)
         return "NO SIGNAL", 0, 0
 
-
-# =========================================================
-# MAIN
-# =========================================================
 
 def main():
 
@@ -285,11 +215,7 @@ def main():
     print("TABDEAL BTCUSDT")
     print("=" * 60)
 
-    # -----------------------------------------------------
-    # PRICE
-    # -----------------------------------------------------
-
-    price = get_ticker()
+    price = get_price()
 
     if price is None:
 
@@ -305,19 +231,13 @@ No trade was sent.
         send_telegram(message)
         return
 
-    print("BTCUSDT PRICE:", price)
-
-    # -----------------------------------------------------
-    # CANDLES
-    # -----------------------------------------------------
-
     candles = get_candles()
 
     if not candles:
 
         message = f"""🛡 ATI SAFETY
 
-⚠️ BTCUSDT price: ${price:,.2f}
+⚠️ BTCUSDT PRICE: ${price:,.2f}
 
 ❌ 5m candles could not be read.
 
@@ -328,17 +248,9 @@ No trade was sent.
         send_telegram(message)
         return
 
-    # -----------------------------------------------------
-    # SIGNAL
-    # -----------------------------------------------------
-
     signal, buy_score, sell_score = calculate_signal(candles)
 
     now = datetime.now(timezone.utc)
-
-    # -----------------------------------------------------
-    # MESSAGE
-    # -----------------------------------------------------
 
     if signal == "BUY":
 
@@ -393,10 +305,6 @@ No strong signal confirmed.
 """
 
     print(message)
-
-    # -----------------------------------------------------
-    # TELEGRAM
-    # -----------------------------------------------------
 
     if send_telegram(message):
         print("TELEGRAM: MESSAGE SENT")
