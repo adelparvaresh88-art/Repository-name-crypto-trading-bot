@@ -8,10 +8,10 @@ from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # ============================================================
-# ATI CRYPTO BOT V34
-# SMART UPWARD COIN SCANNER + TABDEAL FAPI
+# ATI CRYPTO BOT V35
+# FULL USDT MARKET SCANNER
+# SPOT MARKET DISCOVERY + FUTURES TRADE SAFETY
 # 5M CLOSED CANDLE
-# 3X LEVERAGE PREPARATION
 # ============================================================
 
 BASE_URL = "https://api1.tabdeal.org"
@@ -29,17 +29,12 @@ MAX_EARLY_BUYS = 5
 # REAL TRADING SAFETY
 # ============================================================
 
-# IMPORTANT:
-# False = scanner / test only
-# True  = REAL FUTURES ORDER
+# False = TEST
+# True = REAL FUTURES
 ENABLE_REAL_TRADING = False
 
 LEVERAGE = 3
-
-# Margin used per trade
 TRADE_MARGIN_USDT = 20.0
-
-# Maximum one open position
 MAX_OPEN_POSITIONS = 1
 
 # ============================================================
@@ -63,7 +58,7 @@ EARLY_MOMENTUM_PCT = 0.0010
 EARLY_VOLUME_RATIO = 1.05
 
 # ============================================================
-# TECHNICAL SETTINGS
+# TECHNICAL
 # ============================================================
 
 MOMENTUM_LOOKBACK = 3
@@ -82,22 +77,45 @@ REQUEST_TIMEOUT = 15
 # SECRETS
 # ============================================================
 
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+TELEGRAM_BOT_TOKEN = os.getenv(
+    "TELEGRAM_BOT_TOKEN",
+    ""
+)
 
-TABDEAL_API_KEY = os.getenv("TABDEAL_API_KEY", "")
-TABDEAL_API_SECRET = os.getenv("TABDEAL_API_SECRET", "")
+TELEGRAM_CHAT_ID = os.getenv(
+    "TELEGRAM_CHAT_ID",
+    ""
+)
+
+TABDEAL_API_KEY = os.getenv(
+    "TABDEAL_API_KEY",
+    ""
+)
+
+TABDEAL_API_SECRET = os.getenv(
+    "TABDEAL_API_SECRET",
+    ""
+)
 
 
 # ============================================================
-# HELPERS
+# TIME
 # ============================================================
 
 def now_utc():
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    return datetime.now(
+        timezone.utc
+    ).strftime(
+        "%Y-%m-%d %H:%M UTC"
+    )
 
+
+# ============================================================
+# FORMATTING
+# ============================================================
 
 def fmt_price(value):
+
     if value is None:
         return "-"
 
@@ -105,28 +123,44 @@ def fmt_price(value):
 
     if value >= 1000:
         return f"{value:,.2f}"
-    elif value >= 1:
+
+    if value >= 1:
         return f"{value:,.4f}"
-    elif value >= 0.01:
+
+    if value >= 0.01:
         return f"{value:.6f}"
-    elif value >= 0.0001:
+
+    if value >= 0.0001:
         return f"{value:.8f}"
-    else:
-        return f"{value:.12f}"
+
+    return f"{value:.12f}"
 
 
 def fmt_pct(value):
     return f"{value * 100:.2f}%"
 
 
+# ============================================================
+# TELEGRAM
+# ============================================================
+
 def telegram_send(message):
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print("Telegram credentials missing.")
+
+    if not TELEGRAM_BOT_TOKEN:
+        print("TELEGRAM_BOT_TOKEN missing")
         return False
 
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    if not TELEGRAM_CHAT_ID:
+        print("TELEGRAM_CHAT_ID missing")
+        return False
+
+    url = (
+        "https://api.telegram.org/"
+        f"bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    )
 
     try:
+
         response = requests.post(
             url,
             data={
@@ -139,19 +173,29 @@ def telegram_send(message):
         if response.ok:
             return True
 
-        print("Telegram error:", response.text)
+        print(
+            "Telegram error:",
+            response.text
+        )
+
         return False
 
     except Exception as e:
-        print("Telegram exception:", e)
+
+        print(
+            "Telegram exception:",
+            e
+        )
+
         return False
 
 
 # ============================================================
-# TABDEAL PUBLIC API
+# PUBLIC GET
 # ============================================================
 
 def public_get(path, params=None):
+
     url = BASE_URL + path
 
     response = requests.get(
@@ -161,14 +205,140 @@ def public_get(path, params=None):
     )
 
     response.raise_for_status()
+
     return response.json()
 
 
-def get_exchange_info():
-    return public_get("/r/fapi/v1/exchangeInfo")
+# ============================================================
+# FULL SPOT MARKET LIST
+# ============================================================
 
+def get_full_usdt_markets():
+
+    data = public_get(
+        "/r/api/v1/exchangeInfo"
+    )
+
+    symbols = []
+
+    for item in data.get(
+        "symbols",
+        []
+    ):
+
+        symbol = item.get(
+            "symbol",
+            ""
+        )
+
+        status = item.get(
+            "status",
+            ""
+        )
+
+        quote_asset = item.get(
+            "quoteAsset",
+            ""
+        )
+
+        base_asset = item.get(
+            "baseAsset",
+            ""
+        )
+
+        if not symbol:
+            continue
+
+        if not symbol.endswith(
+            "USDT"
+        ):
+            continue
+
+        if quote_asset != "USDT":
+            continue
+
+        if status not in (
+            "TRADING",
+            "ENABLED",
+            "1",
+            ""
+        ):
+            continue
+
+        if base_asset == "USDT":
+            continue
+
+        symbols.append(symbol)
+
+    return sorted(
+        list(set(symbols))
+    )
+
+
+# ============================================================
+# FUTURES MARKET LIST
+# ============================================================
+
+def get_futures_markets():
+
+    try:
+
+        data = public_get(
+            "/r/fapi/v1/exchangeInfo"
+        )
+
+    except Exception as e:
+
+        print(
+            "Futures exchange info error:",
+            e
+        )
+
+        return set()
+
+    symbols = set()
+
+    for item in data.get(
+        "symbols",
+        []
+    ):
+
+        symbol = item.get(
+            "symbol",
+            ""
+        )
+
+        status = item.get(
+            "status",
+            ""
+        )
+
+        quote_asset = item.get(
+            "quoteAsset",
+            ""
+        )
+
+        if (
+            symbol.endswith("USDT")
+            and quote_asset == "USDT"
+            and status in (
+                "TRADING",
+                "ENABLED",
+                "1",
+                ""
+            )
+        ):
+            symbols.add(symbol)
+
+    return symbols
+
+
+# ============================================================
+# KLINES
+# ============================================================
 
 def get_klines(symbol):
+
     return public_get(
         "/r/api/v1/klines",
         {
@@ -180,36 +350,60 @@ def get_klines(symbol):
 
 
 # ============================================================
-# SIGNED FAPI
+# SIGNED REQUEST
 # ============================================================
 
-def signed_request(method, path, params=None):
-    if not TABDEAL_API_KEY or not TABDEAL_API_SECRET:
+def signed_request(
+    method,
+    path,
+    params=None
+):
+
+    if not TABDEAL_API_KEY:
         raise RuntimeError(
-            "TABDEAL_API_KEY / TABDEAL_API_SECRET missing"
+            "TABDEAL_API_KEY missing"
         )
 
-    params = params.copy() if params else {}
+    if not TABDEAL_API_SECRET:
+        raise RuntimeError(
+            "TABDEAL_API_SECRET missing"
+        )
 
-    params["timestamp"] = int(time.time() * 1000)
+    params = (
+        params.copy()
+        if params
+        else {}
+    )
 
-    query_string = urlencode(params)
+    params["timestamp"] = int(
+        time.time() * 1000
+    )
+
+    query_string = urlencode(
+        params
+    )
 
     signature = hmac.new(
-        TABDEAL_API_SECRET.encode("utf-8"),
-        query_string.encode("utf-8"),
+        TABDEAL_API_SECRET.encode(
+            "utf-8"
+        ),
+        query_string.encode(
+            "utf-8"
+        ),
         hashlib.sha256
     ).hexdigest()
 
     params["signature"] = signature
 
     headers = {
-        "X-MBX-APIKEY": TABDEAL_API_KEY
+        "X-MBX-APIKEY":
+            TABDEAL_API_KEY
     }
 
     url = BASE_URL + path
 
-    if method.upper() == "GET":
+    if method == "GET":
+
         response = requests.get(
             url,
             params=params,
@@ -217,7 +411,8 @@ def signed_request(method, path, params=None):
             timeout=REQUEST_TIMEOUT
         )
 
-    elif method.upper() == "POST":
+    elif method == "POST":
+
         response = requests.post(
             url,
             params=params,
@@ -225,7 +420,8 @@ def signed_request(method, path, params=None):
             timeout=REQUEST_TIMEOUT
         )
 
-    elif method.upper() == "DELETE":
+    elif method == "DELETE":
+
         response = requests.delete(
             url,
             params=params,
@@ -234,21 +430,27 @@ def signed_request(method, path, params=None):
         )
 
     else:
-        raise RuntimeError("Unsupported HTTP method")
+
+        raise RuntimeError(
+            "Unsupported HTTP method"
+        )
 
     if not response.ok:
+
         raise RuntimeError(
-            f"HTTP {response.status_code}: {response.text}"
+            f"HTTP {response.status_code}: "
+            f"{response.text}"
         )
 
     return response.json()
 
 
 # ============================================================
-# FUTURES ACCOUNT
+# ACCOUNT
 # ============================================================
 
 def get_futures_account():
+
     return signed_request(
         "GET",
         "/r/fapi/v3/account"
@@ -256,43 +458,79 @@ def get_futures_account():
 
 
 def get_open_positions():
+
     account = get_futures_account()
 
-    positions = account.get("positions", [])
+    positions = account.get(
+        "positions",
+        []
+    )
 
     active = []
 
-    for p in positions:
+    for position in positions:
+
         try:
-            amount = float(p.get("positionAmt", 0))
+
+            amount = float(
+                position.get(
+                    "positionAmt",
+                    0
+                )
+            )
+
         except Exception:
+
             amount = 0
 
         if abs(amount) > 0:
-            active.append(p)
+
+            active.append(
+                position
+            )
 
     return active
 
 
 def check_futures_account():
+
     account = get_futures_account()
 
-    can_trade = account.get("canTrade", False)
-
-    assets = account.get("assets", [])
+    can_trade = account.get(
+        "canTrade",
+        False
+    )
 
     available = 0.0
 
-    for asset in assets:
-        if asset.get("asset") == "USDT":
+    for asset in account.get(
+        "assets",
+        []
+    ):
+
+        if asset.get(
+            "asset"
+        ) == "USDT":
+
             try:
+
                 available = float(
-                    asset.get("availableBalance", 0)
+                    asset.get(
+                        "availableBalance",
+                        0
+                    )
                 )
+
             except Exception:
+
                 available = 0.0
 
-    return can_trade, available
+            break
+
+    return (
+        can_trade,
+        available
+    )
 
 
 # ============================================================
@@ -300,7 +538,8 @@ def check_futures_account():
 # ============================================================
 
 def set_leverage(symbol):
-    result = signed_request(
+
+    return signed_request(
         "POST",
         "/fapi/v1/leverage",
         {
@@ -309,14 +548,16 @@ def set_leverage(symbol):
         }
     )
 
-    return result
-
 
 # ============================================================
-# FUTURES ORDER
+# MARKET BUY
 # ============================================================
 
-def create_market_buy(symbol, quantity):
+def create_market_buy(
+    symbol,
+    quantity
+):
+
     return signed_request(
         "POST",
         "/fapi/v1/order",
@@ -334,6 +575,7 @@ def create_market_buy(symbol, quantity):
 # ============================================================
 
 def get_active_position(symbol):
+
     result = signed_request(
         "GET",
         "/r/fapi/v1/position",
@@ -344,23 +586,37 @@ def get_active_position(symbol):
         }
     )
 
-    if not isinstance(result, list):
+    if not isinstance(
+        result,
+        list
+    ):
         return None
 
     for position in result:
 
         try:
+
             amount = float(
-                position.get("positionAmt", 0)
+                position.get(
+                    "positionAmt",
+                    0
+                )
             )
+
         except Exception:
+
             amount = 0
 
         if abs(amount) > 0:
+
             return position
 
     return None
 
+
+# ============================================================
+# SL / TP
+# ============================================================
 
 def set_position_sl_tp(
     position_id,
@@ -373,17 +629,26 @@ def set_position_sl_tp(
         "POST",
         "/fapi/v1/positionSlTp",
         {
-            "positionId": position_id,
-            "symbol": symbol,
-            "slPrice": str(sl_price),
-            "tpPrice": str(tp_price),
-            "workingType": "MARK_PRICE"
+            "positionId":
+                position_id,
+
+            "symbol":
+                symbol,
+
+            "slPrice":
+                str(sl_price),
+
+            "tpPrice":
+                str(tp_price),
+
+            "workingType":
+                "MARK_PRICE"
         }
     )
 
 
 # ============================================================
-# MARKET DATA
+# PARSE CANDLES
 # ============================================================
 
 def parse_candles(raw):
@@ -393,32 +658,57 @@ def parse_candles(raw):
     for c in raw:
 
         try:
+
             candles.append({
-                "open_time": int(c[0]),
-                "open": float(c[1]),
-                "high": float(c[2]),
-                "low": float(c[3]),
-                "close": float(c[4]),
-                "volume": float(c[5]),
-                "close_time": int(c[6])
+
+                "open_time":
+                    int(c[0]),
+
+                "open":
+                    float(c[1]),
+
+                "high":
+                    float(c[2]),
+
+                "low":
+                    float(c[3]),
+
+                "close":
+                    float(c[4]),
+
+                "volume":
+                    float(c[5]),
+
+                "close_time":
+                    int(c[6])
             })
 
         except Exception:
+
             continue
 
     return candles
 
 
-def remove_open_candle(candles):
+# ============================================================
+# REMOVE OPEN CANDLE
+# ============================================================
+
+def remove_open_candle(
+    candles
+):
 
     if len(candles) < 3:
         return candles
 
-    now_ms = int(time.time() * 1000)
+    now_ms = int(
+        time.time() * 1000
+    )
 
     last = candles[-1]
 
     if last["close_time"] > now_ms:
+
         return candles[:-1]
 
     return candles
@@ -428,22 +718,39 @@ def remove_open_candle(candles):
 # ATR
 # ============================================================
 
-def calculate_atr(candles, period=14):
+def calculate_atr(
+    candles,
+    period=14
+):
 
-    if len(candles) < period + 1:
+    if len(candles) < (
+        period + 1
+    ):
         return None
 
     trs = []
 
-    for i in range(1, len(candles)):
+    for i in range(
+        1,
+        len(candles)
+    ):
 
         current = candles[i]
         previous = candles[i - 1]
 
         tr = max(
-            current["high"] - current["low"],
-            abs(current["high"] - previous["close"]),
-            abs(current["low"] - previous["close"])
+            current["high"]
+            - current["low"],
+
+            abs(
+                current["high"]
+                - previous["close"]
+            ),
+
+            abs(
+                current["low"]
+                - previous["close"]
+            )
         )
 
         trs.append(tr)
@@ -451,22 +758,35 @@ def calculate_atr(candles, period=14):
     if len(trs) < period:
         return None
 
-    return sum(trs[-period:]) / period
+    return (
+        sum(
+            trs[-period:]
+        )
+        / period
+    )
 
 
 # ============================================================
-# ANALYZE SYMBOL
+# ANALYZE
 # ============================================================
 
-def analyze_symbol(symbol):
+def analyze_symbol(
+    symbol
+):
 
     try:
 
-        raw = get_klines(symbol)
+        raw = get_klines(
+            symbol
+        )
 
-        candles = parse_candles(raw)
+        candles = parse_candles(
+            raw
+        )
 
-        candles = remove_open_candle(candles)
+        candles = remove_open_candle(
+            candles
+        )
 
         if len(candles) < MIN_CANDLES:
             return None
@@ -478,20 +798,29 @@ def analyze_symbol(symbol):
         high = current["high"]
         low = current["low"]
 
-        candle_range = high - low
+        candle_range = (
+            high - low
+        )
 
         if candle_range <= 0:
             return None
 
-        body = abs(close - open_price)
-
-        body_ratio = body / candle_range
-
-        close_position = (
-            (close - low) / candle_range
+        body = abs(
+            close - open_price
         )
 
-        bullish_candle = close > open_price
+        body_ratio = (
+            body / candle_range
+        )
+
+        close_position = (
+            (close - low)
+            / candle_range
+        )
+
+        bullish_candle = (
+            close > open_price
+        )
 
         # ----------------------------------------------------
         # RESISTANCE
@@ -502,11 +831,13 @@ def analyze_symbol(symbol):
         ]
 
         resistance = max(
-            c["high"] for c in previous
+            x["high"]
+            for x in previous
         )
 
         support = min(
-            c["low"] for c in previous
+            x["low"]
+            for x in previous
         )
 
         breakout_pct = (
@@ -538,7 +869,10 @@ def analyze_symbol(symbol):
         ]
 
         avg_volume = (
-            sum(c["volume"] for c in volume_history)
+            sum(
+                x["volume"]
+                for x in volume_history
+            )
             / len(volume_history)
         )
 
@@ -546,7 +880,8 @@ def analyze_symbol(symbol):
             return None
 
         volume_ratio = (
-            current["volume"] / avg_volume
+            current["volume"]
+            / avg_volume
         )
 
         # ----------------------------------------------------
@@ -557,11 +892,13 @@ def analyze_symbol(symbol):
         close_5 = candles[-6]["close"]
 
         bullish_trend = (
-            close > close_3 > close_5
+            close
+            > close_3
+            > close_5
         )
 
         # ----------------------------------------------------
-        # CHASE FILTER
+        # EXTENSION
         # ----------------------------------------------------
 
         move_from_support = (
@@ -569,17 +906,20 @@ def analyze_symbol(symbol):
         ) - 1
 
         not_overextended = (
-            move_from_support <= MAX_CHASE_PCT
+            move_from_support
+            <= MAX_CHASE_PCT
         )
 
         # ----------------------------------------------------
-        # STRONG CANDLE
+        # CANDLE
         # ----------------------------------------------------
 
         strong_candle = (
             bullish_candle
-            and body_ratio >= MIN_BODY_RATIO
-            and close_position >= MIN_CLOSE_POSITION
+            and body_ratio
+            >= MIN_BODY_RATIO
+            and close_position
+            >= MIN_CLOSE_POSITION
         )
 
         # ----------------------------------------------------
@@ -587,11 +927,19 @@ def analyze_symbol(symbol):
         # ----------------------------------------------------
 
         strong_buy = (
-            breakout_pct >= MIN_BREAKOUT_PCT
+            breakout_pct
+            >= MIN_BREAKOUT_PCT
+
             and strong_candle
-            and momentum_pct >= MIN_MOMENTUM_PCT
-            and volume_ratio >= MIN_VOLUME_RATIO
+
+            and momentum_pct
+            >= MIN_MOMENTUM_PCT
+
+            and volume_ratio
+            >= MIN_VOLUME_RATIO
+
             and bullish_trend
+
             and not_overextended
         )
 
@@ -601,11 +949,21 @@ def analyze_symbol(symbol):
 
         early_buy = (
             not strong_buy
-            and distance_to_resistance >= 0
-            and distance_to_resistance <= EARLY_DISTANCE
+
+            and distance_to_resistance
+            >= 0
+
+            and distance_to_resistance
+            <= EARLY_DISTANCE
+
             and strong_candle
-            and momentum_pct >= EARLY_MOMENTUM_PCT
-            and volume_ratio >= EARLY_VOLUME_RATIO
+
+            and momentum_pct
+            >= EARLY_MOMENTUM_PCT
+
+            and volume_ratio
+            >= EARLY_VOLUME_RATIO
+
             and bullish_trend
         )
 
@@ -620,136 +978,147 @@ def analyze_symbol(symbol):
         if atr is None or atr <= 0:
             return None
 
-        sl = close - (
-            atr * SL_ATR
+        sl = (
+            close
+            - atr * SL_ATR
         )
 
-        tp1 = close + (
-            atr * TP1_ATR
+        tp1 = (
+            close
+            + atr * TP1_ATR
         )
 
-        tp2 = close + (
-            atr * TP2_ATR
+        tp2 = (
+            close
+            + atr * TP2_ATR
         )
 
         return {
-            "symbol": symbol,
-            "price": close,
-            "resistance": resistance,
-            "support": support,
-            "breakout_pct": breakout_pct,
-            "distance_to_resistance": distance_to_resistance,
-            "momentum_pct": momentum_pct,
-            "volume_ratio": volume_ratio,
-            "body_ratio": body_ratio,
-            "close_position": close_position,
-            "atr": atr,
-            "sl": sl,
-            "tp1": tp1,
-            "tp2": tp2,
-            "strong_buy": strong_buy,
-            "early_buy": early_buy
+
+            "symbol":
+                symbol,
+
+            "price":
+                close,
+
+            "resistance":
+                resistance,
+
+            "support":
+                support,
+
+            "breakout_pct":
+                breakout_pct,
+
+            "distance_to_resistance":
+                distance_to_resistance,
+
+            "momentum_pct":
+                momentum_pct,
+
+            "volume_ratio":
+                volume_ratio,
+
+            "body_ratio":
+                body_ratio,
+
+            "close_position":
+                close_position,
+
+            "atr":
+                atr,
+
+            "sl":
+                sl,
+
+            "tp1":
+                tp1,
+
+            "tp2":
+                tp2,
+
+            "strong_buy":
+                strong_buy,
+
+            "early_buy":
+                early_buy
         }
 
     except Exception as e:
 
         print(
-            f"{symbol} analysis error: {e}"
+            f"{symbol}: {e}"
         )
 
         return None
 
 
 # ============================================================
-# MARKET LIST
-# ============================================================
-
-def get_usdt_symbols():
-
-    info = get_exchange_info()
-
-    symbols = []
-
-    for item in info.get("symbols", []):
-
-        symbol = item.get("symbol", "")
-        status = item.get("status", "")
-        quote = item.get("quoteAsset", "")
-
-        if (
-            status == "TRADING"
-            and quote == "USDT"
-            and symbol.endswith("USDT")
-        ):
-            symbols.append(symbol)
-
-    return symbols
-
-
-# ============================================================
 # REAL TRADE
 # ============================================================
 
-def execute_real_trade(signal):
+def execute_real_trade(
+    signal,
+    futures_symbols
+):
 
     symbol = signal["symbol"]
-    price = signal["price"]
 
-    print(
-        f"REAL TRADE REQUEST: {symbol}"
-    )
+    if symbol not in futures_symbols:
 
-    if not TABDEAL_API_KEY or not TABDEAL_API_SECRET:
         raise RuntimeError(
-            "TABDEAL_API_KEY or TABDEAL_API_SECRET missing"
+            f"{symbol} is not available "
+            "for futures trading."
         )
-
-    # --------------------------------------------------------
-    # CHECK ACCOUNT
-    # --------------------------------------------------------
 
     can_trade, available = (
         check_futures_account()
     )
 
     if not can_trade:
+
         raise RuntimeError(
             "Futures account cannot trade."
         )
 
     if available < TRADE_MARGIN_USDT:
+
         raise RuntimeError(
-            f"Insufficient futures USDT. "
-            f"Available={available:.2f}, "
-            f"Required={TRADE_MARGIN_USDT:.2f}"
+            f"Insufficient USDT. "
+            f"Available={available:.2f}"
         )
 
-    # --------------------------------------------------------
-    # CHECK EXISTING POSITIONS
-    # --------------------------------------------------------
+    open_positions = (
+        get_open_positions()
+    )
 
-    open_positions = get_open_positions()
+    if len(open_positions) >= (
+        MAX_OPEN_POSITIONS
+    ):
 
-    if len(open_positions) >= MAX_OPEN_POSITIONS:
         raise RuntimeError(
-            "Existing open position detected. "
+            "Existing open position. "
             "New trade blocked."
         )
 
     # --------------------------------------------------------
-    # SET 3X
+    # 3X
     # --------------------------------------------------------
 
-    leverage_result = set_leverage(symbol)
+    leverage_result = (
+        set_leverage(symbol)
+    )
 
     print(
-        "Leverage result:",
+        "Leverage:",
         leverage_result
     )
 
     # --------------------------------------------------------
-    # POSITION SIZE
+    # SIZE
     # --------------------------------------------------------
+
+    price = signal["price"]
 
     notional = (
         TRADE_MARGIN_USDT
@@ -761,25 +1130,43 @@ def execute_real_trade(signal):
     )
 
     # --------------------------------------------------------
-    # GET FUTURES MARKET PRECISION
+    # PRECISION
     # --------------------------------------------------------
 
-    info = get_exchange_info()
+    try:
+
+        futures_info = public_get(
+            "/r/fapi/v1/exchangeInfo"
+        )
+
+    except Exception:
+
+        futures_info = {
+            "symbols": []
+        }
 
     quantity_precision = 6
 
-    for item in info.get("symbols", []):
+    for item in futures_info.get(
+        "symbols",
+        []
+    ):
 
-        if item.get("symbol") == symbol:
+        if item.get(
+            "symbol"
+        ) == symbol:
 
             try:
+
                 quantity_precision = int(
                     item.get(
                         "quantityPrecision",
                         6
                     )
                 )
+
             except Exception:
+
                 quantity_precision = 6
 
             break
@@ -790,12 +1177,13 @@ def execute_real_trade(signal):
     )
 
     if quantity <= 0:
+
         raise RuntimeError(
-            "Calculated quantity is zero."
+            "Invalid quantity."
         )
 
     # --------------------------------------------------------
-    # MARKET BUY
+    # ORDER
     # --------------------------------------------------------
 
     order = create_market_buy(
@@ -804,19 +1192,20 @@ def execute_real_trade(signal):
     )
 
     print(
-        "ORDER RESPONSE:",
+        "ORDER:",
         order
     )
 
-    order_id = order.get("orderId")
+    if not order.get(
+        "orderId"
+    ):
 
-    if not order_id:
         raise RuntimeError(
-            f"Order was not accepted: {order}"
+            f"Order rejected: {order}"
         )
 
     # --------------------------------------------------------
-    # WAIT FOR POSITION
+    # POSITION
     # --------------------------------------------------------
 
     position = None
@@ -825,27 +1214,32 @@ def execute_real_trade(signal):
 
         time.sleep(1)
 
-        position = get_active_position(
-            symbol
+        position = (
+            get_active_position(
+                symbol
+            )
         )
 
         if position:
             break
 
     if not position:
+
         raise RuntimeError(
-            "Order sent but active position "
-            "could not be found."
+            "Position not detected."
         )
 
-    position_id = position.get("id")
+    position_id = position.get(
+        "id"
+    )
 
     if not position_id:
+
         raise RuntimeError(
-            f"Position ID missing: {position}"
+            "Position ID missing."
         )
 
-    entry_price = float(
+    entry = float(
         position.get(
             "entryPrice",
             price
@@ -857,26 +1251,35 @@ def execute_real_trade(signal):
     # --------------------------------------------------------
 
     sl = signal["sl"]
-    tp2 = signal["tp2"]
+    tp = signal["tp2"]
 
-    sltp_result = set_position_sl_tp(
+    sltp = set_position_sl_tp(
         position_id,
         symbol,
         sl,
-        tp2
+        tp
     )
 
     print(
-        "SL/TP RESPONSE:",
-        sltp_result
+        "SL/TP:",
+        sltp
     )
 
     return {
-        "order": order,
-        "position": position,
-        "entry": entry_price,
-        "sl": sl,
-        "tp": tp2
+        "entry":
+            entry,
+
+        "sl":
+            sl,
+
+        "tp":
+            tp,
+
+        "order":
+            order,
+
+        "position":
+            position
     }
 
 
@@ -886,44 +1289,49 @@ def execute_real_trade(signal):
 
 def main():
 
-    print("=" * 60)
-    print("ATI CRYPTO BOT V34")
-    print("SMART UPWARD SCANNER + FAPI")
-    print("=" * 60)
+    print("=" * 65)
+    print("ATI CRYPTO BOT V35")
+    print("FULL USDT MARKET SCANNER")
+    print("=" * 65)
 
     # --------------------------------------------------------
-    # CHECK TELEGRAM
-    # --------------------------------------------------------
-
-    telegram_ok = bool(
-        TELEGRAM_BOT_TOKEN
-        and TELEGRAM_CHAT_ID
-    )
-
-    # --------------------------------------------------------
-    # MARKET LIST
+    # FULL MARKET DISCOVERY
     # --------------------------------------------------------
 
     try:
 
-        symbols = get_usdt_symbols()
+        symbols = (
+            get_full_usdt_markets()
+        )
 
     except Exception as e:
 
         message = (
-            "⚡ ATI CRYPTO BOT V34\n\n"
+            "⚡ ATI CRYPTO BOT V35\n\n"
             "❌ TABDEAL API ERROR\n\n"
             f"{e}"
         )
 
-        telegram_send(message)
-
         print(message)
-
+        telegram_send(message)
         return
 
+    # --------------------------------------------------------
+    # FUTURES SYMBOLS
+    # --------------------------------------------------------
+
+    futures_symbols = (
+        get_futures_markets()
+    )
+
     print(
-        f"USDT markets: {len(symbols)}"
+        f"FULL USDT MARKETS: "
+        f"{len(symbols)}"
+    )
+
+    print(
+        f"FUTURES MARKETS: "
+        f"{len(futures_symbols)}"
     )
 
     # --------------------------------------------------------
@@ -944,52 +1352,71 @@ def main():
             for symbol in symbols
         }
 
-        for future in as_completed(futures):
+        for future in as_completed(
+            futures
+        ):
 
             try:
 
                 result = future.result()
 
                 if result:
-                    results.append(result)
+                    results.append(
+                        result
+                    )
 
             except Exception as e:
 
-                symbol = futures[future]
+                symbol = futures[
+                    future
+                ]
 
                 print(
                     f"{symbol}: {e}"
                 )
 
+    # --------------------------------------------------------
+    # SORT
+    # --------------------------------------------------------
+
     strong = [
-        x for x in results
+        x
+        for x in results
         if x["strong_buy"]
     ]
 
     early = [
-        x for x in results
+        x
+        for x in results
         if x["early_buy"]
     ]
 
     strong.sort(
-        key=lambda x: (
-            x["breakout_pct"]
-            + x["momentum_pct"]
-            + (x["volume_ratio"] / 10)
-        ),
+        key=lambda x:
+            (
+                x["breakout_pct"]
+                + x["momentum_pct"]
+                + x["volume_ratio"] / 10
+            ),
         reverse=True
     )
 
     early.sort(
-        key=lambda x: (
-            x["momentum_pct"]
-            + (x["volume_ratio"] / 10)
-        ),
+        key=lambda x:
+            (
+                x["momentum_pct"]
+                + x["volume_ratio"] / 10
+            ),
         reverse=True
     )
 
-    strong = strong[:MAX_STRONG_BUYS]
-    early = early[:MAX_EARLY_BUYS]
+    strong = strong[
+        :MAX_STRONG_BUYS
+    ]
+
+    early = early[
+        :MAX_EARLY_BUYS
+    ]
 
     # --------------------------------------------------------
     # MESSAGE
@@ -998,11 +1425,11 @@ def main():
     lines = []
 
     lines.append(
-        "⚡ ATI CRYPTO BOT V34"
+        "⚡ ATI CRYPTO BOT V35"
     )
 
     lines.append(
-        "🚀 SMART UPWARD COIN SCANNER"
+        "🚀 FULL USDT MARKET SCANNER"
     )
 
     lines.append(
@@ -1018,7 +1445,7 @@ def main():
     )
 
     lines.append(
-        "🧠 FAPI 3X READY"
+        "🧠 3X FUTURES READY"
     )
 
     lines.append("")
@@ -1028,11 +1455,18 @@ def main():
     )
 
     lines.append(
-        f"📊 USDT MARKETS: {len(symbols)}"
+        f"📊 FULL USDT MARKETS: "
+        f"{len(symbols)}"
     )
 
     lines.append(
-        f"🔎 SCANNED: {len(symbols)}"
+        f"⚙️ FUTURES MARKETS: "
+        f"{len(futures_symbols)}"
+    )
+
+    lines.append(
+        f"🔎 SCANNED: "
+        f"{len(symbols)}"
     )
 
     lines.append(
@@ -1042,13 +1476,14 @@ def main():
     lines.append("")
 
     # --------------------------------------------------------
-    # STRONG BUY
+    # STRONG
     # --------------------------------------------------------
 
     if strong:
 
         lines.append(
-            f"🟢 STRONG BUY: {len(strong)}"
+            f"🟢 STRONG BUY: "
+            f"{len(strong)}"
         )
 
         lines.append("")
@@ -1058,12 +1493,25 @@ def main():
             1
         ):
 
-            lines.append(
-                f"🟢 #{i} {item['symbol']}"
+            futures_status = (
+                "✅ FUTURES"
+                if item["symbol"]
+                in futures_symbols
+                else "⚪ SPOT ONLY"
             )
 
             lines.append(
-                f"💰 Entry: {fmt_price(item['price'])}"
+                f"🟢 #{i} "
+                f"{item['symbol']}"
+            )
+
+            lines.append(
+                futures_status
+            )
+
+            lines.append(
+                f"💰 Entry: "
+                f"{fmt_price(item['price'])}"
             )
 
             lines.append(
@@ -1082,15 +1530,18 @@ def main():
             )
 
             lines.append(
-                f"🛑 SL: {fmt_price(item['sl'])}"
+                f"🛑 SL: "
+                f"{fmt_price(item['sl'])}"
             )
 
             lines.append(
-                f"🎯 TP1: {fmt_price(item['tp1'])}"
+                f"🎯 TP1: "
+                f"{fmt_price(item['tp1'])}"
             )
 
             lines.append(
-                f"🎯 TP2: {fmt_price(item['tp2'])}"
+                f"🎯 TP2: "
+                f"{fmt_price(item['tp2'])}"
             )
 
             lines.append("")
@@ -1110,7 +1561,8 @@ def main():
     if early:
 
         lines.append(
-            f"🟡 EARLY BUY / WATCH: {len(early)}"
+            f"🟡 EARLY BUY / WATCH: "
+            f"{len(early)}"
         )
 
         lines.append("")
@@ -1120,16 +1572,29 @@ def main():
             1
         ):
 
-            lines.append(
-                f"🟡 #{i} {item['symbol']}"
+            futures_status = (
+                "✅ FUTURES"
+                if item["symbol"]
+                in futures_symbols
+                else "⚪ SPOT ONLY"
             )
 
             lines.append(
-                f"💰 Price: {fmt_price(item['price'])}"
+                f"🟡 #{i} "
+                f"{item['symbol']}"
             )
 
             lines.append(
-                f"📏 To Resistance: "
+                futures_status
+            )
+
+            lines.append(
+                f"💰 Price: "
+                f"{fmt_price(item['price'])}"
+            )
+
+            lines.append(
+                f"📏 Resistance distance: "
                 f"{fmt_pct(item['distance_to_resistance'])}"
             )
 
@@ -1154,10 +1619,26 @@ def main():
         lines.append("")
 
     # --------------------------------------------------------
-    # REAL TRADING
+    # MODE
     # --------------------------------------------------------
 
-    if not ENABLE_REAL_TRADING:
+    if ENABLE_REAL_TRADING:
+
+        lines.append(
+            "🔴 REAL TRADING: ON"
+        )
+
+        lines.append(
+            f"⚙️ LEVERAGE: "
+            f"{LEVERAGE}X"
+        )
+
+        lines.append(
+            f"💵 MARGIN: "
+            f"{TRADE_MARGIN_USDT:.2f} USDT"
+        )
+
+    else:
 
         lines.append(
             "⚪ REAL TRADING: OFF"
@@ -1167,78 +1648,97 @@ def main():
             "🧪 MODE: PAPER / TEST"
         )
 
-    else:
-
-        lines.append(
-            "🔴 REAL TRADING: ON"
-        )
-
-        lines.append(
-            "⚠️ FUTURES LEVERAGE: 3X"
-        )
-
-        lines.append(
-            f"💵 MARGIN / TRADE: "
-            f"{TRADE_MARGIN_USDT:.2f} USDT"
-        )
-
     lines.append("")
 
     lines.append(
-        "📡 TELEGRAM: "
-        + ("OK" if telegram_ok else "ERROR")
+        "📡 TELEGRAM: OK"
     )
 
-    message = "\n".join(lines)
+    message = "\n".join(
+        lines
+    )
 
     print(message)
 
     # --------------------------------------------------------
-    # REAL TRADE ONLY FROM STRONG BUY
+    # REAL TRADE
     # --------------------------------------------------------
 
-    if ENABLE_REAL_TRADING and strong:
+    if (
+        ENABLE_REAL_TRADING
+        and strong
+    ):
 
-        signal = strong[0]
+        # Only FUTURES-compatible
+        # strong signal
 
-        try:
+        trade_candidates = [
+            x
+            for x in strong
+            if x["symbol"]
+            in futures_symbols
+        ]
 
-            trade = execute_real_trade(
-                signal
-            )
-
-            entry = trade["entry"]
-            sl = trade["sl"]
-            tp = trade["tp"]
-
-            trade_message = (
-                "\n\n"
-                "🔴 REAL FUTURES TRADE OPENED\n\n"
-                f"🟢 {signal['symbol']}\n"
-                f"⚙️ Leverage: {LEVERAGE}X\n"
-                f"💵 Margin: "
-                f"{TRADE_MARGIN_USDT:.2f} USDT\n"
-                f"📊 Notional: "
-                f"{TRADE_MARGIN_USDT * LEVERAGE:.2f} USDT\n"
-                f"💰 Entry: {fmt_price(entry)}\n"
-                f"🛑 SL: {fmt_price(sl)}\n"
-                f"🎯 TP: {fmt_price(tp)}\n"
-                "\n"
-                "⚠️ REAL MONEY POSITION"
-            )
-
-            message += trade_message
-
-        except Exception as e:
+        if not trade_candidates:
 
             message += (
                 "\n\n"
                 "🛡 TRADE BLOCKED\n"
-                f"❌ {e}"
+                "❌ No STRONG BUY "
+                "available in futures."
             )
 
-    telegram_send(message)
+        else:
 
+            signal = (
+                trade_candidates[0]
+            )
+
+            try:
+
+                trade = (
+                    execute_real_trade(
+                        signal,
+                        futures_symbols
+                    )
+                )
+
+                message += (
+                    "\n\n"
+                    "🔴 REAL FUTURES "
+                    "TRADE OPENED\n\n"
+                    f"🟢 "
+                    f"{signal['symbol']}\n"
+                    f"⚙️ "
+                    f"{LEVERAGE}X\n"
+                    f"💵 Margin: "
+                    f"{TRADE_MARGIN_USDT:.2f} USDT\n"
+                    f"💰 Entry: "
+                    f"{fmt_price(trade['entry'])}\n"
+                    f"🛑 SL: "
+                    f"{fmt_price(trade['sl'])}\n"
+                    f"🎯 TP: "
+                    f"{fmt_price(trade['tp'])}\n"
+                    "\n"
+                    "⚠️ REAL MONEY"
+                )
+
+            except Exception as e:
+
+                message += (
+                    "\n\n"
+                    "🛡 TRADE BLOCKED\n"
+                    f"❌ {e}"
+                )
+
+    telegram_send(
+        message
+    )
+
+
+# ============================================================
+# START
+# ============================================================
 
 if __name__ == "__main__":
     main()
