@@ -1,2 +1,2 @@
 requests==2.32.5
-tabdeal-python
+tabdeal-python==0.4.7
