@@ -7,11 +7,11 @@ import requests
 
 
 # ============================================================
-# ATI CRYPTO BOT V37.2
-# FAST UPWARD COIN SCANNER
+# ATI CRYPTO BOT V37.3
+# UPWARD COIN SCANNER
 # ============================================================
 
-VERSION = "V37.2"
+VERSION = "V37.3"
 
 BASE_URL = "https://api1.tabdeal.org"
 TIMEFRAME = "5m"
@@ -19,134 +19,96 @@ TIMEFRAME = "5m"
 CANDLE_LIMIT = 720
 MAX_MARKETS = 1000
 TOP_RESULTS = 5
+WATCH_RESULTS = 3
 
-REQUEST_TIMEOUT = 10
+REQUEST_TIMEOUT = 8
 MAX_WORKERS = 15
 
-MIN_SCORE = 6
+# V37.3 - slightly easier than V37.2
+MIN_SCORE = 5
 
-
-# ============================================================
 # SAFETY
-# ============================================================
-
 REAL_TRADING = False
 ORDER_EXECUTION = False
-
-
-# ============================================================
-# HTTP SESSION
-# ============================================================
-
-session = requests.Session()
-
-session.headers.update(
-    {
-        "User-Agent": "ATI-CRYPTO-BOT/37.2",
-        "Accept": "application/json",
-    }
-)
 
 
 # ============================================================
 # TELEGRAM
 # ============================================================
 
-TELEGRAM_BOT_TOKEN = os.getenv(
-    "TELEGRAM_BOT_TOKEN",
-    "",
-).strip()
-
-TELEGRAM_CHAT_ID = os.getenv(
-    "TELEGRAM_CHAT_ID",
-    "",
-).strip()
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
 
 def telegram_send(message):
+    print("\n" + message)
 
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print("⚠️ TELEGRAM SECRETS NOT CONFIGURED")
+        print("⚠️ TELEGRAM SECRETS NOT FOUND")
         return False
 
+    url = (
+        "https://api.telegram.org/bot"
+        + TELEGRAM_BOT_TOKEN
+        + "/sendMessage"
+    )
+
     try:
-
-        url = (
-            "https://api.telegram.org/bot"
-            + TELEGRAM_BOT_TOKEN
-            + "/sendMessage"
-        )
-
-        response = session.post(
+        response = requests.post(
             url,
             data={
                 "chat_id": TELEGRAM_CHAT_ID,
                 "text": message,
             },
-            timeout=REQUEST_TIMEOUT,
+            timeout=10,
         )
 
-        print(
-            f"📨 TELEGRAM STATUS: {response.status_code}"
-        )
+        if response.ok:
+            print("✅ TELEGRAM SENT")
+            return True
 
-        return response.ok
+        print("❌ TELEGRAM ERROR:", response.text[:300])
+        return False
 
-    except Exception as exc:
-
-        print(
-            f"⚠️ TELEGRAM ERROR: {exc}"
-        )
-
+    except Exception as e:
+        print("❌ TELEGRAM ERROR:", e)
         return False
 
 
 # ============================================================
-# SAFE JSON
+# HTTP
 # ============================================================
 
-def get_json(url, params=None):
+SESSION = requests.Session()
 
+
+def get_json(path, params=None):
     try:
-
-        response = session.get(
-            url,
+        response = SESSION.get(
+            BASE_URL + path,
             params=params,
             timeout=REQUEST_TIMEOUT,
         )
 
-        if response.status_code != 200:
-            return None
+        response.raise_for_status()
+        return response.json()
 
-        try:
-            return response.json()
-
-        except Exception:
-            return None
-
-    except Exception as exc:
-
-        print(
-            f"⚠️ API REQUEST ERROR: {exc}"
-        )
-
+    except Exception:
         return None
 
 
 # ============================================================
-# GENERIC HELPERS
+# HELPERS
 # ============================================================
 
-def as_list(value):
+def as_list(data):
+    if isinstance(data, list):
+        return data
 
-    if isinstance(value, list):
-        return value
+    if isinstance(data, tuple):
+        return list(data)
 
-    if isinstance(value, tuple):
-        return list(value)
-
-    if isinstance(value, dict):
-
+    if isinstance(data, dict):
         for key in (
             "data",
             "result",
@@ -157,119 +119,49 @@ def as_list(value):
             "ticker",
             "tickers",
         ):
+            value = data.get(key)
 
-            item = value.get(key)
+            if isinstance(value, list):
+                return value
 
-            if isinstance(item, list):
-                return item
-
-        return []
+            if isinstance(value, dict):
+                return list(value.values())
 
     return []
 
 
-def safe_float(value, default=None):
-
-    try:
-
-        if value is None:
-            return default
-
-        if isinstance(value, bool):
-            return default
-
-        return float(value)
-
-    except Exception:
-        return default
-
-
-def safe_int(value, default=None):
-
-    try:
-        return int(float(value))
-
-    except Exception:
-        return default
-
-
-def now_utc():
-
-    return datetime.now(
-        timezone.utc
-    ).strftime(
-        "%Y-%m-%d %H:%M UTC"
-    )
-
-
-def pct_change(old, new):
-
-    if old is None or new is None:
-        return 0.0
-
-    if old == 0:
-        return 0.0
-
-    return (
-        (new - old)
-        / old
-    ) * 100.0
-
-
-# ============================================================
-# SYMBOL NORMALIZATION
-# ============================================================
-
-def normalize_symbol(value):
-
-    if value is None:
-        return None
-
-    text = str(value).upper().strip()
-
-    text = text.replace("-", "")
-    text = text.replace("_", "")
-    text = text.replace("/", "")
-
-    if text.endswith("USDT"):
-        return text
-
-    return None
-
-
-def extract_symbol(item):
-
-    if isinstance(item, str):
-        return normalize_symbol(item)
-
+def first_value(item, keys, default=None):
     if not isinstance(item, dict):
-        return None
+        return default
 
-    for key in (
-        "symbol",
-        "pair",
-        "market",
-        "instrument",
-        "code",
-        "name",
-    ):
+    for key in keys:
+        if key in item:
+            return item[key]
 
-        value = item.get(key)
+    return default
 
-        symbol = normalize_symbol(value)
 
-        if symbol:
-            return symbol
-
-    return None
+def safe_float(value, default=None):
+    try:
+        return float(value)
+    except Exception:
+        return default
 
 
 # ============================================================
 # MARKET DISCOVERY
 # ============================================================
 
-def get_markets():
+def normalize_symbol(value):
+    if value is None:
+        return None
 
+    value = str(value).upper().replace("/", "")
+
+    return value
+
+
+def get_usdt_markets():
     endpoints = [
         "/r/api/v1/exchangeInfo",
         "/r/api/v1/markets",
@@ -277,65 +169,44 @@ def get_markets():
         "/r/api/v1/tickers",
     ]
 
-    symbols = set()
-
-    print("🔎 Discovering USDT markets...")
+    markets = set()
 
     for endpoint in endpoints:
-
-        print(
-            f"📡 Trying: {endpoint}"
-        )
-
-        data = get_json(
-            BASE_URL + endpoint
-        )
+        data = get_json(endpoint)
 
         if data is None:
             continue
 
         items = as_list(data)
 
-        print(
-            f"📊 Items received: {len(items)}"
-        )
-
         for item in items:
+            if isinstance(item, str):
+                symbol = normalize_symbol(item)
 
-            symbol = extract_symbol(item)
+            elif isinstance(item, dict):
+                symbol = normalize_symbol(
+                    first_value(
+                        item,
+                        [
+                            "symbol",
+                            "market",
+                            "pair",
+                            "name",
+                            "code",
+                        ],
+                    )
+                )
 
-            if (
-                symbol
-                and symbol.endswith("USDT")
-            ):
-                symbols.add(symbol)
+            else:
+                continue
 
-        if symbols:
+            if symbol and symbol.endswith("USDT"):
+                markets.add(symbol)
+
+        if len(markets) >= 100:
             break
 
-    symbols = {
-        s
-        for s in symbols
-        if (
-            s
-            and s.endswith("USDT")
-            and len(s) > 4
-            and len(s) < 30
-        )
-    }
-
-    symbols = sorted(symbols)
-
-    if MAX_MARKETS:
-        symbols = symbols[
-            :MAX_MARKETS
-        ]
-
-    print(
-        f"✅ USDT MARKETS FOUND: {len(symbols)}"
-    )
-
-    return symbols
+    return sorted(markets)[:MAX_MARKETS]
 
 
 # ============================================================
@@ -343,17 +214,13 @@ def get_markets():
 # ============================================================
 
 def get_trades(symbol):
-
     data = get_json(
-        BASE_URL + "/r/api/v1/trades",
+        "/r/api/v1/trades",
         params={
             "symbol": symbol,
             "limit": 1000,
         },
     )
-
-    if data is None:
-        return []
 
     return as_list(data)
 
@@ -363,499 +230,178 @@ def get_trades(symbol):
 # ============================================================
 
 def parse_trade(item):
-
-    if isinstance(item, list):
-
-        if len(item) < 2:
-            return None
-
-        price = safe_float(
-            item[0]
-        )
-
-        qty = safe_float(
-            item[1]
-        )
-
-        timestamp = None
-
-        if len(item) >= 3:
-            timestamp = safe_int(
-                item[2]
-            )
-
-        if (
-            price is None
-            or qty is None
-        ):
-            return None
-
-        return {
-            "price": price,
-            "qty": abs(qty),
-            "timestamp": timestamp,
-        }
-
     if not isinstance(item, dict):
         return None
 
-    price = None
-    qty = None
-    timestamp = None
+    price = first_value(
+        item,
+        [
+            "price",
+            "p",
+            "rate",
+        ],
+    )
 
-    for key in (
-        "price",
-        "p",
-        "trade_price",
-        "rate",
-    ):
+    quantity = first_value(
+        item,
+        [
+            "quantity",
+            "qty",
+            "amount",
+            "volume",
+            "q",
+        ],
+        0,
+    )
 
-        if key in item:
+    timestamp = first_value(
+        item,
+        [
+            "timestamp",
+            "time",
+            "T",
+            "created_at",
+            "createdAt",
+        ],
+    )
 
-            price = safe_float(
-                item.get(key)
-            )
+    price = safe_float(price)
+    quantity = safe_float(quantity, 0)
 
-            if price is not None:
-                break
-
-    for key in (
-        "qty",
-        "quantity",
-        "q",
-        "amount",
-        "volume",
-    ):
-
-        if key in item:
-
-            qty = safe_float(
-                item.get(key)
-            )
-
-            if qty is not None:
-                break
-
-    for key in (
-        "timestamp",
-        "time",
-        "T",
-        "created_at",
-        "createdAt",
-    ):
-
-        if key in item:
-
-            timestamp = safe_int(
-                item.get(key)
-            )
-
-            if timestamp is not None:
-                break
-
-    if (
-        price is None
-        or qty is None
-    ):
+    if price is None or price <= 0:
         return None
+
+    if timestamp is None:
+        timestamp = int(time.time() * 1000)
+
+    try:
+        timestamp = float(timestamp)
+    except Exception:
+        timestamp = time.time() * 1000
+
+    # seconds -> milliseconds
+    if timestamp < 10_000_000_000:
+        timestamp *= 1000
 
     return {
         "price": price,
-        "qty": abs(qty),
+        "quantity": abs(quantity),
         "timestamp": timestamp,
     }
 
 
 # ============================================================
-# TIMESTAMP
+# CANDLE BUILDER
 # ============================================================
 
-def normalize_timestamp(ts):
-
-    if ts is None:
-        return None
-
-    if ts > 10_000_000_000:
-        return ts / 1000.0
-
-    return float(ts)
-
-
-# ============================================================
-# BUILD 5M CANDLES
-# ============================================================
-
-def build_candles(trades):
-
+def build_5m_candles(trades):
     parsed = []
 
     for item in trades:
-
         trade = parse_trade(item)
 
-        if trade is None:
-            continue
+        if trade:
+            parsed.append(trade)
 
-        ts = normalize_timestamp(
-            trade["timestamp"]
-        )
-
-        if ts is None:
-            continue
-
-        trade["timestamp"] = ts
-
-        parsed.append(trade)
-
-    if not parsed:
+    if len(parsed) < 30:
         return []
 
-    parsed.sort(
-        key=lambda x: x["timestamp"]
-    )
-
-    buckets = {}
+    candles = {}
 
     for trade in parsed:
-
-        bucket = (
-            int(
-                trade["timestamp"] // 300
-            )
-            * 300
-        )
-
-        if bucket not in buckets:
-
-            buckets[bucket] = {
-                "timestamp": bucket,
-                "open": trade["price"],
-                "high": trade["price"],
-                "low": trade["price"],
-                "close": trade["price"],
-                "volume": 0.0,
-                "trades": 0,
-            }
-
-        candle = buckets[bucket]
+        ts = int(trade["timestamp"] // 300000) * 300000
 
         price = trade["price"]
-        qty = trade["qty"]
+        qty = trade["quantity"]
 
-        candle["high"] = max(
-            candle["high"],
-            price,
-        )
+        if ts not in candles:
+            candles[ts] = {
+                "timestamp": ts,
+                "open": price,
+                "high": price,
+                "low": price,
+                "close": price,
+                "volume": qty,
+            }
+        else:
+            candle = candles[ts]
 
-        candle["low"] = min(
-            candle["low"],
-            price,
-        )
+            candle["high"] = max(
+                candle["high"],
+                price,
+            )
 
-        candle["close"] = price
+            candle["low"] = min(
+                candle["low"],
+                price,
+            )
 
-        candle["volume"] += qty
-        candle["trades"] += 1
+            candle["close"] = price
+            candle["volume"] += qty
 
-    candles = list(
-        buckets.values()
+    result = sorted(
+        candles.values(),
+        key=lambda x: x["timestamp"],
     )
 
-    candles.sort(
-        key=lambda x: x["timestamp"]
-    )
+    # remove current unfinished candle
+    if result:
+        now_bucket = int(time.time() // 300) * 300000
 
-    # Remove current unfinished candle
+        if result[-1]["timestamp"] >= now_bucket:
+            result.pop()
 
-    current_bucket = (
-        int(time.time() // 300)
-        * 300
-    )
-
-    candles = [
-        c
-        for c in candles
-        if c["timestamp"]
-        < current_bucket
-    ]
-
-    return candles[
-        -CANDLE_LIMIT:
-    ]
+    return result[-CANDLE_LIMIT:]
 
 
 # ============================================================
-# CANDLE CONTINUITY
+# BASIC MATH
 # ============================================================
 
-def has_continuous_candles(
-    candles,
-    required_bars,
-):
-
-    if len(candles) < required_bars:
-        return False
-
-    recent = candles[
-        -required_bars:
-    ]
-
-    for i in range(
-        1,
-        len(recent),
-    ):
-
-        previous_ts = recent[
-            i - 1
-        ]["timestamp"]
-
-        current_ts = recent[
-            i
-        ]["timestamp"]
-
-        if (
-            current_ts
-            - previous_ts
-            != 300
-        ):
-            return False
-
-    return True
-
-
-# ============================================================
-# TIMEFRAME MOMENTUM
-# ============================================================
-
-def timeframe_momentum(
-    candles,
-    minutes,
-):
-
-    bars = minutes // 5
-
-    required = bars + 1
-
-    if not has_continuous_candles(
-        candles,
-        required,
-    ):
-        return None
-
-    old = candles[
-        -bars - 1
-    ]["close"]
-
-    new = candles[
-        -1
-    ]["close"]
-
-    return pct_change(
-        old,
-        new,
-    )
-
-
-# ============================================================
-# CANDLE BODY
-# ============================================================
-
-def candle_body_percent(candle):
-
-    if candle is None:
+def pct_change(old, new):
+    if old is None or new is None:
         return 0.0
 
-    open_price = candle.get(
-        "open"
-    )
-
-    close_price = candle.get(
-        "close"
-    )
-
-    if open_price in (
-        None,
-        0,
-    ):
+    if old == 0:
         return 0.0
 
-    return (
-        (
-            close_price
-            - open_price
-        )
-        / open_price
-    ) * 100.0
+    return ((new - old) / old) * 100.0
 
 
-# ============================================================
-# RECENT HIGH / LOW
-# ============================================================
-
-def recent_high(
-    candles,
-    count=20,
-):
-
-    if len(candles) < count:
-        return None
-
-    values = [
-        c["high"]
-        for c in candles[
-            -count:
-        ]
-    ]
-
-    return max(values)
-
-
-def recent_low(
-    candles,
-    count=20,
-):
-
-    if len(candles) < count:
-        return None
-
-    values = [
-        c["low"]
-        for c in candles[
-            -count:
-        ]
-    ]
-
-    return min(values)
-
-
-# ============================================================
-# BREAKOUT
-# ============================================================
-
-def breakout_strength(candles):
-
-    if len(candles) < 21:
+def average(values):
+    if not values:
         return 0.0
 
-    previous_high = recent_high(
-        candles[:-1],
-        20,
-    )
-
-    last_close = candles[
-        -1
-    ]["close"]
-
-    if previous_high in (
-        None,
-        0,
-    ):
-        return 0.0
-
-    return pct_change(
-        previous_high,
-        last_close,
-    )
+    return sum(values) / len(values)
 
 
 # ============================================================
-# VOLUME MOMENTUM
+# MOMENTUM
 # ============================================================
 
-def volume_ratio(candles):
+def timeframe_momentum(candles):
+    if len(candles) < 15:
+        return 0.0, 0.0, 0.0
 
-    if len(candles) < 21:
-        return 0.0
+    close = candles[-1]["close"]
 
-    previous = candles[
-        -21:-1
-    ]
+    # 5m
+    old_5m = candles[-2]["close"]
 
-    volumes = [
-        c["volume"]
-        for c in previous
-        if c["volume"] is not None
-    ]
+    # 15m
+    old_15m = candles[-4]["close"]
 
-    if not volumes:
-        return 0.0
+    # 1h
+    if len(candles) >= 13:
+        old_1h = candles[-13]["close"]
+    else:
+        old_1h = candles[0]["close"]
 
-    average_volume = (
-        sum(volumes)
-        / len(volumes)
-    )
+    m5 = pct_change(old_5m, close)
+    m15 = pct_change(old_15m, close)
+    h1 = pct_change(old_1h, close)
 
-    if average_volume <= 0:
-        return 0.0
-
-    current_volume = candles[
-        -1
-    ]["volume"]
-
-    return (
-        current_volume
-        / average_volume
-    )
-
-
-# ============================================================
-# PRICE STRUCTURE
-# ============================================================
-
-def higher_closes(
-    candles,
-    count=3,
-):
-
-    if len(candles) < count + 1:
-        return False
-
-    recent = candles[
-        -count:
-    ]
-
-    for i in range(
-        1,
-        len(recent),
-    ):
-
-        if (
-            recent[i]["close"]
-            <= recent[
-                i - 1
-            ]["close"]
-        ):
-            return False
-
-    return True
-
-
-def higher_lows(
-    candles,
-    count=3,
-):
-
-    if len(candles) < count + 1:
-        return False
-
-    recent = candles[
-        -count:
-    ]
-
-    for i in range(
-        1,
-        len(recent),
-    ):
-
-        if (
-            recent[i]["low"]
-            <= recent[
-                i - 1
-            ]["low"]
-        ):
-            return False
-
-    return True
+    return m5, m15, h1
 
 
 # ============================================================
@@ -863,368 +409,281 @@ def higher_lows(
 # ============================================================
 
 def calculate_score(candles):
-
     if len(candles) < 25:
-        return None
+        return 0, []
 
-    m5 = timeframe_momentum(
-        candles,
-        5,
-    )
+    current = candles[-1]
 
-    m15 = timeframe_momentum(
-        candles,
-        15,
-    )
+    close = current["close"]
+    open_price = current["open"]
 
-    h1 = timeframe_momentum(
-        candles,
-        60,
-    )
-
-    if (
-        m5 is None
-        or m15 is None
-        or h1 is None
-    ):
-        return None
-
-    last = candles[
-        -1
-    ]
+    m5, m15, h1 = timeframe_momentum(candles)
 
     score = 0
     reasons = []
 
-    # 5M
+    # --------------------------------------------------------
+    # 5M MOMENTUM
+    # --------------------------------------------------------
 
-    if m5 > 0.10:
+    if m5 > 0.08:
         score += 1
-        reasons.append(
-            "5M UP"
-        )
+        reasons.append("5M UP")
 
-    if m5 > 0.25:
+    if m5 > 0.20:
         score += 1
-        reasons.append(
-            "5M STRONG"
-        )
+        reasons.append("5M STRONG")
 
-    # 15M
+    # --------------------------------------------------------
+    # 15M MOMENTUM
+    # --------------------------------------------------------
 
-    if m15 > 0.15:
+    if m15 > 0.10:
         score += 1
-        reasons.append(
-            "15M UP"
-        )
+        reasons.append("15M UP")
 
-    if m15 > 0.40:
+    if m15 > 0.30:
         score += 1
-        reasons.append(
-            "15M STRONG"
-        )
+        reasons.append("15M STRONG")
 
-    # 1H
+    # --------------------------------------------------------
+    # 1H MOMENTUM
+    # --------------------------------------------------------
 
-    if h1 > 0.20:
+    if h1 > 0.15:
         score += 1
-        reasons.append(
-            "1H UP"
-        )
+        reasons.append("1H UP")
 
-    if h1 > 0.60:
+    if h1 > 0.50:
         score += 1
-        reasons.append(
-            "1H STRONG"
-        )
+        reasons.append("1H STRONG")
 
-    # Candle
+    # --------------------------------------------------------
+    # BULLISH BODY
+    # --------------------------------------------------------
 
-    body = candle_body_percent(
-        last
+    body_pct = pct_change(
+        open_price,
+        close,
     )
 
-    if body > 0.10:
+    if body_pct > 0.05:
         score += 1
-        reasons.append(
-            "BULL CANDLE"
+        reasons.append("BULLISH BODY")
+
+    if body_pct > 0.20:
+        score += 1
+        reasons.append("STRONG BODY")
+
+    # --------------------------------------------------------
+    # VOLUME
+    # --------------------------------------------------------
+
+    recent_volumes = [
+        x["volume"]
+        for x in candles[-21:-1]
+        if x["volume"] > 0
+    ]
+
+    avg_volume = average(recent_volumes)
+
+    volume_ratio = 0.0
+
+    if avg_volume > 0:
+        volume_ratio = current["volume"] / avg_volume
+
+    if volume_ratio >= 1.10:
+        score += 1
+        reasons.append("VOLUME UP")
+
+    if volume_ratio >= 1.60:
+        score += 1
+        reasons.append("VOLUME STRONG")
+
+    # --------------------------------------------------------
+    # HIGHER CLOSES
+    # --------------------------------------------------------
+
+    closes = [
+        x["close"]
+        for x in candles[-4:]
+    ]
+
+    if len(closes) == 4:
+        if closes[-1] > closes[-2] > closes[-3]:
+            score += 1
+            reasons.append("HIGHER CLOSES")
+
+    # --------------------------------------------------------
+    # HIGHER LOW
+    # --------------------------------------------------------
+
+    lows = [
+        x["low"]
+        for x in candles[-6:]
+    ]
+
+    if len(lows) >= 5:
+        if lows[-1] >= min(lows[:-1]):
+            score += 1
+            reasons.append("HIGHER LOW")
+
+    # --------------------------------------------------------
+    # BREAKOUT
+    # --------------------------------------------------------
+
+    previous_highs = [
+        x["high"]
+        for x in candles[-21:-1]
+    ]
+
+    if previous_highs:
+        previous_high = max(previous_highs)
+
+        breakout_pct = pct_change(
+            previous_high,
+            close,
         )
 
-    if body > 0.30:
-        score += 1
-        reasons.append(
-            "STRONG BODY"
-        )
+        if breakout_pct > 0.03:
+            score += 1
+            reasons.append("BREAKOUT")
 
-    # Volume
+        if breakout_pct > 0.15:
+            score += 1
+            reasons.append("STRONG BREAKOUT")
 
-    vr = volume_ratio(
-        candles
-    )
-
-    if vr >= 1.20:
-        score += 1
-        reasons.append(
-            "VOLUME UP"
-        )
-
-    if vr >= 1.80:
-        score += 1
-        reasons.append(
-            "VOLUME STRONG"
-        )
-
-    # Structure
-
-    if higher_closes(
-        candles,
-        3,
-    ):
-        score += 1
-        reasons.append(
-            "HIGHER CLOSES"
-        )
-
-    if higher_lows(
-        candles,
-        3,
-    ):
-        score += 1
-        reasons.append(
-            "HIGHER LOWS"
-        )
-
-    # Breakout
-
-    breakout = breakout_strength(
-        candles
-    )
-
-    if breakout > 0.05:
-        score += 1
-        reasons.append(
-            "BREAKOUT"
-        )
-
-    if breakout > 0.20:
-        score += 1
-        reasons.append(
-            "STRONG BREAKOUT"
-        )
-
-    return {
-        "score": score,
-        "m5": m5,
-        "m15": m15,
-        "h1": h1,
-        "body": body,
-        "volume_ratio": vr,
-        "breakout": breakout,
-        "reasons": reasons,
-    }
+    return score, reasons
 
 
 # ============================================================
-# TRADE LEVELS
+# LEVELS
 # ============================================================
 
 def calculate_levels(candles):
+    price = candles[-1]["close"]
 
-    if not candles:
-        return None
+    recent = candles[-20:]
 
-    price = candles[
-        -1
-    ]["close"]
-
-    low = recent_low(
-        candles,
-        20,
+    swing_low = min(
+        candle["low"]
+        for candle in recent
     )
 
-    if (
-        low is None
-        or low <= 0
-    ):
+    # safety fallback
+    if swing_low >= price:
+        swing_low = price * 0.995
 
-        sl = price * 0.995
-
-    else:
-
-        sl = low
-
-        if sl >= price:
-            sl = price * 0.995
+    sl = swing_low
 
     risk = price - sl
 
     if risk <= 0:
         risk = price * 0.005
+        sl = price - risk
 
-    tp1 = price + (
-        risk * 1.5
-    )
+    tp1 = price + (risk * 1.5)
+    tp2 = price + (risk * 2.5)
 
-    tp2 = price + (
-        risk * 2.5
-    )
-
-    return {
-        "entry": price,
-        "sl": sl,
-        "tp1": tp1,
-        "tp2": tp2,
-    }
+    return price, sl, tp1, tp2
 
 
 # ============================================================
-# ANALYZE SYMBOL
+# SYMBOL ANALYSIS
 # ============================================================
 
 def analyze_symbol(symbol):
-
     try:
-
-        trades = get_trades(
-            symbol
-        )
+        trades = get_trades(symbol)
 
         if not trades:
             return None
 
-        candles = build_candles(
-            trades
-        )
+        candles = build_5m_candles(trades)
 
         if len(candles) < 25:
             return None
 
-        result = calculate_score(
+        score, reasons = calculate_score(candles)
+
+        m5, m15, h1 = timeframe_momentum(candles)
+
+        price, sl, tp1, tp2 = calculate_levels(
             candles
         )
 
-        if result is None:
+        # Watch candidates can be weaker
+        if score < 3:
             return None
 
-        if (
-            result["score"]
-            < MIN_SCORE
-        ):
-            return None
+        volume_now = candles[-1]["volume"]
 
-        levels = calculate_levels(
-            candles
-        )
+        avg_volumes = [
+            x["volume"]
+            for x in candles[-21:-1]
+            if x["volume"] > 0
+        ]
 
-        if levels is None:
-            return None
+        avg_vol = average(avg_volumes)
 
-        result.update(
-            {
-                "symbol": symbol,
-                "candles": len(candles),
-                "price": candles[
-                    -1
-                ]["close"],
-                "levels": levels,
-            }
-        )
+        volume_ratio = 0.0
 
-        return result
+        if avg_vol > 0:
+            volume_ratio = volume_now / avg_vol
 
-    except Exception as exc:
+        return {
+            "symbol": symbol,
+            "score": score,
+            "price": price,
+            "m5": m5,
+            "m15": m15,
+            "h1": h1,
+            "volume_ratio": volume_ratio,
+            "sl": sl,
+            "tp1": tp1,
+            "tp2": tp2,
+            "reasons": reasons,
+        }
 
+    except Exception as e:
         print(
-            f"⚠️ {symbol}: {exc}"
+            f"⚠️ {symbol}: {str(e)[:80]}"
         )
 
         return None
 
 
 # ============================================================
-# SORT
+# FORMAT
 # ============================================================
 
-def sort_results(results):
+def format_price(value):
+    if value >= 100:
+        return f"{value:.2f}"
 
-    return sorted(
-        results,
-        key=lambda x: (
-            x.get(
-                "score",
-                0,
-            ),
-            x.get(
-                "m15",
-                0,
-            ),
-            x.get(
-                "m5",
-                0,
-            ),
-        ),
-        reverse=True,
-    )
+    if value >= 1:
+        return f"{value:.4f}"
+
+    if value >= 0.01:
+        return f"{value:.6f}"
+
+    return f"{value:.8f}"
 
 
-# ============================================================
-# FORMAT SIGNAL
-# ============================================================
-
-def format_signal(
-    item,
-    rank,
-):
-
-    symbol = item[
-        "symbol"
-    ]
-
-    score = item[
-        "score"
-    ]
-
-    price = item[
-        "price"
-    ]
-
-    levels = item[
-        "levels"
-    ]
-
-    m5 = item[
-        "m5"
-    ]
-
-    m15 = item[
-        "m15"
-    ]
-
-    h1 = item[
-        "h1"
-    ]
-
-    vr = item[
-        "volume_ratio"
-    ]
-
-    reasons = item[
-        "reasons"
-    ]
-
+def format_result(item, title):
     return (
-        f"#{rank} 🚀 {symbol}\n"
-        f"🟢 BUY WATCH\n"
-        f"⭐ SCORE: {score}\n"
-        f"💰 PRICE: {price:.8g}\n"
-        f"📈 5M: {m5:+.2f}%\n"
-        f"📈 15M: {m15:+.2f}%\n"
-        f"📈 1H: {h1:+.2f}%\n"
-        f"📊 VOL: {vr:.2f}x\n"
-        f"🛑 SL: {levels['sl']:.8g}\n"
-        f"🎯 TP1: {levels['tp1']:.8g}\n"
-        f"🎯 TP2: {levels['tp2']:.8g}\n"
-        f"🔎 {', '.join(reasons)}"
+        f"{title}\n"
+        f"🪙 {item['symbol']}\n"
+        f"⭐ SCORE: {item['score']}\n"
+        f"💰 PRICE: {format_price(item['price'])}\n"
+        f"📈 5M: {item['m5']:+.2f}%\n"
+        f"📊 15M: {item['m15']:+.2f}%\n"
+        f"🚀 1H: {item['h1']:+.2f}%\n"
+        f"📦 VOL: {item['volume_ratio']:.2f}x\n"
+        f"🛑 SL: {format_price(item['sl'])}\n"
+        f"🎯 TP1: {format_price(item['tp1'])}\n"
+        f"🎯 TP2: {format_price(item['tp2'])}\n"
+        f"🔎 {', '.join(item['reasons'][:8])}"
     )
 
 
@@ -1236,73 +695,45 @@ def main():
 
     start_time = time.time()
 
-    start_message = (
-        f"⚡ ATI CRYPTO BOT {VERSION}\n\n"
-        f"🚀 FAST UPWARD COIN SCANNER\n\n"
-        f"⏱ Timeframe: {TIMEFRAME}\n"
-        f"✅ CLOSED CANDLE\n"
-        f"📊 5M + 15M + 1H MOMENTUM\n"
-        f"💥 BREAKOUT + STRUCTURE + VOLUME\n"
-        f"⚡ PARALLEL SCANNING: ON\n"
-        f"🔒 REAL TRADING: OFF\n"
-        f"🔒 ORDER EXECUTION: OFF\n\n"
-        f"📡 Starting scan..."
-    )
-
-    print(start_message)
+    print("=" * 55)
+    print(f"⚡ ATI CRYPTO BOT {VERSION}")
+    print()
+    print("🚀 UPWARD COIN SCANNER")
+    print("⏱ TIMEFRAME: 5m")
+    print("✅ CLOSED CANDLE")
+    print("📊 5M + 15M + 1H MOMENTUM")
+    print("💥 BREAKOUT + STRUCTURE + VOLUME")
+    print("🔒 REAL TRADING: OFF")
+    print("🔒 ORDER EXECUTION: OFF")
+    print("=" * 55)
 
     telegram_send(
-        start_message
+        f"⚡ ATI CRYPTO BOT {VERSION}\n\n"
+        f"🚀 UPWARD COIN SCANNER\n\n"
+        f"📡 Starting scan...\n"
+        f"🔒 REAL TRADING: OFF"
     )
 
-    # --------------------------------------------------------
-    # MARKET DISCOVERY
-    # --------------------------------------------------------
-
-    markets = get_markets()
+    markets = get_usdt_markets()
 
     if not markets:
-
         message = (
             f"⚡ ATI CRYPTO BOT {VERSION}\n\n"
-            f"❌ MARKET DISCOVERY FAILED\n"
-            f"📡 TABDEAL API: ERROR\n"
-            f"🕐 {now_utc()}"
+            f"❌ TABDEAL MARKET DISCOVERY FAILED"
         )
 
-        print(message)
-
-        telegram_send(
-            message
-        )
-
+        telegram_send(message)
         return
 
-    api_message = (
-        f"📡 TABDEAL API: OK\n"
-        f"📊 USDT MARKETS: {len(markets)}\n"
-        f"⚡ PARALLEL WORKERS: {MAX_WORKERS}\n"
-        f"🔎 Scanning markets..."
-    )
-
-    print(api_message)
-
-    telegram_send(
-        api_message
-    )
-
-    # --------------------------------------------------------
-    # PARALLEL SCANNING
-    # --------------------------------------------------------
+    print()
+    print("📡 TABDEAL API: OK")
+    print(f"📊 USDT MARKETS: {len(markets)}")
+    print(f"⚡ PARALLEL WORKERS: {MAX_WORKERS}")
+    print("🔎 Scanning markets...")
 
     results = []
 
     completed = 0
-    total = len(markets)
-
-    print(
-        f"🚀 Starting parallel scan: {total} markets"
-    )
 
     with ThreadPoolExecutor(
         max_workers=MAX_WORKERS
@@ -1316,137 +747,153 @@ def main():
             for symbol in markets
         }
 
-        for future in as_completed(
-            futures
-        ):
-
-            symbol = futures[
-                future
-            ]
-
-            try:
-
-                result = future.result()
-
-                if result is not None:
-                    results.append(
-                        result
-                    )
-
-            except Exception as exc:
-
-                print(
-                    f"⚠️ Future error {symbol}: {exc}"
-                )
+        for future in as_completed(futures):
 
             completed += 1
 
-            if (
-                completed % 50 == 0
-                or completed == total
-            ):
+            try:
+                result = future.result()
 
+                if result:
+                    results.append(result)
+
+            except Exception:
+                pass
+
+            if completed % 50 == 0:
                 print(
-                    f"📊 Progress: "
-                    f"{completed}/{total}"
+                    f"🔎 Progress: "
+                    f"{completed}/{len(markets)}"
                 )
+
+    scan_time = time.time() - start_time
 
     # --------------------------------------------------------
     # SORT
     # --------------------------------------------------------
 
-    results = sort_results(
-        results
+    results.sort(
+        key=lambda x: (
+            x["score"],
+            x["m5"],
+            x["m15"],
+            x["volume_ratio"],
+        ),
+        reverse=True,
     )
 
-    results = results[
-        :TOP_RESULTS
+    strong_results = [
+        x
+        for x in results
+        if x["score"] >= MIN_SCORE
     ]
 
-    elapsed = (
-        time.time()
-        - start_time
-    )
+    watch_results = results[:WATCH_RESULTS]
 
-    print(
-        f"⏱ TOTAL SCAN TIME: "
-        f"{elapsed:.1f}s"
+    timestamp = datetime.now(
+        timezone.utc
+    ).strftime(
+        "%Y-%m-%d %H:%M UTC"
     )
 
     # --------------------------------------------------------
-    # SIGNALS
+    # STRONG SIGNALS
     # --------------------------------------------------------
 
-    if results:
+    if strong_results:
 
-        message_parts = [
-            f"⚡ ATI CRYPTO BOT {VERSION}",
-            "",
-            "🚀 TOP UPWARD COINS",
-            "",
-            f"📡 TABDEAL API: OK",
-            f"📊 MARKETS: {len(markets)}",
-            f"🎯 SIGNALS: {len(results)}",
-            f"⚡ SCAN TIME: {elapsed:.1f}s",
-            "",
-        ]
+        selected = strong_results[:TOP_RESULTS]
 
-        for rank, item in enumerate(
-            results,
+        message = (
+            f"⚡ ATI CRYPTO BOT {VERSION}\n\n"
+            f"🚀 STRONG UPWARD SIGNALS\n\n"
+            f"📡 TABDEAL API: OK\n"
+            f"📊 USDT MARKETS: {len(markets)}\n"
+            f"⭐ MIN SCORE: {MIN_SCORE}\n\n"
+        )
+
+        for index, item in enumerate(
+            selected,
             start=1,
         ):
-
-            block = format_signal(
-                item,
-                rank,
+            message += (
+                format_result(
+                    item,
+                    f"#{index} SIGNAL",
+                )
+                + "\n\n"
             )
 
-            print()
-            print(block)
-
-            message_parts.append(
-                block
-            )
-
-            message_parts.append(
-                ""
-            )
-
-        message = "\n".join(
-            message_parts
+        message += (
+            f"⏱ SCAN TIME: {scan_time:.1f}s\n"
+            f"🕐 {timestamp}\n"
+            f"🔒 REAL TRADING: OFF"
         )
 
-        telegram_send(
-            message
+        telegram_send(message)
+
+    # --------------------------------------------------------
+    # NO STRONG SIGNAL
+    # --------------------------------------------------------
+
+    else:
+
+        message = (
+            f"⚡ ATI CRYPTO BOT {VERSION}\n\n"
+            f"📡 TABDEAL API: OK\n"
+            f"📊 USDT MARKETS: {len(markets)}\n"
+            f"❌ NO STRONG UPWARD SIGNAL\n\n"
+            f"⭐ MIN SCORE: {MIN_SCORE}\n"
+            f"⏱ SCAN TIME: {scan_time:.1f}s\n"
+            f"🕐 {timestamp}\n\n"
+            f"👀 TOP WATCHLIST:\n\n"
         )
 
-        return
+        if watch_results:
 
-    # --------------------------------------------------------
-    # NO SIGNAL
-    # --------------------------------------------------------
+            for index, item in enumerate(
+                watch_results,
+                start=1,
+            ):
 
-    no_signal = (
-        f"⚡ ATI CRYPTO BOT {VERSION}\n\n"
-        f"🚀 UPWARD COIN SCANNER\n\n"
-        f"📡 TABDEAL API: OK\n"
-        f"📊 USDT MARKETS: {len(markets)}\n"
-        f"❌ NO STRONG UPWARD SIGNAL\n\n"
-        f"⭐ MIN SCORE: {MIN_SCORE}\n"
-        f"⚡ SCAN TIME: {elapsed:.1f}s\n"
-        f"🕐 {now_utc()}"
+                message += (
+                    f"#{index} "
+                    f"{item['symbol']} "
+                    f"⭐{item['score']}\n"
+                    f"📈 5M {item['m5']:+.2f}% | "
+                    f"15M {item['m15']:+.2f}% | "
+                    f"1H {item['h1']:+.2f}%\n"
+                    f"📦 VOL {item['volume_ratio']:.2f}x\n\n"
+                )
+
+        else:
+
+            message += (
+                "هیچ حرکت صعودی قابل‌قبولی "
+                "پیدا نشد.\n\n"
+            )
+
+        message += (
+            "🔒 REAL TRADING: OFF\n"
+            "🔒 ORDER EXECUTION: OFF"
+        )
+
+        telegram_send(message)
+
+    print()
+    print("=" * 55)
+    print(
+        f"✅ SCAN FINISHED IN "
+        f"{scan_time:.1f}s"
     )
-
-    print(no_signal)
-
-    telegram_send(
-        no_signal
+    print(
+        f"📊 RESULTS: {len(results)}"
     )
+    print(
+        f"🚀 STRONG: {len(strong_results)}"
+    )
+    print("=" * 55)
 
-
-# ============================================================
-# ENTRY POINT
-# ============================================================
 
 if __name__ == "__main__":
     main()
