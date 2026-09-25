@@ -47,7 +47,7 @@ def execute_real_futures_order(side):
         }
 
     except Exception as e:
-    return {
-        "status": "ERROR",
-        "message": f"{type(e).__name__}: {repr(e)}"
-    }
+        return {
+            "status": "ERROR",
+            "message": f"{type(e).__name__}: {repr(e)}"
+        }
