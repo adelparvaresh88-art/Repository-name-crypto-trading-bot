@@ -1,3 +1,2 @@
 requests
 python-dotenv
-tabdeal-python==0.4.7
