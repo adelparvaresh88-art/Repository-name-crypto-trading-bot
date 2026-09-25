@@ -202,13 +202,9 @@ def load_usdt_markets():
     دریافت لیست بازارهای USDT با چند Endpoint احتمالی.
     """
 
-    endpoints = [
-        "/r/api/v1/markets",
-        "/r/api/v1/symbols",
-        "/r/api/v1/tickers",
-        "/api/v1/markets",
-        "/api/v1/symbols",
-    ]
+    endpoints = endpoints = [
+    "/r/api/v1/exchangeInfo",
+]
 
     for endpoint in endpoints:
 
