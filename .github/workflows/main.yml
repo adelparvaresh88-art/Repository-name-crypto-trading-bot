@@ -6,14 +6,17 @@ on:
   schedule:
     - cron: "*/5 * * * *"
 
-# فقط یک اجرای ATI همزمان باشد
+permissions:
+  contents: write
+
 concurrency:
   group: ati-bot
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
+    timeout-minutes: 4
 
     steps:
       - name: Checkout
@@ -29,23 +32,14 @@ jobs:
           python -m pip install --upgrade pip
           pip install requests
 
-      - name: Show Bot Version
-        run: |
-          echo "===== ATI BOT VERSION ====="
-          grep 'VERSION =' main.py
-          echo "==========================="
-
       - name: Run ATI Bot
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
 
-          TABDEAL_API_KEY: ${{ secrets.TABDEAL_API_KEY }}
-          TABDIL_API_KEY: ${{ secrets.TABDIL_API_KEY }}
-          TABDIL_API_SECRET: ${{ secrets.TABDIL_API_SECRET }}
-
-          LIVE_TRADING: ${{ secrets.LIVE_TRADING }}
-          ORDER_QTY: ${{ secrets.ORDER_QTY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
 
         run: |
           python main.py
