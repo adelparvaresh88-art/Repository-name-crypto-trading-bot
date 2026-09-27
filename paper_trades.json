@@ -32,7 +32,7 @@
       "closed_at": "",
       "exit_price": null,
       "last_price": 0.053466,
-      "last_check": "2026-09-27 18:41:56 UTC"
+      "last_check": "2026-09-27 18:56:52 UTC"
     },
     {
       "id": "ENAUSDT_1790532462",
@@ -43,13 +43,13 @@
       "sl": 0.27962000000000004,
       "tp1": 0.28332,
       "tp2": 0.28479999999999994,
-      "status": "OPEN",
-      "result": "",
+      "status": "TP2_HIT",
+      "result": "WIN_TP2",
       "created_at": "2026-09-27 18:07:42 UTC",
-      "closed_at": "",
-      "exit_price": null,
-      "last_price": 0.2812,
-      "last_check": "2026-09-27 18:41:53 UTC"
+      "closed_at": "2026-09-27 18:56:51 UTC",
+      "exit_price": 0.2941,
+      "last_price": 0.2941,
+      "last_check": "2026-09-27 18:56:51 UTC"
     },
     {
       "id": "FLUXUSDT_1790532462",
@@ -83,7 +83,7 @@
       "closed_at": "",
       "exit_price": null,
       "last_price": 0.1804,
-      "last_check": "2026-09-27 18:41:54 UTC"
+      "last_check": "2026-09-27 18:56:54 UTC"
     },
     {
       "id": "FLUXUSDT_1790533404",
@@ -116,8 +116,8 @@
       "created_at": "2026-09-27 18:42:27 UTC",
       "closed_at": "",
       "exit_price": null,
-      "last_price": 0.2277,
-      "last_check": "2026-09-27 18:42:27 UTC"
+      "last_price": 0.2278,
+      "last_check": "2026-09-27 18:56:51 UTC"
     },
     {
       "id": "FLUXUSDT_1790534547",
@@ -128,13 +128,13 @@
       "sl": 0.0741024,
       "tp1": 0.0748464,
       "tp2": 0.07514399999999999,
-      "status": "OPEN",
-      "result": "",
+      "status": "SL_HIT",
+      "result": "LOSS",
       "created_at": "2026-09-27 18:42:27 UTC",
-      "closed_at": "",
-      "exit_price": null,
-      "last_price": 0.0744,
-      "last_check": "2026-09-27 18:42:27 UTC"
+      "closed_at": "2026-09-27 18:56:51 UTC",
+      "exit_price": 0.0741,
+      "last_price": 0.0741,
+      "last_check": "2026-09-27 18:56:51 UTC"
     },
     {
       "id": "NEARUSDT_1790534547",
@@ -145,13 +145,98 @@
       "sl": 5.3284199999999995,
       "tp1": 5.386620000000001,
       "tp2": 5.409900000000002,
+      "status": "TP2_HIT",
+      "result": "WIN_TP2",
+      "created_at": "2026-09-27 18:42:27 UTC",
+      "closed_at": "2026-09-27 18:56:51 UTC",
+      "exit_price": 5.4566,
+      "last_price": 5.4566,
+      "last_check": "2026-09-27 18:56:51 UTC"
+    },
+    {
+      "id": "ENAUSDT_1790535449",
+      "symbol": "ENAUSDT",
+      "category": "CONFIRMED",
+      "score": 15,
+      "entry": 0.2881,
+      "sl": 0.28664285714285714,
+      "tp1": 0.29028571428571437,
+      "tp2": 0.2917428571428572,
       "status": "OPEN",
       "result": "",
-      "created_at": "2026-09-27 18:42:27 UTC",
+      "created_at": "2026-09-27 18:57:29 UTC",
       "closed_at": "",
       "exit_price": null,
-      "last_price": 5.3517,
-      "last_check": "2026-09-27 18:42:27 UTC"
+      "last_price": 0.2881,
+      "last_check": "2026-09-27 18:57:29 UTC"
+    },
+    {
+      "id": "FLUXUSDT_1790535449",
+      "symbol": "FLUXUSDT",
+      "category": "CONFIRMED",
+      "score": 16,
+      "entry": 0.0744,
+      "sl": 0.0741024,
+      "tp1": 0.0748464,
+      "tp2": 0.07514399999999999,
+      "status": "OPEN",
+      "result": "",
+      "created_at": "2026-09-27 18:57:29 UTC",
+      "closed_at": "",
+      "exit_price": null,
+      "last_price": 0.0744,
+      "last_check": "2026-09-27 18:57:29 UTC"
+    },
+    {
+      "id": "MAJORUSDT_1790535449",
+      "symbol": "MAJORUSDT",
+      "category": "CONFIRMED",
+      "score": 14,
+      "entry": 0.03944,
+      "sl": 0.039084,
+      "tp1": 0.03997400000000001,
+      "tp2": 0.040330000000000005,
+      "status": "OPEN",
+      "result": "",
+      "created_at": "2026-09-27 18:57:29 UTC",
+      "closed_at": "",
+      "exit_price": null,
+      "last_price": 0.03944,
+      "last_check": "2026-09-27 18:57:29 UTC"
+    },
+    {
+      "id": "NEARUSDT_1790535449",
+      "symbol": "NEARUSDT",
+      "category": "CONFIRMED",
+      "score": 16,
+      "entry": 5.4694,
+      "sl": 5.439792727272727,
+      "tp1": 5.51381090909091,
+      "tp2": 5.543418181818183,
+      "status": "OPEN",
+      "result": "",
+      "created_at": "2026-09-27 18:57:29 UTC",
+      "closed_at": "",
+      "exit_price": null,
+      "last_price": 5.4694,
+      "last_check": "2026-09-27 18:57:29 UTC"
+    },
+    {
+      "id": "OPUSDT_1790535449",
+      "symbol": "OPUSDT",
+      "category": "CONFIRMED",
+      "score": 15,
+      "entry": 0.1485,
+      "sl": 0.14790599999999998,
+      "tp1": 0.149391,
+      "tp2": 0.14998499999999998,
+      "status": "OPEN",
+      "result": "",
+      "created_at": "2026-09-27 18:57:29 UTC",
+      "closed_at": "",
+      "exit_price": null,
+      "last_price": 0.1485,
+      "last_check": "2026-09-27 18:57:29 UTC"
     }
   ]
 }
