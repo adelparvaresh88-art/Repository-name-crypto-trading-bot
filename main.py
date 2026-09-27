@@ -9,6 +9,7 @@ import requests
 # ATI CRYPTO BOT V38.9
 # EARLY ENTRY + CONFIRMED BREAKOUT
 # AUTO 5 MINUTE SCANNER
+# HEARTBEAT SAFE TELEGRAM
 # ============================================================
 
 VERSION = "V38.9"
@@ -63,12 +64,12 @@ RETEST_DISTANCE = 1.50
 TELEGRAM_BOT_TOKEN = os.getenv(
     "TELEGRAM_BOT_TOKEN",
     ""
-)
+).strip()
 
 TELEGRAM_CHAT_ID = os.getenv(
     "TELEGRAM_CHAT_ID",
     ""
-)
+).strip()
 
 TELEGRAM_MAX_LENGTH = 3900
 
@@ -97,26 +98,22 @@ def utc_now():
 
 
 # ============================================================
-# TELEGRAM
+# TELEGRAM SEND
 # ============================================================
 
-def send_telegram(message):
+def telegram_send(message):
 
     if not TELEGRAM_BOT_TOKEN:
-
         print(
             "ERROR: TELEGRAM_BOT_TOKEN IS EMPTY"
         )
-
-        return False
+        return None
 
     if not TELEGRAM_CHAT_ID:
-
         print(
             "ERROR: TELEGRAM_CHAT_ID IS EMPTY"
         )
-
-        return False
+        return None
 
     url = (
         "https://api.telegram.org/bot"
@@ -124,97 +121,164 @@ def send_telegram(message):
         + "/sendMessage"
     )
 
-    chunks = []
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": message,
+    }
 
-    while len(message) > TELEGRAM_MAX_LENGTH:
+    try:
 
-        cut = message.rfind(
-            "\n",
-            0,
-            TELEGRAM_MAX_LENGTH
+        response = session.post(
+            url,
+            json=payload,
+            timeout=REQUEST_TIMEOUT,
         )
 
-        if cut <= 0:
-            cut = TELEGRAM_MAX_LENGTH
-
-        chunks.append(
-            message[:cut]
+        print(
+            "TELEGRAM SEND STATUS:",
+            response.status_code
         )
 
-        message = message[cut:].lstrip()
-
-    if message:
-        chunks.append(message)
-
-    success = True
-
-    for chunk in chunks:
-
-        payload = {
-            "chat_id": TELEGRAM_CHAT_ID,
-            "text": chunk,
-        }
-
-        try:
-
-            response = session.post(
-                url,
-                json=payload,
-                timeout=REQUEST_TIMEOUT,
-            )
+        if not response.ok:
 
             print(
-                "TELEGRAM HTTP STATUS:",
-                response.status_code
+                "TELEGRAM ERROR:",
+                response.text[:500]
             )
 
-            if response.ok:
+            return None
 
-                print(
-                    "TELEGRAM MESSAGE SENT"
-                )
+        data = response.json()
 
-            else:
-
-                print(
-                    "TELEGRAM ERROR:",
-                    response.text[:500]
-                )
-
-                success = False
-
-        except Exception as e:
+        if not data.get("ok"):
 
             print(
-                "TELEGRAM CONNECTION ERROR:",
-                str(e)
+                "TELEGRAM API NOT OK:",
+                data
             )
 
-            success = False
+            return None
 
-    return success
+        result = data.get(
+            "result",
+            {}
+        )
+
+        message_id = result.get(
+            "message_id"
+        )
+
+        print(
+            "TELEGRAM HEARTBEAT SENT:",
+            message_id
+        )
+
+        return message_id
+
+    except Exception as e:
+
+        print(
+            "TELEGRAM SEND ERROR:",
+            repr(e)
+        )
+
+        return None
 
 
-def telegram_startup_test():
+# ============================================================
+# TELEGRAM EDIT
+# ============================================================
 
-    message = (
-        "🟢 ATI BOT TELEGRAM TEST\n\n"
+def telegram_edit(
+    message_id,
+    message
+):
+
+    if not message_id:
+        return False
+
+    if not TELEGRAM_BOT_TOKEN:
+        return False
+
+    if not TELEGRAM_CHAT_ID:
+        return False
+
+    url = (
+        "https://api.telegram.org/bot"
+        + TELEGRAM_BOT_TOKEN
+        + "/editMessageText"
+    )
+
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "message_id": message_id,
+        "text": message[:TELEGRAM_MAX_LENGTH],
+    }
+
+    try:
+
+        response = session.post(
+            url,
+            json=payload,
+            timeout=REQUEST_TIMEOUT,
+        )
+
+        print(
+            "TELEGRAM EDIT STATUS:",
+            response.status_code
+        )
+
+        if response.ok:
+
+            print(
+                "TELEGRAM MESSAGE UPDATED"
+            )
+
+            return True
+
+        print(
+            "TELEGRAM EDIT ERROR:",
+            response.text[:500]
+        )
+
+        return False
+
+    except Exception as e:
+
+        print(
+            "TELEGRAM EDIT ERROR:",
+            repr(e)
+        )
+
+        return False
+
+
+# ============================================================
+# HEARTBEAT
+# ============================================================
+
+def heartbeat_message():
+
+    return (
+        "💓 ATI BOT HEARTBEAT\n\n"
         f"⚡ VERSION: {VERSION}\n"
         "📡 TELEGRAM: OK\n"
         "🔧 AUTO SCAN: ON\n"
         "⏱ SCHEDULE: 5 MIN\n"
         f"🕐 {utc_now()}\n\n"
-        "✅ Telegram connection is working."
+        "🔄 SCANNING TABDEAL MARKETS...\n"
+        "⏳ PLEASE WAIT..."
     )
-
-    return send_telegram(message)
 
 
 # ============================================================
 # API
 # ============================================================
 
-def get_json(path, params=None):
+def get_json(
+    path,
+    params=None
+):
 
     url = BASE_URL + path
 
@@ -586,7 +650,10 @@ def build_candles(trades):
 # HELPERS
 # ============================================================
 
-def pct_change(old, new):
+def pct_change(
+    old,
+    new
+):
 
     if old == 0:
         return 0.0
@@ -598,7 +665,10 @@ def pct_change(old, new):
     )
 
 
-def momentum(candles, count):
+def momentum(
+    candles,
+    count
+):
 
     if len(candles) < count + 1:
         return 0.0
@@ -1150,557 +1220,4 @@ def analyze_symbol(symbol):
 
     return {
 
-        "symbol": symbol,
-
-        "price": price,
-
-        "score": score,
-
-        "signal_type":
-            signal_type,
-
-        "move_5m":
-            move_5m,
-
-        "move_15m":
-            move_15m,
-
-        "move_1h":
-            move_1h,
-
-        "resistance":
-            resistance,
-
-        "distance":
-            distance,
-
-        "retest":
-            retest,
-
-        "volume_ratio":
-            vol_ratio,
-
-        "sl": sl,
-
-        "tp1": tp1,
-
-        "tp2": tp2,
-
-        "reasons":
-            reasons,
-    }
-
-
-# ============================================================
-# FORMAT PRICE
-# ============================================================
-
-def fmt_price(value):
-
-    if value >= 100:
-        return f"{value:.2f}"
-
-    if value >= 1:
-        return f"{value:.5f}"
-
-    if value >= 0.01:
-        return f"{value:.7f}"
-
-    return f"{value:.10f}"
-
-
-# ============================================================
-# FORMAT SIGNAL
-# ============================================================
-
-def format_signal(item):
-
-    signal_type = item[
-        "signal_type"
-    ]
-
-    if signal_type == (
-        "CONFIRMED BUY"
-    ):
-
-        emoji = "🟢"
-
-    elif signal_type == (
-        "EARLY BUY"
-    ):
-
-        emoji = "🟡"
-
-    else:
-
-        emoji = "🟠"
-
-    retest_text = (
-        "YES"
-        if item["retest"]
-        else "PENDING"
-    )
-
-    return "\n".join([
-
-        f"{emoji} "
-        f"{signal_type}",
-
-        f"🪙 {item['symbol']}",
-
-        f"⭐ SCORE: "
-        f"{item['score']}",
-
-        f"💰 PRICE: "
-        f"{fmt_price(item['price'])}",
-
-        "",
-
-        f"📈 5M: "
-        f"{item['move_5m']:+.2f}%",
-
-        f"📊 15M: "
-        f"{item['move_15m']:+.2f}%",
-
-        f"🕐 1H: "
-        f"{item['move_1h']:+.2f}%",
-
-        "",
-
-        f"🚀 RESISTANCE: "
-        f"{fmt_price(item['resistance'])}",
-
-        f"📏 DISTANCE: "
-        f"{item['distance']:+.2f}%",
-
-        f"🔄 RETEST: "
-        f"{retest_text}",
-
-        f"📦 VOLUME: "
-        f"{item['volume_ratio']:.2f}x",
-
-        "",
-
-        f"🛑 SL: "
-        f"{fmt_price(item['sl'])}",
-
-        f"🎯 TP1: "
-        f"{fmt_price(item['tp1'])}",
-
-        f"🎯 TP2: "
-        f"{fmt_price(item['tp2'])}",
-
-        "",
-
-        "🔎 "
-        + " | ".join(
-            item["reasons"]
-        ),
-
-        "",
-
-        "⚠️ SIGNAL ONLY "
-        "— NO REAL ORDER",
-    ])
-
-
-# ============================================================
-# MAIN
-# ============================================================
-
-def main():
-
-    print("=" * 60)
-
-    print(
-        f"ATI CRYPTO BOT {VERSION}"
-    )
-
-    print(
-        "EARLY ENTRY + CONFIRMED BREAKOUT"
-    )
-
-    print(
-        "AUTO 5 MINUTE SCANNER"
-    )
-
-    print("=" * 60)
-
-    # ========================================================
-    # TELEGRAM TEST
-    # ========================================================
-
-    print(
-        "SENDING TELEGRAM STARTUP TEST..."
-    )
-
-    telegram_ok = (
-        telegram_startup_test()
-    )
-
-    if telegram_ok:
-
-        print(
-            "TELEGRAM STARTUP TEST OK"
-        )
-
-    else:
-
-        print(
-            "TELEGRAM STARTUP TEST FAILED"
-        )
-
-    # ========================================================
-    # MARKETS
-    # ========================================================
-
-    markets = get_markets()
-
-    if not markets:
-
-        message = (
-
-            f"⚠️ ATI BOT {VERSION}\n\n"
-
-            "❌ TABDEAL MARKET DATA ERROR\n\n"
-
-            "No USDT markets found.\n\n"
-
-            f"🕐 {utc_now()}"
-
-        )
-
-        print(message)
-
-        send_telegram(
-            message
-        )
-
-        return
-
-    print(
-        f"USDT MARKETS: "
-        f"{len(markets)}"
-    )
-
-    # ========================================================
-    # SCAN
-    # ========================================================
-
-    results = []
-
-    total = len(markets)
-
-    scan_started = time.time()
-
-    for index, symbol in enumerate(
-        markets,
-        1
-    ):
-
-        try:
-
-            result = analyze_symbol(
-                symbol
-            )
-
-            if result:
-
-                results.append(
-                    result
-                )
-
-        except Exception as e:
-
-            print(
-                f"ERROR {symbol}: "
-                f"{e}"
-            )
-
-        time.sleep(0.03)
-
-        if index % 50 == 0:
-
-            print(
-                f"SCANNED "
-                f"{index}/{total} | "
-                f"CANDIDATES: "
-                f"{len(results)}"
-            )
-
-    scan_seconds = (
-        time.time()
-        - scan_started
-    )
-
-    # ========================================================
-    # SORT
-    # ========================================================
-
-    results.sort(
-
-        key=lambda x: (
-
-            x["score"],
-
-            x["volume_ratio"],
-
-            x["move_5m"],
-
-            x["move_15m"],
-        ),
-
-        reverse=True,
-    )
-
-    # ========================================================
-    # GROUPS
-    # ========================================================
-
-    confirmed = [
-
-        item
-
-        for item in results
-
-        if item[
-            "signal_type"
-        ] == "CONFIRMED BUY"
-    ]
-
-    early = [
-
-        item
-
-        for item in results
-
-        if item[
-            "signal_type"
-        ] == "EARLY BUY"
-    ]
-
-    watches = [
-
-        item
-
-        for item in results
-
-        if item[
-            "signal_type"
-        ] == "WATCH"
-    ]
-
-    confirmed = confirmed[
-        :TOP_RESULTS
-    ]
-
-    early = early[
-        :TOP_RESULTS
-    ]
-
-    watches = watches[
-        :TOP_RESULTS
-    ]
-
-    # ========================================================
-    # MESSAGE
-    # ========================================================
-
-    now = utc_now()
-
-    lines = [
-
-        f"⚡ ATI CRYPTO BOT "
-        f"{VERSION}",
-
-        "",
-
-        "🚀 EARLY ENTRY "
-        "SCANNER",
-
-        "⚡ 5M + 15M + 1H",
-
-        "⏱ AUTO RUN: 5 MIN",
-
-        "",
-
-        "📡 TABDEAL API: OK",
-
-        f"📊 USDT MARKETS: "
-        f"{len(markets)}",
-
-        f"⏱ SCAN TIME: "
-        f"{scan_seconds:.1f}s",
-
-        "",
-
-        f"🟢 CONFIRMED BUY: "
-        f"{len(confirmed)}",
-
-        f"🟡 EARLY BUY: "
-        f"{len(early)}",
-
-        f"🟠 WATCH: "
-        f"{len(watches)}",
-
-        "",
-        "━━━━━━━━━━━━━━━━━━",
-        "🟢 CONFIRMED BUY",
-        "━━━━━━━━━━━━━━━━━━",
-    ]
-
-    if confirmed:
-
-        for index, item in enumerate(
-            confirmed,
-            1
-        ):
-
-            lines.extend([
-
-                "",
-
-                f"#{index}",
-
-                format_signal(
-                    item
-                ),
-            ])
-
-    else:
-
-        lines.extend([
-
-            "",
-
-            "❌ NO CONFIRMED BUY",
-        ])
-
-    lines.extend([
-
-        "",
-        "━━━━━━━━━━━━━━━━━━",
-        "🟡 EARLY BUY",
-        "━━━━━━━━━━━━━━━━━━",
-    ])
-
-    if early:
-
-        for index, item in enumerate(
-            early,
-            1
-        ):
-
-            lines.extend([
-
-                "",
-                f"#{index}",
-                format_signal(
-                    item
-                ),
-            ])
-
-    else:
-
-        lines.extend([
-
-            "",
-            "❌ NO EARLY BUY",
-        ])
-
-    lines.extend([
-
-        "",
-        "━━━━━━━━━━━━━━━━━━",
-        "🟠 WATCH",
-        "━━━━━━━━━━━━━━━━━━",
-    ])
-
-    if watches:
-
-        for index, item in enumerate(
-            watches,
-            1
-        ):
-
-            lines.extend([
-
-                "",
-                f"#{index}",
-                format_signal(
-                    item
-                ),
-            ])
-
-    else:
-
-        lines.extend([
-
-            "",
-            "❌ NO WATCH",
-        ])
-
-    lines.extend([
-
-        "",
-        "━━━━━━━━━━━━━━━━━━",
-
-        f"📊 TOTAL CANDIDATES: "
-        f"{len(results)}",
-
-        f"🟢 CONFIRMED: "
-        f"{len(confirmed)}",
-
-        f"🟡 EARLY: "
-        f"{len(early)}",
-
-        f"🟠 WATCH: "
-        f"{len(watches)}",
-
-        f"🕐 {now}",
-
-        "━━━━━━━━━━━━━━━━━━",
-
-        "",
-
-        "🔒 REAL ORDER: DISABLED",
-
-        "📡 SCANNER MODE ONLY",
-
-        "⏱ NEXT AUTO RUN: ~5 MIN",
-
-    ])
-
-    final_message = "\n".join(
-        lines
-    )
-
-    print()
-    print(final_message)
-
-    # ========================================================
-    # FINAL TELEGRAM
-    # ========================================================
-
-    if send_telegram(
-        final_message
-    ):
-
-        print(
-            "FINAL TELEGRAM MESSAGE SENT"
-        )
-
-    else:
-
-        print(
-            "FINAL TELEGRAM MESSAGE FAILED"
-        )
-
-
-# ============================================================
-# START
-# ============================================================
-
-if __name__ == "__main__":
-
-    main()
+        "
