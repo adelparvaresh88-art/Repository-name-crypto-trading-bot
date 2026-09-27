@@ -116,8 +116,8 @@
       "created_at": "2026-09-27 18:42:27 UTC",
       "closed_at": "",
       "exit_price": null,
-      "last_price": 0.2287,
-      "last_check": "2026-09-27 19:43:53 UTC"
+      "last_price": 0.2279,
+      "last_check": "2026-09-27 19:56:03 UTC"
     },
     {
       "id": "FLUXUSDT_1790534547",
@@ -253,7 +253,7 @@
       "closed_at": "",
       "exit_price": null,
       "last_price": 0.0707,
-      "last_check": "2026-09-27 19:43:57 UTC"
+      "last_check": "2026-09-27 19:56:02 UTC"
     },
     {
       "id": "FLUXUSDT_1790536528",
@@ -281,13 +281,13 @@
       "sl": 0.02298768,
       "tp1": 0.02321848,
       "tp2": 0.0233108,
-      "status": "OPEN",
-      "result": "",
+      "status": "SL_HIT",
+      "result": "LOSS",
       "created_at": "2026-09-27 19:31:34 UTC",
-      "closed_at": "",
-      "exit_price": null,
-      "last_price": 0.02308,
-      "last_check": "2026-09-27 19:43:53 UTC"
+      "closed_at": "2026-09-27 19:56:02 UTC",
+      "exit_price": 0.02296,
+      "last_price": 0.02296,
+      "last_check": "2026-09-27 19:56:02 UTC"
     },
     {
       "id": "JUPUSDT_1790537494",
@@ -304,7 +304,7 @@
       "closed_at": "",
       "exit_price": null,
       "last_price": 0.3525,
-      "last_check": "2026-09-27 19:43:54 UTC"
+      "last_check": "2026-09-27 19:56:03 UTC"
     },
     {
       "id": "LIGHTUSDT_1790537494",
@@ -349,13 +349,13 @@
       "sl": 0.0741024,
       "tp1": 0.0748464,
       "tp2": 0.07514399999999999,
-      "status": "OPEN",
-      "result": "",
+      "status": "SL_HIT",
+      "result": "LOSS",
       "created_at": "2026-09-27 19:44:35 UTC",
-      "closed_at": "",
-      "exit_price": null,
-      "last_price": 0.0744,
-      "last_check": "2026-09-27 19:44:35 UTC"
+      "closed_at": "2026-09-27 19:56:02 UTC",
+      "exit_price": 0.0741,
+      "last_price": 0.0741,
+      "last_check": "2026-09-27 19:56:02 UTC"
     },
     {
       "id": "LIGHTUSDT_1790538275",
@@ -366,13 +366,47 @@
       "sl": 0.17967840000000002,
       "tp1": 0.18148240000000002,
       "tp2": 0.182204,
+      "status": "TP1_HIT",
+      "result": "WIN_TP1",
+      "created_at": "2026-09-27 19:44:35 UTC",
+      "closed_at": "2026-09-27 19:56:03 UTC",
+      "exit_price": 0.1818,
+      "last_price": 0.1818,
+      "last_check": "2026-09-27 19:56:03 UTC"
+    },
+    {
+      "id": "FLUXUSDT_1790539002",
+      "symbol": "FLUXUSDT",
+      "category": "CONFIRMED",
+      "score": 16,
+      "entry": 0.0744,
+      "sl": 0.0741024,
+      "tp1": 0.0748464,
+      "tp2": 0.07514399999999999,
       "status": "OPEN",
       "result": "",
-      "created_at": "2026-09-27 19:44:35 UTC",
+      "created_at": "2026-09-27 19:56:42 UTC",
+      "closed_at": "",
+      "exit_price": null,
+      "last_price": 0.0744,
+      "last_check": "2026-09-27 19:56:42 UTC"
+    },
+    {
+      "id": "LIGHTUSDT_1790539002",
+      "symbol": "LIGHTUSDT",
+      "category": "EARLY",
+      "score": 11,
+      "entry": 0.1804,
+      "sl": 0.17967840000000002,
+      "tp1": 0.18148240000000002,
+      "tp2": 0.182204,
+      "status": "OPEN",
+      "result": "",
+      "created_at": "2026-09-27 19:56:42 UTC",
       "closed_at": "",
       "exit_price": null,
       "last_price": 0.1804,
-      "last_check": "2026-09-27 19:44:35 UTC"
+      "last_check": "2026-09-27 19:56:42 UTC"
     }
   ]
 }
