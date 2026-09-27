@@ -2,6 +2,7 @@ import os
 import time
 import json
 import base64
+import threading
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -9,12 +10,14 @@ import requests
 
 
 # ============================================================
-# ATI CRYPTO BOT V39.4
+# ATI CRYPTO BOT V39.5
+# FAST 5M SCANNER
 # CLEAN EARLY ENTRY + CONFIRMED BREAKOUT
 # + PAPER TRADE RESULT TRACKER
+# + CONTINUOUS 5 MINUTE LOOP
 # ============================================================
 
-VERSION = "V39.4"
+VERSION = "V39.5"
 
 BASE_URL = "https://api1.tabdeal.org"
 TIMEFRAME = "5m"
@@ -22,12 +25,18 @@ TIMEFRAME = "5m"
 CANDLE_LIMIT = 180
 MAX_MARKETS = 1000
 
-REQUEST_TIMEOUT = 10
-MAX_WORKERS = 20
+REQUEST_TIMEOUT = 8
+
+# Faster parallel scanning
+MAX_WORKERS = 35
+
+# Real cycle
+SCAN_INTERVAL = 300
 
 TOP_CONFIRMED = 3
 TOP_EARLY = 4
 TOP_WATCH = 5
+
 
 # ============================================================
 # SCORE
@@ -36,6 +45,7 @@ TOP_WATCH = 5
 CONFIRMED_MIN_SCORE = 12
 EARLY_MIN_SCORE = 10
 WATCH_MIN_SCORE = 10
+
 
 # ============================================================
 # EARLY
@@ -48,6 +58,7 @@ EARLY_MIN_15M = 0.50
 EARLY_MIN_1H = 1.00
 EARLY_MAX_DISTANCE = 1.20
 
+
 # ============================================================
 # CONFIRMED
 # ============================================================
@@ -57,6 +68,7 @@ CONFIRMED_MAX_VOLUME = 8.00
 CONFIRMED_MAX_5M_MOVE = 4.00
 CONFIRMED_MIN_15M = 0.50
 CONFIRMED_MIN_1H = 1.00
+
 
 # ============================================================
 # WATCH
@@ -69,6 +81,7 @@ WATCH_MIN_15M = 0.50
 WATCH_MIN_1H = 1.00
 WATCH_MAX_DISTANCE = 1.50
 
+
 # ============================================================
 # PAPER TRACKER
 # ============================================================
@@ -78,9 +91,21 @@ MAX_HISTORY = 500
 
 STATE_FILE = "paper_trades.json"
 
-# GitHub Actions token
-GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "").strip()
-GITHUB_REPOSITORY = os.getenv("GITHUB_REPOSITORY", "").strip()
+
+# ============================================================
+# GITHUB
+# ============================================================
+
+GITHUB_TOKEN = os.getenv(
+    "GITHUB_TOKEN",
+    ""
+).strip()
+
+GITHUB_REPOSITORY = os.getenv(
+    "GITHUB_REPOSITORY",
+    ""
+).strip()
+
 
 # ============================================================
 # REAL ORDERS
@@ -88,40 +113,85 @@ GITHUB_REPOSITORY = os.getenv("GITHUB_REPOSITORY", "").strip()
 
 LIVE_TRADING = False
 
+
 # ============================================================
 # HTTP
 # ============================================================
 
+# Separate thread-local sessions.
+# This prevents hundreds of parallel requests from sharing
+# the same requests.Session object.
+_thread_local = threading.local()
+
+
+def get_thread_session():
+
+    if not hasattr(
+        _thread_local,
+        "session"
+    ):
+
+        session = requests.Session()
+
+        session.headers.update(
+            {
+                "User-Agent": (
+                    f"ATI-Crypto-Bot/{VERSION}"
+                ),
+                "Accept": "application/json",
+                "Connection": "keep-alive",
+            }
+        )
+
+        _thread_local.session = session
+
+    return _thread_local.session
+
+
+# Main session for Telegram/GitHub
 SESSION = requests.Session()
 
 SESSION.headers.update(
     {
-        "User-Agent": "ATI-Crypto-Bot/39.4",
+        "User-Agent": (
+            f"ATI-Crypto-Bot/{VERSION}"
+        ),
         "Accept": "application/json",
     }
 )
+
 
 # ============================================================
 # TELEGRAM
 # ============================================================
 
 TELEGRAM_BOT_TOKEN = os.getenv(
-    "TELEGRAM_BOT_TOKEN", ""
+    "TELEGRAM_BOT_TOKEN",
+    ""
 ).strip()
 
 TELEGRAM_CHAT_ID = os.getenv(
-    "TELEGRAM_CHAT_ID", ""
+    "TELEGRAM_CHAT_ID",
+    ""
 ).strip()
 
 
 def telegram_send(message):
 
     if not TELEGRAM_BOT_TOKEN:
-        print("⚠️ TELEGRAM_BOT_TOKEN NOT FOUND")
+
+        print(
+            "⚠️ TELEGRAM_BOT_TOKEN NOT FOUND"
+        )
+
         return False
 
     if not TELEGRAM_CHAT_ID:
-        print("⚠️ TELEGRAM_CHAT_ID NOT FOUND")
+
+        print(
+            "⚠️ TELEGRAM_CHAT_ID NOT FOUND"
+        )
+
         return False
 
     url = (
@@ -143,6 +213,7 @@ def telegram_send(message):
         )
 
         if response.ok:
+
             return True
 
         print(
@@ -153,7 +224,10 @@ def telegram_send(message):
 
     except Exception as e:
 
-        print("TELEGRAM EXCEPTION:", str(e))
+        print(
+            "TELEGRAM EXCEPTION:",
+            str(e),
+        )
 
     return False
 
@@ -175,17 +249,23 @@ def utc_now():
 # API
 # ============================================================
 
-def api_get(path, params=None):
+def api_get(
+    path,
+    params=None,
+):
 
     try:
 
-        response = SESSION.get(
+        session = get_thread_session()
+
+        response = session.get(
             BASE_URL + path,
             params=params,
             timeout=REQUEST_TIMEOUT,
         )
 
         if not response.ok:
+
             return None
 
         return response.json()
@@ -201,10 +281,18 @@ def api_get(path, params=None):
 
 def extract_list(data):
 
-    if isinstance(data, list):
+    if isinstance(
+        data,
+        list
+    ):
+
         return data
 
-    if not isinstance(data, dict):
+    if not isinstance(
+        data,
+        dict
+    ):
+
         return []
 
     for key in [
@@ -220,14 +308,24 @@ def extract_list(data):
 
         value = data.get(key)
 
-        if isinstance(value, list):
+        if isinstance(
+            value,
+            list
+        ):
+
             return value
 
-        if isinstance(value, dict):
+        if isinstance(
+            value,
+            dict
+        ):
 
-            nested = extract_list(value)
+            nested = extract_list(
+                value
+            )
 
             if nested:
+
                 return nested
 
     return []
@@ -240,6 +338,7 @@ def extract_list(data):
 def normalize_symbol(value):
 
     if value is None:
+
         return ""
 
     return (
@@ -254,10 +353,20 @@ def normalize_symbol(value):
 
 def extract_symbol(item):
 
-    if isinstance(item, str):
-        return normalize_symbol(item)
+    if isinstance(
+        item,
+        str
+    ):
 
-    if not isinstance(item, dict):
+        return normalize_symbol(
+            item
+        )
+
+    if not isinstance(
+        item,
+        dict
+    ):
+
         return ""
 
     for key in [
@@ -271,11 +380,17 @@ def extract_symbol(item):
 
         value = item.get(key)
 
-        if isinstance(value, str):
+        if isinstance(
+            value,
+            str
+        ):
 
-            symbol = normalize_symbol(value)
+            symbol = normalize_symbol(
+                value
+            )
 
             if symbol:
+
                 return symbol
 
     return ""
@@ -299,28 +414,46 @@ def get_usdt_markets():
 
     for endpoint in endpoints:
 
-        print("🔎 MARKET DISCOVERY:", endpoint)
+        print(
+            "🔎 MARKET DISCOVERY:",
+            endpoint
+        )
 
-        data = api_get(endpoint)
+        data = api_get(
+            endpoint
+        )
 
         if data is None:
+
             continue
 
-        items = extract_list(data)
+        items = extract_list(
+            data
+        )
 
         if not items:
+
             continue
 
         symbols = []
 
         for item in items:
 
-            symbol = extract_symbol(item)
+            symbol = extract_symbol(
+                item
+            )
 
-            if symbol.endswith("USDT"):
-                symbols.append(symbol)
+            if symbol.endswith(
+                "USDT"
+            ):
 
-        symbols = sorted(set(symbols))
+                symbols.append(
+                    symbol
+                )
+
+        symbols = sorted(
+            set(symbols)
+        )
 
         if len(symbols) >= 10:
 
@@ -330,8 +463,11 @@ def get_usdt_markets():
                 "USDT markets",
             )
 
-            return symbols[:MAX_MARKETS]
+            return symbols[
+                :MAX_MARKETS
+            ]
 
+    # Dictionary fallback
     for endpoint in [
         "/r/api/v1/ticker/24hr",
         "/r/api/v1/tickers",
@@ -339,9 +475,15 @@ def get_usdt_markets():
         "/r/api/v1/symbols",
     ]:
 
-        data = api_get(endpoint)
+        data = api_get(
+            endpoint
+        )
 
-        if not isinstance(data, dict):
+        if not isinstance(
+            data,
+            dict
+        ):
+
             continue
 
         container = None
@@ -356,30 +498,55 @@ def get_usdt_markets():
 
             value = data.get(key)
 
-            if isinstance(value, dict):
+            if isinstance(
+                value,
+                dict
+            ):
+
                 container = value
+
                 break
 
         if container is None:
+
             container = data
 
         symbols = []
 
         for key, value in container.items():
 
-            symbol = normalize_symbol(key)
+            symbol = normalize_symbol(
+                key
+            )
 
-            if symbol.endswith("USDT"):
-                symbols.append(symbol)
+            if symbol.endswith(
+                "USDT"
+            ):
 
-            if isinstance(value, dict):
+                symbols.append(
+                    symbol
+                )
 
-                symbol2 = extract_symbol(value)
+            if isinstance(
+                value,
+                dict
+            ):
 
-                if symbol2.endswith("USDT"):
-                    symbols.append(symbol2)
+                symbol2 = extract_symbol(
+                    value
+                )
 
-        symbols = sorted(set(symbols))
+                if symbol2.endswith(
+                    "USDT"
+                ):
+
+                    symbols.append(
+                        symbol2
+                    )
+
+        symbols = sorted(
+            set(symbols)
+        )
 
         if len(symbols) >= 10:
 
@@ -389,7 +556,9 @@ def get_usdt_markets():
                 "USDT markets",
             )
 
-            return symbols[:MAX_MARKETS]
+            return symbols[
+                :MAX_MARKETS
+            ]
 
     return []
 
@@ -409,20 +578,35 @@ def get_trades(symbol):
     )
 
     if data is None:
+
         return []
 
-    if isinstance(data, list):
+    if isinstance(
+        data,
+        list
+    ):
+
         return data
 
-    if isinstance(data, dict):
-        return extract_list(data)
+    if isinstance(
+        data,
+        dict
+    ):
+
+        return extract_list(
+            data
+        )
 
     return []
 
 
 def parse_trade(item):
 
-    if not isinstance(item, dict):
+    if not isinstance(
+        item,
+        dict
+    ):
+
         return None
 
     price = None
@@ -436,7 +620,11 @@ def parse_trade(item):
     ]:
 
         if key in item:
-            price = item.get(key)
+
+            price = item.get(
+                key
+            )
+
             break
 
     for key in [
@@ -448,7 +636,11 @@ def parse_trade(item):
     ]:
 
         if key in item:
-            quantity = item.get(key)
+
+            quantity = item.get(
+                key
+            )
+
             break
 
     for key in [
@@ -459,27 +651,47 @@ def parse_trade(item):
     ]:
 
         if key in item:
-            timestamp = item.get(key)
+
+            timestamp = item.get(
+                key
+            )
+
             break
 
     try:
 
-        price = float(price)
-        quantity = float(quantity)
+        price = float(
+            price
+        )
+
+        quantity = float(
+            quantity
+        )
 
     except Exception:
 
         return None
 
     if timestamp is None:
-        timestamp = int(time.time() * 1000)
+
+        timestamp = int(
+            time.time() * 1000
+        )
 
     try:
-        timestamp = float(timestamp)
+
+        timestamp = float(
+            timestamp
+        )
+
     except Exception:
-        timestamp = int(time.time() * 1000)
+
+        timestamp = int(
+            time.time() * 1000
+        )
 
     if timestamp < 10000000000:
+
         timestamp *= 1000
 
     return {
@@ -493,18 +705,26 @@ def parse_trade(item):
 # CANDLES
 # ============================================================
 
-def build_5m_candles(trades):
+def build_5m_candles(
+    trades
+):
 
     parsed = []
 
     for item in trades:
 
-        trade = parse_trade(item)
+        trade = parse_trade(
+            item
+        )
 
         if trade:
-            parsed.append(trade)
+
+            parsed.append(
+                trade
+            )
 
     if len(parsed) < 20:
+
         return []
 
     parsed.sort(
@@ -516,7 +736,10 @@ def build_5m_candles(trades):
     for trade in parsed:
 
         bucket = (
-            int(trade["time"] // 300000)
+            int(
+                trade["time"]
+                // 300000
+            )
             * 300000
         )
 
@@ -531,7 +754,9 @@ def build_5m_candles(trades):
                 "volume": 0.0,
             }
 
-        candle = buckets[bucket]
+        candle = buckets[
+            bucket
+        ]
 
         price = trade["price"]
 
@@ -547,7 +772,9 @@ def build_5m_candles(trades):
 
         candle["close"] = price
 
-        candle["volume"] += trade["qty"]
+        candle["volume"] += (
+            trade["qty"]
+        )
 
     candles = list(
         buckets.values()
@@ -557,7 +784,9 @@ def build_5m_candles(trades):
         key=lambda x: x["time"]
     )
 
-    return candles[-CANDLE_LIMIT:]
+    return candles[
+        -CANDLE_LIMIT:
+    ]
 
 
 def aggregate_candles(
@@ -566,6 +795,7 @@ def aggregate_candles(
 ):
 
     if len(candles) < factor:
+
         return []
 
     usable = (
@@ -573,7 +803,9 @@ def aggregate_candles(
         - len(candles) % factor
     )
 
-    candles = candles[-usable:]
+    candles = candles[
+        -usable:
+    ]
 
     result = []
 
@@ -614,13 +846,18 @@ def aggregate_candles(
 # CALCULATIONS
 # ============================================================
 
-def pct_change(old, new):
+def pct_change(
+    old,
+    new,
+):
 
     if old == 0:
+
         return 0.0
 
     return (
-        (new - old) / old
+        (new - old)
+        / old
     ) * 100.0
 
 
@@ -629,10 +866,15 @@ def volume_ratio(
     lookback=20,
 ):
 
-    if len(candles) < lookback + 1:
+    if len(candles) < (
+        lookback + 1
+    ):
+
         return 0.0
 
-    current = candles[-1]["volume"]
+    current = candles[-1][
+        "volume"
+    ]
 
     previous = [
         x["volume"]
@@ -642,14 +884,22 @@ def volume_ratio(
     ]
 
     if not previous:
+
         return 0.0
 
-    average = sum(previous) / len(previous)
+    average = (
+        sum(previous)
+        / len(previous)
+    )
 
     if average <= 0:
+
         return 0.0
 
-    return current / average
+    return (
+        current
+        / average
+    )
 
 
 def recent_resistance(
@@ -657,15 +907,25 @@ def recent_resistance(
     lookback=20,
 ):
 
-    if len(candles) >= lookback + 1:
+    if len(candles) >= (
+        lookback + 1
+    ):
+
         section = candles[
             -lookback - 1:-1
         ]
+
     else:
-        section = candles[:-1]
+
+        section = candles[
+            :-1
+        ]
 
     if not section:
-        return candles[-1]["high"]
+
+        return candles[-1][
+            "high"
+        ]
 
     return max(
         x["high"]
@@ -679,11 +939,14 @@ def average_range(
 ):
 
     if len(candles) < 2:
+
         return 0.0
 
     ranges = []
 
-    for candle in candles[-lookback:]:
+    for candle in candles[
+        -lookback:
+    ]:
 
         value = (
             candle["high"]
@@ -691,15 +954,24 @@ def average_range(
         )
 
         if value > 0:
-            ranges.append(value)
+
+            ranges.append(
+                value
+            )
 
     if not ranges:
+
         return 0.0
 
-    return sum(ranges) / len(ranges)
+    return (
+        sum(ranges)
+        / len(ranges)
+    )
 
 
-def strong_bullish_candle(candle):
+def strong_bullish_candle(
+    candle
+):
 
     candle_range = (
         candle["high"]
@@ -707,6 +979,7 @@ def strong_bullish_candle(candle):
     )
 
     if candle_range <= 0:
+
         return False
 
     body = abs(
@@ -715,7 +988,8 @@ def strong_bullish_candle(candle):
     )
 
     body_ratio = (
-        body / candle_range
+        body
+        / candle_range
     )
 
     close_position = (
@@ -724,7 +998,8 @@ def strong_bullish_candle(candle):
     ) / candle_range
 
     return (
-        candle["close"] > candle["open"]
+        candle["close"]
+        > candle["open"]
         and body_ratio >= 0.50
         and close_position >= 0.70
     )
@@ -736,6 +1011,7 @@ def detect_retest(
 ):
 
     if len(candles) < 10:
+
         return False
 
     current = candles[-1]
@@ -762,9 +1038,11 @@ def detect_retest(
             ):
 
                 touched = True
+
                 break
 
     if not touched:
+
         return False
 
     current_distance = (
@@ -776,9 +1054,13 @@ def detect_retest(
     ) * 100.0
 
     if current_distance < -0.30:
+
         return False
 
-    if current["close"] < current["open"]:
+    if (
+        current["close"]
+        < current["open"]
+    ):
 
         candle_range = (
             current["high"]
@@ -796,6 +1078,7 @@ def detect_retest(
                 body / candle_range
                 > 0.55
             ):
+
                 return False
 
     return True
@@ -818,45 +1101,59 @@ def calculate_score(
     score = 0
 
     if 0.20 <= change5 <= 2.50:
+
         score += 2
 
     elif 0 <= change5 < 0.20:
+
         score += 1
 
     elif 2.50 < change5 <= 4.00:
+
         score += 1
 
     if change15 >= 2.00:
+
         score += 3
 
     elif change15 >= 0.80:
+
         score += 2
 
     elif change15 > 0:
+
         score += 1
 
     if change1h >= 5.00:
+
         score += 3
 
     elif change1h >= 2.00:
+
         score += 2
 
     elif change1h > 0:
+
         score += 1
 
     if 1.20 <= volume <= 6.00:
+
         score += 3
 
     elif 0.80 <= volume < 1.20:
+
         score += 1
 
     if strong:
+
         score += 2
 
     if retest:
+
         score += 2
 
     if breakout:
+
         score += 2
 
     return score
@@ -866,23 +1163,34 @@ def calculate_score(
 # ANALYZE
 # ============================================================
 
-def analyze_symbol(symbol):
+def analyze_symbol(
+    symbol
+):
 
     try:
 
-        trades = get_trades(symbol)
+        trades = get_trades(
+            symbol
+        )
 
         if len(trades) < 20:
+
             return None
 
-        candles5 = build_5m_candles(trades)
+        candles5 = build_5m_candles(
+            trades
+        )
 
         if len(candles5) < 35:
+
             return None
 
-        closed5 = candles5[:-1]
+        closed5 = candles5[
+            :-1
+        ]
 
         if len(closed5) < 30:
+
             return None
 
         candles15 = aggregate_candles(
@@ -896,15 +1204,19 @@ def analyze_symbol(symbol):
         )
 
         if len(candles15) < 6:
+
             return None
 
         if len(candles1h) < 3:
+
             return None
 
         current = closed5[-1]
         previous = closed5[-2]
 
-        price = current["close"]
+        price = current[
+            "close"
+        ]
 
         change5 = pct_change(
             previous["close"],
@@ -927,13 +1239,17 @@ def analyze_symbol(symbol):
         )
 
         if resistance <= 0:
+
             return None
 
-        breakout = price > resistance
+        breakout = (
+            price > resistance
+        )
 
         distance = (
             (
-                resistance - price
+                resistance
+                - price
             )
             / resistance
         ) * 100.0
@@ -944,6 +1260,7 @@ def analyze_symbol(symbol):
         )
 
         if volume <= 0:
+
             return None
 
         strong = strong_bullish_candle(
@@ -952,7 +1269,7 @@ def analyze_symbol(symbol):
 
         retest = detect_retest(
             closed5,
-            resistance,
+            resistance
         )
 
         score = calculate_score(
@@ -966,9 +1283,11 @@ def analyze_symbol(symbol):
         )
 
         if change1h <= 0:
+
             return None
 
         if change15 < -0.20:
+
             return None
 
         confirmed = False
@@ -994,7 +1313,10 @@ def analyze_symbol(symbol):
 
         early = False
 
-        if not confirmed and not breakout:
+        if (
+            not confirmed
+            and not breakout
+        ):
 
             if (
                 EARLY_MIN_VOLUME
@@ -1051,15 +1373,19 @@ def analyze_symbol(symbol):
             and not early
             and not watch
         ):
+
             return None
 
         if confirmed:
+
             category = "CONFIRMED"
 
         elif early:
+
             category = "EARLY"
 
         else:
+
             category = "WATCH"
 
         avg_range = average_range(
@@ -1068,17 +1394,23 @@ def analyze_symbol(symbol):
         )
 
         if avg_range <= 0:
-            avg_range = price * 0.005
+
+            avg_range = (
+                price * 0.005
+            )
 
         structure_sl = (
             price
             - avg_range * 1.20
         )
 
-        minimum_sl = price * 0.004
+        minimum_sl = (
+            price * 0.004
+        )
 
         stop_distance = max(
-            price - structure_sl,
+            price
+            - structure_sl,
             minimum_sl,
         )
 
@@ -1087,7 +1419,10 @@ def analyze_symbol(symbol):
             price * 0.012,
         )
 
-        sl = price - stop_distance
+        sl = (
+            price
+            - stop_distance
+        )
 
         tp1 = (
             price
@@ -1132,16 +1467,22 @@ def analyze_symbol(symbol):
 
 def fmt_price(value):
 
+    value = float(value)
+
     if value >= 1000:
+
         return f"{value:.2f}"
 
     if value >= 1:
+
         return f"{value:.4f}"
 
     if value >= 0.01:
+
         return f"{value:.6f}"
 
     if value >= 0.0001:
+
         return f"{value:.8f}"
 
     return f"{value:.10f}"
@@ -1154,6 +1495,7 @@ def fmt_price(value):
 def github_url():
 
     if not GITHUB_REPOSITORY:
+
         return None
 
     return (
@@ -1167,27 +1509,29 @@ def github_url():
 def github_headers():
 
     if not GITHUB_TOKEN:
+
         return {}
 
     return {
-        "Authorization": "Bearer " + GITHUB_TOKEN,
-        "Accept": "application/vnd.github+json",
+        "Authorization":
+            "Bearer " + GITHUB_TOKEN,
+        "Accept":
+            "application/vnd.github+json",
     }
 
 
 def load_paper_state():
 
     empty = {
-        "trades": [],
+        "trades": []
     }
-
-    # --------------------------------------------------------
-    # GitHub state
-    # --------------------------------------------------------
 
     url = github_url()
 
-    if GITHUB_TOKEN and url:
+    if (
+        GITHUB_TOKEN
+        and url
+    ):
 
         try:
 
@@ -1208,18 +1552,32 @@ def load_paper_state():
 
                 if content:
 
-                    decoded = base64.b64decode(
-                        content
-                    ).decode("utf-8")
+                    decoded = (
+                        base64.b64decode(
+                            content
+                        )
+                        .decode(
+                            "utf-8"
+                        )
+                    )
 
                     state = json.loads(
                         decoded
                     )
 
-                    if isinstance(state, dict):
+                    if isinstance(
+                        state,
+                        dict
+                    ):
 
-                        if "trades" not in state:
-                            state["trades"] = []
+                        if (
+                            "trades"
+                            not in state
+                        ):
+
+                            state[
+                                "trades"
+                            ] = []
 
                         return state
 
@@ -1230,13 +1588,11 @@ def load_paper_state():
                 e,
             )
 
-    # --------------------------------------------------------
-    # Local fallback
-    # --------------------------------------------------------
-
     try:
 
-        if os.path.exists(STATE_FILE):
+        if os.path.exists(
+            STATE_FILE
+        ):
 
             with open(
                 STATE_FILE,
@@ -1244,9 +1600,15 @@ def load_paper_state():
                 encoding="utf-8",
             ) as f:
 
-                state = json.load(f)
+                state = json.load(
+                    f
+                )
 
-                if isinstance(state, dict):
+                if isinstance(
+                    state,
+                    dict
+                ):
+
                     return state
 
     except Exception as e:
@@ -1259,9 +1621,10 @@ def load_paper_state():
     return empty
 
 
-def save_paper_state(state):
+def save_paper_state(
+    state
+):
 
-    # Keep history limited
     trades = state.get(
         "trades",
         [],
@@ -1270,10 +1633,6 @@ def save_paper_state(state):
     state["trades"] = trades[
         -MAX_HISTORY:
     ]
-
-    # --------------------------------------------------------
-    # Local
-    # --------------------------------------------------------
 
     try:
 
@@ -1297,13 +1656,13 @@ def save_paper_state(state):
             e,
         )
 
-    # --------------------------------------------------------
-    # GitHub
-    # --------------------------------------------------------
-
     url = github_url()
 
-    if not GITHUB_TOKEN or not url:
+    if (
+        not GITHUB_TOKEN
+        or not url
+    ):
+
         return False
 
     try:
@@ -1328,18 +1687,22 @@ def save_paper_state(state):
             indent=2,
         )
 
-        encoded = base64.b64encode(
-            raw.encode("utf-8")
-        ).decode("utf-8")
+        encoded = (
+            base64.b64encode(
+                raw.encode("utf-8")
+            )
+            .decode("utf-8")
+        )
 
         payload = {
-            "message": (
-                "ATI Bot paper trade state"
-            ),
-            "content": encoded,
+            "message":
+                "ATI Bot paper trade state",
+            "content":
+                encoded,
         }
 
         if sha:
+
             payload["sha"] = sha
 
         response = SESSION.put(
@@ -1377,33 +1740,48 @@ def save_paper_state(state):
 # PAPER TRACKER
 # ============================================================
 
-def get_latest_price(symbol):
+def get_latest_price(
+    symbol
+):
 
-    trades = get_trades(symbol)
+    trades = get_trades(
+        symbol
+    )
 
     if not trades:
+
         return None
 
     parsed = []
 
     for item in trades:
 
-        trade = parse_trade(item)
+        trade = parse_trade(
+            item
+        )
 
         if trade:
-            parsed.append(trade)
+
+            parsed.append(
+                trade
+            )
 
     if not parsed:
+
         return None
 
     parsed.sort(
         key=lambda x: x["time"]
     )
 
-    return parsed[-1]["price"]
+    return parsed[-1][
+        "price"
+    ]
 
 
-def track_open_trades(state):
+def track_open_trades(
+    state
+):
 
     trades = state.get(
         "trades",
@@ -1413,10 +1791,12 @@ def track_open_trades(state):
     open_trades = [
         x
         for x in trades
-        if x.get("status") == "OPEN"
+        if x.get("status")
+        == "OPEN"
     ]
 
     if not open_trades:
+
         return [], False
 
     print(
@@ -1445,32 +1825,55 @@ def track_open_trades(state):
             futures
         ):
 
-            item = futures[future]
+            item = futures[
+                future
+            ]
 
             try:
 
                 price = future.result()
 
                 if price is None:
+
                     continue
 
-                item["last_price"] = price
-                item["last_check"] = utc_now()
+                item[
+                    "last_price"
+                ] = price
 
-                sl = float(item["sl"])
-                tp1 = float(item["tp1"])
-                tp2 = float(item["tp2"])
+                item[
+                    "last_check"
+                ] = utc_now()
 
-                # ------------------------------------------------
-                # TP2 first
-                # ------------------------------------------------
+                sl = float(
+                    item["sl"]
+                )
+
+                tp1 = float(
+                    item["tp1"]
+                )
+
+                tp2 = float(
+                    item["tp2"]
+                )
 
                 if price >= tp2:
 
-                    item["status"] = "TP2_HIT"
-                    item["result"] = "WIN_TP2"
-                    item["closed_at"] = utc_now()
-                    item["exit_price"] = price
+                    item[
+                        "status"
+                    ] = "TP2_HIT"
+
+                    item[
+                        "result"
+                    ] = "WIN_TP2"
+
+                    item[
+                        "closed_at"
+                    ] = utc_now()
+
+                    item[
+                        "exit_price"
+                    ] = price
 
                     updates.append(
                         (
@@ -1481,10 +1884,21 @@ def track_open_trades(state):
 
                 elif price >= tp1:
 
-                    item["status"] = "TP1_HIT"
-                    item["result"] = "WIN_TP1"
-                    item["closed_at"] = utc_now()
-                    item["exit_price"] = price
+                    item[
+                        "status"
+                    ] = "TP1_HIT"
+
+                    item[
+                        "result"
+                    ] = "WIN_TP1"
+
+                    item[
+                        "closed_at"
+                    ] = utc_now()
+
+                    item[
+                        "exit_price"
+                    ] = price
 
                     updates.append(
                         (
@@ -1495,10 +1909,21 @@ def track_open_trades(state):
 
                 elif price <= sl:
 
-                    item["status"] = "SL_HIT"
-                    item["result"] = "LOSS"
-                    item["closed_at"] = utc_now()
-                    item["exit_price"] = price
+                    item[
+                        "status"
+                    ] = "SL_HIT"
+
+                    item[
+                        "result"
+                    ] = "LOSS"
+
+                    item[
+                        "closed_at"
+                    ] = utc_now()
+
+                    item[
+                        "exit_price"
+                    ] = price
 
                     updates.append(
                         (
@@ -1511,15 +1936,20 @@ def track_open_trades(state):
 
                 print(
                     "⚠️ PAPER TRACK ERROR:",
-                    item.get("symbol"),
+                    item.get(
+                        "symbol"
+                    ),
                     e,
                 )
 
-    return updates, bool(updates)
+    return (
+        updates,
+        bool(updates),
+    )
 
 
 # ============================================================
-# ADD NEW PAPER TRADES
+# ADD PAPER TRADES
 # ============================================================
 
 def add_new_paper_trades(
@@ -1528,6 +1958,7 @@ def add_new_paper_trades(
 ):
 
     if not PAPER_TRACKING:
+
         return []
 
     trades = state.get(
@@ -1538,52 +1969,79 @@ def add_new_paper_trades(
     existing_open = {
         x.get("symbol")
         for x in trades
-        if x.get("status") == "OPEN"
+        if x.get("status")
+        == "OPEN"
     }
 
     added = []
 
     for item in results:
 
-        # WATCH does not become a paper trade
-        if item["category"] == "WATCH":
+        if (
+            item["category"]
+            == "WATCH"
+        ):
+
             continue
 
-        symbol = item["symbol"]
+        symbol = item[
+            "symbol"
+        ]
 
-        # Do not duplicate an open signal
         if symbol in existing_open:
+
             continue
 
         record = {
-            "id": (
+            "id":
                 symbol
                 + "_"
                 + str(
                     int(
                         time.time()
                     )
-                )
-            ),
-            "symbol": symbol,
-            "category": item["category"],
-            "score": item["score"],
-            "entry": item["price"],
-            "sl": item["sl"],
-            "tp1": item["tp1"],
-            "tp2": item["tp2"],
-            "status": "OPEN",
-            "result": "",
-            "created_at": utc_now(),
-            "closed_at": "",
-            "exit_price": None,
-            "last_price": item["price"],
-            "last_check": utc_now(),
+                ),
+            "symbol":
+                symbol,
+            "category":
+                item["category"],
+            "score":
+                item["score"],
+            "entry":
+                item["price"],
+            "sl":
+                item["sl"],
+            "tp1":
+                item["tp1"],
+            "tp2":
+                item["tp2"],
+            "status":
+                "OPEN",
+            "result":
+                "",
+            "created_at":
+                utc_now(),
+            "closed_at":
+                "",
+            "exit_price":
+                None,
+            "last_price":
+                item["price"],
+            "last_check":
+                utc_now(),
         }
 
-        trades.append(record)
-        existing_open.add(symbol)
-        added.append(record)
+        trades.append(
+            record
+        )
+
+        existing_open.add(
+            symbol
+        )
+
+        added.append(
+            record
+        )
 
     state["trades"] = trades[
         -MAX_HISTORY:
@@ -1597,10 +2055,11 @@ def add_new_paper_trades(
 # ============================================================
 
 def build_paper_result_message(
-    updates,
+    updates
 ):
 
     if not updates:
+
         return None
 
     lines = [
@@ -1641,14 +2100,18 @@ def build_paper_result_message(
             ]
         )
 
-    return "\n".join(lines)
+    return "\n".join(
+        lines
+    )
 
 
 # ============================================================
 # PAPER STATISTICS
 # ============================================================
 
-def paper_statistics(state):
+def paper_statistics(
+    state
+):
 
     trades = state.get(
         "trades",
@@ -1670,7 +2133,8 @@ def paper_statistics(state):
         [
             x
             for x in trades
-            if x.get("status") == "OPEN"
+            if x.get("status")
+            == "OPEN"
         ]
     )
 
@@ -1678,7 +2142,8 @@ def paper_statistics(state):
         [
             x
             for x in closed
-            if x.get("status") == "TP1_HIT"
+            if x.get("status")
+            == "TP1_HIT"
         ]
     )
 
@@ -1686,7 +2151,8 @@ def paper_statistics(state):
         [
             x
             for x in closed
-            if x.get("status") == "TP2_HIT"
+            if x.get("status")
+            == "TP2_HIT"
         ]
     )
 
@@ -1694,16 +2160,23 @@ def paper_statistics(state):
         [
             x
             for x in closed
-            if x.get("status") == "SL_HIT"
+            if x.get("status")
+            == "SL_HIT"
         ]
     )
 
-    wins = tp1 + tp2
+    wins = (
+        tp1 + tp2
+    )
 
-    total = len(closed)
+    total = len(
+        closed
+    )
 
     win_rate = (
-        (wins / total) * 100
+        wins
+        / total
+        * 100
         if total
         else 0.0
     )
@@ -1711,13 +2184,15 @@ def paper_statistics(state):
     confirmed = [
         x
         for x in closed
-        if x.get("category") == "CONFIRMED"
+        if x.get("category")
+        == "CONFIRMED"
     ]
 
     early = [
         x
         for x in closed
-        if x.get("category") == "EARLY"
+        if x.get("category")
+        == "EARLY"
     ]
 
     confirmed_wins = len(
@@ -1761,22 +2236,36 @@ def paper_statistics(state):
     )
 
     return {
-        "total": total,
-        "tp1": tp1,
-        "tp2": tp2,
-        "sl": sl,
-        "open": open_count,
-        "win_rate": win_rate,
-        "confirmed": len(confirmed),
-        "confirmed_rate": confirmed_rate,
-        "early": len(early),
-        "early_rate": early_rate,
+        "total":
+            total,
+        "tp1":
+            tp1,
+        "tp2":
+            tp2,
+        "sl":
+            sl,
+        "open":
+            open_count,
+        "win_rate":
+            win_rate,
+        "confirmed":
+            len(confirmed),
+        "confirmed_rate":
+            confirmed_rate,
+        "early":
+            len(early),
+        "early_rate":
+            early_rate,
     }
 
 
-def build_statistics_message(state):
+def build_statistics_message(
+    state
+):
 
-    s = paper_statistics(state)
+    s = paper_statistics(
+        state
+    )
 
     lines = [
         f"📊 ATI PAPER STATISTICS {VERSION}",
@@ -1799,7 +2288,9 @@ def build_statistics_message(state):
         f"Win Rate: {s['early_rate']:.1f}%",
     ]
 
-    return "\n".join(lines)
+    return "\n".join(
+        lines
+    )
 
 
 # ============================================================
@@ -1811,13 +2302,26 @@ def format_signal(
     number,
 ):
 
-    if item["category"] == "CONFIRMED":
-        title = "🟢 CONFIRMED BUY"
+    if (
+        item["category"]
+        == "CONFIRMED"
+    ):
 
-    elif item["category"] == "EARLY":
-        title = "⚡ EARLY BUY"
+        title = (
+            "🟢 CONFIRMED BUY"
+        )
+
+    elif (
+        item["category"]
+        == "EARLY"
+    ):
+
+        title = (
+            "⚡ EARLY BUY"
+        )
 
     else:
+
         title = "🟡 WATCH"
 
     if item["distance"] < 0:
@@ -1872,18 +2376,27 @@ def format_signal(
         f"🎯 TP2: {fmt_price(item['tp2'])}",
     ]
 
-    return "\n".join(lines)
+    return "\n".join(
+        lines
+    )
 
 
 # ============================================================
-# SCAN
+# FAST SCAN
 # ============================================================
 
-def scan_markets(markets):
+def scan_markets(
+    markets
+):
 
     results = []
 
     start = time.time()
+
+    print(
+        f"🚀 FAST SCAN STARTED: "
+        f"{len(markets)} markets"
+    )
 
     with ThreadPoolExecutor(
         max_workers=MAX_WORKERS
@@ -1897,30 +2410,58 @@ def scan_markets(markets):
             for symbol in markets
         }
 
+        completed = 0
+
         for future in as_completed(
             futures
         ):
+
+            completed += 1
 
             try:
 
                 result = future.result()
 
                 if result:
-                    results.append(result)
+
+                    results.append(
+                        result
+                    )
 
             except Exception as e:
 
-                symbol = futures[future]
+                symbol = futures[
+                    future
+                ]
 
                 print(
                     f"⚠️ WORKER ERROR {symbol}: {e}"
                 )
 
+            if (
+                completed % 100
+                == 0
+            ):
+
+                print(
+                    f"📡 SCAN PROGRESS: "
+                    f"{completed}/{len(markets)}"
+                )
+
     elapsed = (
-        time.time() - start
+        time.time()
+        - start
     )
 
-    return results, elapsed
+    print(
+        f"✅ SCAN FINISHED: "
+        f"{elapsed:.1f}s"
+    )
+
+    return (
+        results,
+        elapsed,
+    )
 
 
 # ============================================================
@@ -1931,21 +2472,28 @@ def build_message(
     markets,
     results,
     scan_time,
+    paper_state,
 ):
 
     confirmed = [
-        x for x in results
-        if x["category"] == "CONFIRMED"
+        x
+        for x in results
+        if x["category"]
+        == "CONFIRMED"
     ]
 
     early = [
-        x for x in results
-        if x["category"] == "EARLY"
+        x
+        for x in results
+        if x["category"]
+        == "EARLY"
     ]
 
     watch = [
-        x for x in results
-        if x["category"] == "WATCH"
+        x
+        for x in results
+        if x["category"]
+        == "WATCH"
     ]
 
     confirmed.sort(
@@ -1996,7 +2544,9 @@ def build_message(
     if confirmed:
 
         for i, item in enumerate(
-            confirmed[:TOP_CONFIRMED],
+            confirmed[
+                :TOP_CONFIRMED
+            ],
             1,
         ):
 
@@ -2026,7 +2576,9 @@ def build_message(
     if early:
 
         for i, item in enumerate(
-            early[:TOP_EARLY],
+            early[
+                :TOP_EARLY
+            ],
             1,
         ):
 
@@ -2056,7 +2608,9 @@ def build_message(
     if watch:
 
         for i, item in enumerate(
-            watch[:TOP_WATCH],
+            watch[
+                :TOP_WATCH
+            ],
             1,
         ):
 
@@ -2076,7 +2630,7 @@ def build_message(
         )
 
     s = paper_statistics(
-        load_paper_state()
+        paper_state
     )
 
     lines.extend(
@@ -2099,7 +2653,9 @@ def build_message(
         ]
     )
 
-    return "\n".join(lines)
+    return "\n".join(
+        lines
+    )
 
 
 # ============================================================
@@ -2124,16 +2680,42 @@ def build_market_error_message():
         "🔧 REAL ORDERS: DISABLED",
     ]
 
-    return "\n".join(lines)
+    return "\n".join(
+        lines
+    )
 
 
 # ============================================================
-# MAIN
+# STARTUP MESSAGE
 # ============================================================
 
-def main():
+def build_startup_message():
 
-    total_start = time.time()
+    return "\n".join(
+        [
+            f"🟢 ATI CRYPTO BOT {VERSION}",
+            "",
+            "🚀 CLEAN EARLY ENTRY + CONFIRMED BREAKOUT",
+            "",
+            "📡 TABDEAL API: CONNECTING...",
+            "📊 SCAN: STARTING",
+            "⏱ TIMEFRAME: 5m",
+            "📊 PAPER TRACKING: ON",
+            "🔄 NEXT SCAN: ABOUT 5 MINUTES",
+            "🔧 REAL ORDERS: DISABLED",
+            "",
+            f"🕐 {utc_now()}",
+        ]
+    )
+
+
+# ============================================================
+# ONE COMPLETE CYCLE
+# ============================================================
+
+def run_cycle():
+
+    cycle_start = time.time()
 
     print()
     print("=" * 60)
@@ -2141,23 +2723,26 @@ def main():
         f"⚡ ATI CRYPTO BOT {VERSION}"
     )
     print(
-        "🚀 CLEAN EARLY ENTRY + "
-        "CONFIRMED BREAKOUT"
+        "🚀 FAST 5M SCAN CYCLE"
     )
     print("=" * 60)
 
-    # ========================================================
-    # LOAD PAPER STATE
-    # ========================================================
+    # --------------------------------------------------------
+    # Load state
+    # --------------------------------------------------------
 
     paper_state = load_paper_state()
 
-    # ========================================================
-    # CHECK OLD TRADES FIRST
-    # ========================================================
+    changed = False
 
-    updates, changed = track_open_trades(
-        paper_state
+    # --------------------------------------------------------
+    # Track old paper trades
+    # --------------------------------------------------------
+
+    updates, tracker_changed = (
+        track_open_trades(
+            paper_state
+        )
     )
 
     if updates:
@@ -2169,6 +2754,7 @@ def main():
         )
 
         if result_message:
+
             telegram_send(
                 result_message
             )
@@ -2185,32 +2771,21 @@ def main():
 
         changed = True
 
-    # ========================================================
-    # STARTUP
-    # ========================================================
+    elif tracker_changed:
 
-    startup_lines = [
-        f"🟢 ATI CRYPTO BOT {VERSION}",
-        "",
-        "🚀 CLEAN EARLY ENTRY + CONFIRMED BREAKOUT",
-        "",
-        "📡 TABDEAL API: CONNECTING...",
-        "📊 SCAN: STARTING",
-        "⏱ TIMEFRAME: 5m",
-        "📊 PAPER TRACKING: ON",
-        "🔄 NEXT SCAN: ABOUT 5 MINUTES",
-        "🔧 REAL ORDERS: DISABLED",
-        "",
-        f"🕐 {utc_now()}",
-    ]
+        changed = True
+
+    # --------------------------------------------------------
+    # Startup / heartbeat
+    # --------------------------------------------------------
 
     telegram_send(
-        "\n".join(startup_lines)
+        build_startup_message()
     )
 
-    # ========================================================
-    # MARKET DISCOVERY
-    # ========================================================
+    # --------------------------------------------------------
+    # Market discovery
+    # --------------------------------------------------------
 
     markets = get_usdt_markets()
 
@@ -2220,27 +2795,36 @@ def main():
             build_market_error_message()
         )
 
-        return
+        return (
+            False,
+            time.time()
+            - cycle_start,
+        )
 
     print(
-        f"📊 USDT MARKETS: {len(markets)}"
+        f"📊 USDT MARKETS: "
+        f"{len(markets)}"
     )
 
-    # ========================================================
-    # SCAN
-    # ========================================================
+    # --------------------------------------------------------
+    # Fast scan
+    # --------------------------------------------------------
 
-    results, scan_time = scan_markets(
-        markets
+    results, scan_time = (
+        scan_markets(
+            markets
+        )
     )
 
-    # ========================================================
-    # ADD PAPER TRADES
-    # ========================================================
+    # --------------------------------------------------------
+    # Add paper trades
+    # --------------------------------------------------------
 
-    new_paper = add_new_paper_trades(
-        paper_state,
-        results,
+    new_paper = (
+        add_new_paper_trades(
+            paper_state,
+            results,
+        )
     )
 
     if new_paper:
@@ -2252,41 +2836,194 @@ def main():
             len(new_paper),
         )
 
-    # ========================================================
-    # SAVE STATE
-    # ========================================================
+    # --------------------------------------------------------
+    # Save state
+    # --------------------------------------------------------
 
-    if changed or new_paper:
+    if changed:
 
         save_paper_state(
             paper_state
         )
 
-    # ========================================================
-    # RESULT MESSAGE
-    # ========================================================
+    # --------------------------------------------------------
+    # Result message
+    # --------------------------------------------------------
 
     message = build_message(
         markets,
         results,
         scan_time,
+        paper_state,
     )
 
-    telegram_send(message)
+    telegram_send(
+        message
+    )
 
     print()
     print(message)
 
     total_time = (
         time.time()
-        - total_start
+        - cycle_start
     )
 
     print()
     print(
-        f"⏱ TOTAL RUNTIME: "
+        f"⏱ CYCLE RUNTIME: "
         f"{total_time:.1f}s"
     )
+
+    return (
+        True,
+        total_time,
+    )
+
+
+# ============================================================
+# CONTINUOUS 5-MINUTE LOOP
+# ============================================================
+
+def main():
+
+    print()
+    print(
+        "=" * 60
+    )
+
+    print(
+        f"⚡ ATI CRYPTO BOT {VERSION}"
+    )
+
+    print(
+        "🔁 CONTINUOUS 5-MINUTE MODE"
+    )
+
+    print(
+        f"⚙️ MAX WORKERS: {MAX_WORKERS}"
+    )
+
+    print(
+        f"⏱ TARGET INTERVAL: "
+        f"{SCAN_INTERVAL}s"
+    )
+
+    print(
+        "🔧 REAL ORDERS: DISABLED"
+    )
+
+    print(
+        "=" * 60
+    )
+
+    cycle_number = 0
+
+    while True:
+
+        cycle_number += 1
+
+        cycle_start = time.time()
+
+        print()
+        print(
+            f"🔄 CYCLE #{cycle_number}"
+        )
+
+        try:
+
+            success, elapsed = (
+                run_cycle()
+            )
+
+        except Exception as e:
+
+            success = False
+
+            elapsed = (
+                time.time()
+                - cycle_start
+            )
+
+            print(
+                "❌ CYCLE ERROR:",
+                str(e),
+            )
+
+            try:
+
+                telegram_send(
+                    "\n".join(
+                        [
+                            f"⚠️ ATI BOT {VERSION}",
+                            "",
+                            "❌ CYCLE ERROR",
+                            f"🕐 {utc_now()}",
+                            "",
+                            "🔄 BOT WILL CONTINUE",
+                            "🔧 REAL ORDERS: DISABLED",
+                        ]
+                    )
+                )
+
+            except Exception:
+
+                pass
+
+        # ----------------------------------------------------
+        # Wait only until the next 5-minute cycle.
+        # If scanning took 2 minutes, wait about 3 minutes.
+        # If scanning took 6 minutes, start immediately.
+        # ----------------------------------------------------
+
+        elapsed = (
+            time.time()
+            - cycle_start
+        )
+
+        remaining = (
+            SCAN_INTERVAL
+            - elapsed
+        )
+
+        if remaining > 0:
+
+            print(
+                f"⏳ NEXT CYCLE IN "
+                f"{remaining:.0f}s"
+            )
+
+            # Sleep in small chunks so the process
+            # remains responsive.
+            while remaining > 0:
+
+                sleep_time = min(
+                    10,
+                    remaining,
+                )
+
+                time.sleep(
+                    sleep_time
+                )
+
+                remaining = (
+                    SCAN_INTERVAL
+                    - (
+                        time.time()
+                        - cycle_start
+                    )
+                )
+
+        else:
+
+            print(
+                "⚡ SCAN TOOK LONGER "
+                "THAN 5 MINUTES"
+            )
+
+            print(
+                "🔄 STARTING NEXT CYCLE NOW"
+            )
 
 
 # ============================================================
@@ -2294,4 +3031,5 @@ def main():
 # ============================================================
 
 if __name__ == "__main__":
+
     main()
