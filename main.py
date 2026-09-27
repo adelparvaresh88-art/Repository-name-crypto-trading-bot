@@ -6,11 +6,12 @@ import requests
 
 
 # ============================================================
-# ATI CRYPTO BOT V38.4
-# BALANCED PRECISION BREAKOUT + RETEST SCANNER
+# ATI CRYPTO BOT V38.5
+# BALANCED PRECISION BREAKOUT + RETEST
+# DISTANCE-AWARE SCORING
 # ============================================================
 
-VERSION = "V38.4"
+VERSION = "V38.5"
 
 BASE_URL = "https://api1.tabdeal.org"
 TIMEFRAME = "5m"
@@ -19,16 +20,16 @@ CANDLE_LIMIT = 120
 MAX_MARKETS = 1000
 TOP_RESULTS = 5
 
-# ------------------------------------------------------------
+# ============================================================
 # SCORE
-# ------------------------------------------------------------
+# ============================================================
 
 BUY_MIN_SCORE = 13
 WATCH_MIN_SCORE = 10
 
-# ------------------------------------------------------------
-# MOMENTUM FILTERS
-# ------------------------------------------------------------
+# ============================================================
+# MOMENTUM
+# ============================================================
 
 MIN_5M_MOVE = 0.10
 MIN_15M_MOVE = 0.30
@@ -38,24 +39,28 @@ MAX_5M_MOVE = 5.0
 MAX_15M_MOVE = 10.0
 MAX_1H_MOVE = 18.0
 
-# ------------------------------------------------------------
+# ============================================================
 # BREAKOUT / RETEST
-# ------------------------------------------------------------
+# ============================================================
 
 MAX_BREAKOUT_DISTANCE = 1.50
 MAX_RETEST_DISTANCE = 1.00
 MIN_BREAKOUT_DISTANCE = 0.05
 
-# ------------------------------------------------------------
+# Distance scoring
+FULL_DISTANCE_MAX = 0.75
+GOOD_DISTANCE_MAX = 1.00
+
+# ============================================================
 # VOLUME
-# ------------------------------------------------------------
+# ============================================================
 
 VOLUME_MULTIPLIER = 1.10
 WEAK_VOLUME_LIMIT = 0.70
 
-# ------------------------------------------------------------
-# REQUEST SETTINGS
-# ------------------------------------------------------------
+# ============================================================
+# REQUEST
+# ============================================================
 
 REQUEST_TIMEOUT = 15
 MARKET_SLEEP = 0.015
@@ -68,6 +73,7 @@ MARKET_SLEEP = 0.015
 def pct_change(old, new):
     if old == 0:
         return 0.0
+
     return ((new - old) / old) * 100.0
 
 
@@ -79,7 +85,9 @@ def safe_float(value, default=0.0):
 
 
 def now_utc():
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    return datetime.now(timezone.utc).strftime(
+        "%Y-%m-%d %H:%M UTC"
+    )
 
 
 # ============================================================
@@ -87,14 +95,26 @@ def now_utc():
 # ============================================================
 
 def send_telegram(message):
-    token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-    chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+
+    token = os.getenv(
+        "TELEGRAM_BOT_TOKEN",
+        ""
+    ).strip()
+
+    chat_id = os.getenv(
+        "TELEGRAM_CHAT_ID",
+        ""
+    ).strip()
 
     if not token or not chat_id:
+
         print("⚠️ TELEGRAM SECRETS NOT SET")
         return False
 
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    url = (
+        f"https://api.telegram.org/"
+        f"bot{token}/sendMessage"
+    )
 
     payload = {
         "chat_id": chat_id,
@@ -103,6 +123,7 @@ def send_telegram(message):
     }
 
     try:
+
         response = requests.post(
             url,
             json=payload,
@@ -112,11 +133,20 @@ def send_telegram(message):
         if response.ok:
             return True
 
-        print("TELEGRAM ERROR:", response.text[:500])
+        print(
+            "TELEGRAM ERROR:",
+            response.text[:500]
+        )
+
         return False
 
     except Exception as e:
-        print("TELEGRAM ERROR:", str(e))
+
+        print(
+            "TELEGRAM ERROR:",
+            str(e)
+        )
+
         return False
 
 
@@ -125,9 +155,11 @@ def send_telegram(message):
 # ============================================================
 
 def tabdeal_get(path, params=None):
+
     url = BASE_URL + path
 
     try:
+
         response = requests.get(
             url,
             params=params,
@@ -139,7 +171,11 @@ def tabdeal_get(path, params=None):
         return response.json()
 
     except Exception as e:
-        print(f"TABDEAL ERROR {path}: {e}")
+
+        print(
+            f"TABDEAL ERROR {path}: {e}"
+        )
+
         return None
 
 
@@ -159,9 +195,11 @@ def extract_symbols(data):
             "result",
             "markets",
         ]:
+
             value = data.get(key)
 
             if isinstance(value, list):
+
                 data = value
                 break
 
@@ -171,6 +209,7 @@ def extract_symbols(data):
     for item in data:
 
         if isinstance(item, str):
+
             symbol = item.upper()
 
         elif isinstance(item, dict):
@@ -184,6 +223,7 @@ def extract_symbols(data):
             )
 
             if isinstance(symbol, dict):
+
                 symbol = (
                     symbol.get("symbol")
                     or symbol.get("name")
@@ -195,12 +235,18 @@ def extract_symbols(data):
         else:
             continue
 
-        symbol = symbol.replace("-", "").replace("/", "")
+        symbol = (
+            symbol
+            .replace("-", "")
+            .replace("/", "")
+        )
 
         if symbol.endswith("USDT"):
             symbols.append(symbol)
 
-    return list(dict.fromkeys(symbols))
+    return list(
+        dict.fromkeys(symbols)
+    )
 
 
 def get_usdt_markets():
@@ -225,9 +271,10 @@ def get_usdt_markets():
         if found:
             all_symbols.extend(found)
 
-    symbols = list(dict.fromkeys(all_symbols))
+    symbols = list(
+        dict.fromkeys(all_symbols)
+    )
 
-    # Remove obvious non-trading / leveraged symbols
     filtered = []
 
     for symbol in symbols:
@@ -235,12 +282,15 @@ def get_usdt_markets():
         if not symbol.endswith("USDT"):
             continue
 
-        if any(x in symbol for x in [
-            "UPUSDT",
-            "DOWNUSDT",
-            "BULLUSDT",
-            "BEARUSDT",
-        ]):
+        if any(
+            x in symbol
+            for x in [
+                "UPUSDT",
+                "DOWNUSDT",
+                "BULLUSDT",
+                "BEARUSDT",
+            ]
+        ):
             continue
 
         filtered.append(symbol)
@@ -269,7 +319,7 @@ def get_trades(symbol):
 
 
 # ============================================================
-# BUILD 5M CANDLES FROM TRADES
+# BUILD 5M CANDLES
 # ============================================================
 
 def build_candles(trades):
@@ -305,6 +355,7 @@ def build_candles(trades):
             continue
 
         try:
+
             timestamp = float(timestamp)
 
             if timestamp > 100000000000:
@@ -313,7 +364,9 @@ def build_candles(trades):
         except Exception:
             continue
 
-        bucket = int(timestamp // 300) * 300
+        bucket = (
+            int(timestamp // 300) * 300
+        )
 
         if bucket not in candles:
 
@@ -339,6 +392,7 @@ def build_candles(trades):
         )
 
         candle["close"] = price
+
         candle["volume"] += qty
 
     result = sorted(
@@ -350,7 +404,7 @@ def build_candles(trades):
 
 
 # ============================================================
-# CLOSED CANDLES ONLY
+# CLOSED CANDLES
 # ============================================================
 
 def get_closed_candles(candles):
@@ -358,7 +412,9 @@ def get_closed_candles(candles):
     if len(candles) < 10:
         return []
 
-    current_bucket = int(time.time() // 300) * 300
+    current_bucket = (
+        int(time.time() // 300) * 300
+    )
 
     closed = [
         c for c in candles
@@ -384,10 +440,25 @@ def calculate_momentum(candles):
     close_6 = candles[-7]["close"]
     close_12 = candles[-13]["close"]
 
-    move_5m = pct_change(close_1, last)
-    move_15m = pct_change(close_3, last)
-    move_30m = pct_change(close_6, last)
-    move_1h = pct_change(close_12, last)
+    move_5m = pct_change(
+        close_1,
+        last,
+    )
+
+    move_15m = pct_change(
+        close_3,
+        last,
+    )
+
+    move_30m = pct_change(
+        close_6,
+        last,
+    )
+
+    move_1h = pct_change(
+        close_12,
+        last,
+    )
 
     return {
         "5m": move_5m,
@@ -425,8 +496,13 @@ def structure_check(candles):
         c["low"] for c in previous
     )
 
-    higher_high = recent_high > previous_high
-    higher_low = recent_low > previous_low
+    higher_high = (
+        recent_high > previous_high
+    )
+
+    higher_low = (
+        recent_low > previous_low
+    )
 
     return higher_high, higher_low
 
@@ -440,32 +516,28 @@ def find_resistance(candles):
     if len(candles) < 20:
         return 0.0
 
-    # Older structure used for resistance.
-    # This prevents the current candle from defining
-    # its own breakout level.
-
     base = candles[-15:-5]
 
     if not base:
         return 0.0
 
-    resistance = max(
+    return max(
         c["high"] for c in base
     )
-
-    return resistance
 
 
 # ============================================================
 # BREAKOUT DETECTION
 # ============================================================
 
-def detect_breakout(candles, resistance):
+def detect_breakout(
+    candles,
+    resistance,
+):
 
     if resistance <= 0:
         return False
 
-    # Look for a breakout in the recent closed candles.
     recent = candles[-5:-2]
 
     for candle in recent:
@@ -491,13 +563,13 @@ def detect_breakout(candles, resistance):
 # RETEST DETECTION
 # ============================================================
 
-def detect_retest(candles, resistance):
+def detect_retest(
+    candles,
+    resistance,
+):
 
     if resistance <= 0:
         return False
-
-    # The retest must happen after breakout,
-    # not simply on the same candle.
 
     retest_zone = candles[-4:-1]
 
@@ -515,9 +587,6 @@ def detect_retest(candles, resistance):
             candle["close"],
         )
 
-        # Price touched resistance and closed
-        # back above it.
-
         if (
             low_distance <= MAX_RETEST_DISTANCE
             and candle["close"] >= resistance
@@ -532,7 +601,10 @@ def detect_retest(candles, resistance):
 # CURRENT CONFIRMATION
 # ============================================================
 
-def current_confirmation(candle, resistance):
+def current_confirmation(
+    candle,
+    resistance,
+):
 
     if resistance <= 0:
         return False
@@ -559,18 +631,27 @@ def current_confirmation(candle, resistance):
 
 def candle_quality(candle):
 
-    candle_range = candle["high"] - candle["low"]
+    candle_range = (
+        candle["high"] -
+        candle["low"]
+    )
 
     if candle_range <= 0:
         return 0
 
     body = abs(
-        candle["close"] - candle["open"]
+        candle["close"] -
+        candle["open"]
     )
 
-    body_ratio = body / candle_range
+    body_ratio = (
+        body / candle_range
+    )
 
-    bullish = candle["close"] > candle["open"]
+    bullish = (
+        candle["close"] >
+        candle["open"]
+    )
 
     if bullish and body_ratio >= 0.35:
         return 1
@@ -587,7 +668,9 @@ def volume_info(candles):
     if len(candles) < 12:
         return 1.0
 
-    current_volume = candles[-1]["volume"]
+    current_volume = (
+        candles[-1]["volume"]
+    )
 
     previous = [
         c["volume"]
@@ -598,12 +681,45 @@ def volume_info(candles):
     if not previous:
         return 1.0
 
-    average_volume = sum(previous) / len(previous)
+    average_volume = (
+        sum(previous) /
+        len(previous)
+    )
 
     if average_volume <= 0:
         return 1.0
 
-    return current_volume / average_volume
+    return (
+        current_volume /
+        average_volume
+    )
+
+
+# ============================================================
+# DISTANCE SCORE
+# ============================================================
+
+def distance_score(
+    breakout_distance
+):
+
+    # Closer to breakout = better entry.
+    #
+    # <= 0.75%  -> +2
+    # <= 1.00%  -> +1
+    # >  1.00%  -> +0
+    #
+    # > 1.50% is rejected before this function.
+
+    if breakout_distance <= FULL_DISTANCE_MAX:
+
+        return 2, "CLOSE TO BREAKOUT"
+
+    if breakout_distance <= GOOD_DISTANCE_MAX:
+
+        return 1, "GOOD BREAKOUT DISTANCE"
+
+    return 0, "LATE ENTRY"
 
 
 # ============================================================
@@ -618,6 +734,7 @@ def calculate_score(
     retest,
     volume_ratio,
     candle_score,
+    breakout_distance,
 ):
 
     score = 0
@@ -633,6 +750,7 @@ def calculate_score(
         reasons.append("5M UP")
 
         if momentum["5m"] >= 0.50:
+
             score += 1
             reasons.append("5M STRONG")
 
@@ -646,6 +764,7 @@ def calculate_score(
         reasons.append("15M UP")
 
         if momentum["15m"] >= 1.00:
+
             score += 1
             reasons.append("15M STRONG")
 
@@ -659,6 +778,7 @@ def calculate_score(
         reasons.append("1H UP")
 
         if momentum["1h"] >= 2.00:
+
             score += 1
             reasons.append("1H STRONG")
 
@@ -667,10 +787,12 @@ def calculate_score(
     # --------------------------------------------------------
 
     if higher_high:
+
         score += 2
         reasons.append("HIGHER HIGH")
 
     if higher_low:
+
         score += 2
         reasons.append("HIGHER LOW")
 
@@ -679,6 +801,7 @@ def calculate_score(
     # --------------------------------------------------------
 
     if breakout:
+
         score += 2
         reasons.append("BREAKOUT")
 
@@ -687,8 +810,22 @@ def calculate_score(
     # --------------------------------------------------------
 
     if retest:
+
         score += 3
         reasons.append("RETEST")
+
+    # --------------------------------------------------------
+    # DISTANCE
+    # --------------------------------------------------------
+
+    distance_points, distance_reason = (
+        distance_score(
+            breakout_distance
+        )
+    )
+
+    score += distance_points
+    reasons.append(distance_reason)
 
     # --------------------------------------------------------
     # VOLUME
@@ -724,19 +861,23 @@ def analyze_symbol(symbol):
 
     candles = build_candles(trades)
 
-    closed = get_closed_candles(candles)
+    closed = get_closed_candles(
+        candles
+    )
 
     if len(closed) < 30:
         return None
 
-    momentum = calculate_momentum(closed)
+    # --------------------------------------------------------
+    # MOMENTUM
+    # --------------------------------------------------------
+
+    momentum = calculate_momentum(
+        closed
+    )
 
     if not momentum:
         return None
-
-    # --------------------------------------------------------
-    # HARD MOMENTUM FILTERS
-    # --------------------------------------------------------
 
     if momentum["5m"] < MIN_5M_MOVE:
         return None
@@ -747,7 +888,9 @@ def analyze_symbol(symbol):
     if momentum["1h"] < MIN_1H_MOVE:
         return None
 
-    # Avoid chasing extreme pumps.
+    # --------------------------------------------------------
+    # CHASE PROTECTION
+    # --------------------------------------------------------
 
     if momentum["5m"] > MAX_5M_MOVE:
         return None
@@ -762,8 +905,10 @@ def analyze_symbol(symbol):
     # STRUCTURE
     # --------------------------------------------------------
 
-    higher_high, higher_low = structure_check(
-        closed
+    higher_high, higher_low = (
+        structure_check(
+            closed
+        )
     )
 
     if not higher_high:
@@ -773,13 +918,19 @@ def analyze_symbol(symbol):
         return None
 
     # --------------------------------------------------------
-    # BREAKOUT
+    # RESISTANCE
     # --------------------------------------------------------
 
-    resistance = find_resistance(closed)
+    resistance = find_resistance(
+        closed
+    )
 
     if resistance <= 0:
         return None
+
+    # --------------------------------------------------------
+    # BREAKOUT
+    # --------------------------------------------------------
 
     breakout = detect_breakout(
         closed,
@@ -802,7 +953,7 @@ def analyze_symbol(symbol):
         return None
 
     # --------------------------------------------------------
-    # CURRENT CANDLE
+    # CURRENT CONFIRMATION
     # --------------------------------------------------------
 
     current = closed[-1]
@@ -814,6 +965,23 @@ def analyze_symbol(symbol):
         return None
 
     # --------------------------------------------------------
+    # BREAKOUT DISTANCE
+    # --------------------------------------------------------
+
+    breakout_distance = pct_change(
+        resistance,
+        current["close"],
+    )
+
+    # Safety check
+
+    if (
+        breakout_distance >
+        MAX_BREAKOUT_DISTANCE
+    ):
+        return None
+
+    # --------------------------------------------------------
     # VOLUME
     # --------------------------------------------------------
 
@@ -821,14 +989,11 @@ def analyze_symbol(symbol):
         closed
     )
 
-    # Extremely weak volume is rejected,
-    # but normal volume is allowed.
-
     if volume_ratio < WEAK_VOLUME_LIMIT:
         return None
 
     # --------------------------------------------------------
-    # CANDLE QUALITY
+    # CANDLE
     # --------------------------------------------------------
 
     candle_score = candle_quality(
@@ -847,6 +1012,7 @@ def analyze_symbol(symbol):
         retest=retest,
         volume_ratio=volume_ratio,
         candle_score=candle_score,
+        breakout_distance=breakout_distance,
     )
 
     if score < WATCH_MIN_SCORE:
@@ -862,9 +1028,6 @@ def analyze_symbol(symbol):
     # SL / TP
     # --------------------------------------------------------
 
-    # Use resistance as a reference and give the trade
-    # reasonable breathing room.
-
     sl = resistance * 0.955
 
     if sl >= price:
@@ -875,17 +1038,19 @@ def analyze_symbol(symbol):
     if risk <= 0:
         return None
 
-    risk_pct = (risk / price) * 100
+    risk_pct = (
+        risk / price
+    ) * 100
 
     if risk_pct > 7:
         return None
 
-    tp1 = price + (risk * 1.5)
-    tp2 = price + (risk * 2.1)
+    tp1 = price + (
+        risk * 1.5
+    )
 
-    breakout_distance = pct_change(
-        resistance,
-        price,
+    tp2 = price + (
+        risk * 2.1
     )
 
     return {
@@ -910,9 +1075,17 @@ def analyze_symbol(symbol):
 # FORMAT SIGNAL
 # ============================================================
 
-def format_signal(item, rank, signal_type):
+def format_signal(
+    item,
+    rank,
+    signal_type,
+):
 
-    emoji = "🟢" if signal_type == "BUY" else "🟡"
+    emoji = (
+        "🟢"
+        if signal_type == "BUY"
+        else "🟡"
+    )
 
     reasons = " • ".join(
         item["reasons"]
@@ -927,12 +1100,15 @@ def format_signal(item, rank, signal_type):
         f"📈 5M: {item['move_5m']:+.2f}%\n"
         f"📊 15M: {item['move_15m']:+.2f}%\n"
         f"⏱ 1H: {item['move_1h']:+.2f}%\n\n"
-        f"📌 BREAKOUT: {item['resistance']:.10f}\n"
-        f"📐 DISTANCE: {item['breakout_distance']:.2f}%\n\n"
+        f"📌 BREAKOUT: "
+        f"{item['resistance']:.10f}\n"
+        f"📐 DISTANCE: "
+        f"{item['breakout_distance']:.2f}%\n\n"
         f"🛑 SL: {item['sl']:.10f}\n"
         f"🎯 TP1: {item['tp1']:.10f}\n"
         f"🎯 TP2: {item['tp2']:.10f}\n\n"
-        f"📦 VOLUME: {item['volume_ratio']:.2f}x\n"
+        f"📦 VOLUME: "
+        f"{item['volume_ratio']:.2f}x\n"
         f"🧠 {reasons}"
     )
 
@@ -944,19 +1120,42 @@ def format_signal(item, rank, signal_type):
 def main():
 
     print("=" * 60)
-    print(f"⚡ ATI CRYPTO BOT {VERSION}")
-    print("🚀 BALANCED PRECISION BREAKOUT + RETEST")
+
+    print(
+        f"⚡ ATI CRYPTO BOT {VERSION}"
+    )
+
+    print(
+        "🚀 BALANCED PRECISION "
+        "BREAKOUT + RETEST"
+    )
+
+    print(
+        "🎯 DISTANCE-AWARE SCORING"
+    )
+
     print("=" * 60)
 
     print()
     print("⏱ Timeframe: 5m")
     print("✅ CLOSED CANDLE")
-    print("📊 5M + 15M + 1H MOMENTUM")
-    print("📐 BREAKOUT + RETEST")
-    print("📈 PRICE ACTION + MARKET STRUCTURE")
+    print(
+        "📊 5M + 15M + 1H MOMENTUM"
+    )
+    print(
+        "📐 BREAKOUT + RETEST"
+    )
+    print(
+        "📈 PRICE ACTION + MARKET STRUCTURE"
+    )
+    print(
+        "🎯 BREAKOUT DISTANCE IN SCORE"
+    )
     print()
 
-    print("📡 TABDEAL API: CHECKING...")
+    print(
+        "📡 TABDEAL API: CHECKING..."
+    )
 
     markets = get_usdt_markets()
 
@@ -970,34 +1169,86 @@ def main():
         )
 
         print(error_message)
-        send_telegram(error_message)
+
+        send_telegram(
+            error_message
+        )
+
         return
 
-    print("📡 TABDEAL API: OK")
-    print(f"📊 USDT MARKETS: {len(markets)}")
+    print(
+        "📡 TABDEAL API: OK"
+    )
+
+    print(
+        f"📊 USDT MARKETS: "
+        f"{len(markets)}"
+    )
+
     print()
 
-    print(f"🟢 BUY MIN SCORE: {BUY_MIN_SCORE}")
-    print(f"🟡 WATCH MIN SCORE: {WATCH_MIN_SCORE}")
-    print(f"🚫 MAX 5M: {MAX_5M_MOVE}%")
-    print(f"🚫 MAX 15M: {MAX_15M_MOVE}%")
-    print(f"🚫 MAX 1H: {MAX_1H_MOVE}%")
-    print(f"📐 MAX BREAKOUT DISTANCE: {MAX_BREAKOUT_DISTANCE}%")
-    print(f"🔄 MAX RETEST DISTANCE: {MAX_RETEST_DISTANCE}%")
+    print(
+        f"🟢 BUY MIN SCORE: "
+        f"{BUY_MIN_SCORE}"
+    )
+
+    print(
+        f"🟡 WATCH MIN SCORE: "
+        f"{WATCH_MIN_SCORE}"
+    )
+
+    print(
+        f"🚫 MAX 5M: "
+        f"{MAX_5M_MOVE}%"
+    )
+
+    print(
+        f"🚫 MAX 15M: "
+        f"{MAX_15M_MOVE}%"
+    )
+
+    print(
+        f"🚫 MAX 1H: "
+        f"{MAX_1H_MOVE}%"
+    )
+
+    print(
+        f"📐 MAX BREAKOUT DISTANCE: "
+        f"{MAX_BREAKOUT_DISTANCE}%"
+    )
+
+    print(
+        f"🎯 FULL DISTANCE SCORE: "
+        f"≤ {FULL_DISTANCE_MAX}%"
+    )
+
+    print(
+        f"🎯 GOOD DISTANCE SCORE: "
+        f"≤ {GOOD_DISTANCE_MAX}%"
+    )
+
     print()
 
-    print(f"🕐 Scan: {now_utc()}")
+    print(
+        f"🕐 Scan: {now_utc()}"
+    )
+
     print()
 
     results = []
 
     total = len(markets)
 
-    for index, symbol in enumerate(markets, start=1):
+    for index, symbol in enumerate(
+        markets,
+        start=1,
+    ):
 
         try:
 
-            result = analyze_symbol(symbol)
+            result = analyze_symbol(
+                symbol
+            )
 
             if result:
                 results.append(result)
@@ -1005,23 +1256,29 @@ def main():
         except Exception as e:
 
             print(
-                f"⚠️ {symbol}: {str(e)}"
+                f"⚠️ {symbol}: "
+                f"{str(e)}"
             )
 
         if index % 50 == 0:
+
             print(
-                f"🔎 Scanned {index}/{total}"
+                f"🔎 Scanned "
+                f"{index}/{total}"
             )
 
-        time.sleep(MARKET_SLEEP)
+        time.sleep(
+            MARKET_SLEEP
+        )
 
-    # --------------------------------------------------------
+    # ========================================================
     # SORT
-    # --------------------------------------------------------
+    # ========================================================
 
     results.sort(
         key=lambda x: (
             x["score"],
+            -x["breakout_distance"],
             x["move_15m"],
             x["move_1h"],
         ),
@@ -1035,29 +1292,41 @@ def main():
 
     watches = [
         x for x in results
-        if WATCH_MIN_SCORE <= x["score"] < BUY_MIN_SCORE
+        if (
+            WATCH_MIN_SCORE
+            <= x["score"]
+            < BUY_MIN_SCORE
+        )
     ]
 
-    # --------------------------------------------------------
-    # TELEGRAM MESSAGE
-    # --------------------------------------------------------
+    # ========================================================
+    # MESSAGE
+    # ========================================================
 
     message = (
         f"⚡ ATI CRYPTO BOT {VERSION}\n\n"
-        f"🚀 BALANCED PRECISION BREAKOUT + RETEST\n\n"
+        f"🚀 BALANCED PRECISION "
+        f"BREAKOUT + RETEST\n"
+        f"🎯 DISTANCE-AWARE SCORING\n\n"
         f"📡 TABDEAL API: OK\n"
-        f"📊 USDT MARKETS: {len(markets)}\n\n"
-        f"🟢 BUY MIN SCORE: {BUY_MIN_SCORE}\n"
-        f"🟡 WATCH MIN SCORE: {WATCH_MIN_SCORE}\n"
-        f"🚫 MAX 5M: {MAX_5M_MOVE}%\n"
-        f"🚫 MAX 15M: {MAX_15M_MOVE}%\n"
-        f"🚫 MAX 1H: {MAX_1H_MOVE}%\n\n"
+        f"📊 USDT MARKETS: "
+        f"{len(markets)}\n\n"
+        f"🟢 BUY MIN SCORE: "
+        f"{BUY_MIN_SCORE}\n"
+        f"🟡 WATCH MIN SCORE: "
+        f"{WATCH_MIN_SCORE}\n"
+        f"🚫 MAX 5M: "
+        f"{MAX_5M_MOVE}%\n"
+        f"🚫 MAX 15M: "
+        f"{MAX_15M_MOVE}%\n"
+        f"🚫 MAX 1H: "
+        f"{MAX_1H_MOVE}%\n\n"
         f"🕐 Scan: {now_utc()}\n"
     )
 
-    # --------------------------------------------------------
+    # ========================================================
     # BUY
-    # --------------------------------------------------------
+    # ========================================================
 
     if buys:
 
@@ -1090,9 +1359,9 @@ def main():
             "❌ NONE\n"
         )
 
-    # --------------------------------------------------------
+    # ========================================================
     # WATCH
-    # --------------------------------------------------------
+    # ========================================================
 
     if watches:
 
@@ -1125,9 +1394,9 @@ def main():
             "❌ NONE\n"
         )
 
-    # --------------------------------------------------------
+    # ========================================================
     # SUMMARY
-    # --------------------------------------------------------
+    # ========================================================
 
     message += (
         "\n━━━━━━━━━━━━━━━━━━\n"
@@ -1135,7 +1404,8 @@ def main():
         "━━━━━━━━━━━━━━━━━━\n"
         f"🟢 BUY: {len(buys)}\n"
         f"🟡 WATCH: {len(watches)}\n"
-        f"📊 MARKETS: {len(markets)}\n"
+        f"📊 MARKETS: "
+        f"{len(markets)}\n"
         f"🕐 {now_utc()}\n\n"
         "⚠️ SIGNAL ONLY — NO REAL ORDER"
     )
@@ -1143,22 +1413,35 @@ def main():
     print()
     print(message)
 
-    # --------------------------------------------------------
+    # ========================================================
     # TELEGRAM
-    # --------------------------------------------------------
+    # ========================================================
 
-    telegram_ok = send_telegram(message)
+    telegram_ok = send_telegram(
+        message
+    )
 
     print()
 
     if telegram_ok:
-        print("✅ TELEGRAM SENT")
+
+        print(
+            "✅ TELEGRAM SENT"
+        )
+
     else:
-        print("⚠️ TELEGRAM NOT SENT")
+
+        print(
+            "⚠️ TELEGRAM NOT SENT"
+        )
 
     print()
     print("=" * 60)
-    print(f"✅ ATI BOT {VERSION} FINISHED")
+
+    print(
+        f"✅ ATI BOT {VERSION} FINISHED"
+    )
+
     print("=" * 60)
 
 
