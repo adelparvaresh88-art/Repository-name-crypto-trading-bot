@@ -31,8 +31,8 @@
       "created_at": "2026-09-27 18:07:42 UTC",
       "closed_at": "",
       "exit_price": null,
-      "last_price": 0.053474,
-      "last_check": "2026-09-27 18:22:48 UTC"
+      "last_price": 0.053466,
+      "last_check": "2026-09-27 18:41:56 UTC"
     },
     {
       "id": "ENAUSDT_1790532462",
@@ -48,8 +48,8 @@
       "created_at": "2026-09-27 18:07:42 UTC",
       "closed_at": "",
       "exit_price": null,
-      "last_price": 0.2831,
-      "last_check": "2026-09-27 18:22:49 UTC"
+      "last_price": 0.2812,
+      "last_check": "2026-09-27 18:41:53 UTC"
     },
     {
       "id": "FLUXUSDT_1790532462",
@@ -83,7 +83,7 @@
       "closed_at": "",
       "exit_price": null,
       "last_price": 0.1804,
-      "last_check": "2026-09-27 18:22:49 UTC"
+      "last_check": "2026-09-27 18:41:54 UTC"
     },
     {
       "id": "FLUXUSDT_1790533404",
@@ -94,13 +94,64 @@
       "sl": 0.0741024,
       "tp1": 0.0748464,
       "tp2": 0.07514399999999999,
+      "status": "SL_HIT",
+      "result": "LOSS",
+      "created_at": "2026-09-27 18:23:24 UTC",
+      "closed_at": "2026-09-27 18:41:54 UTC",
+      "exit_price": 0.0741,
+      "last_price": 0.0741,
+      "last_check": "2026-09-27 18:41:54 UTC"
+    },
+    {
+      "id": "ARBUSDT_1790534547",
+      "symbol": "ARBUSDT",
+      "category": "CONFIRMED",
+      "score": 15,
+      "entry": 0.2277,
+      "sl": 0.22678920000000002,
+      "tp1": 0.22906620000000003,
+      "tp2": 0.22997700000000001,
       "status": "OPEN",
       "result": "",
-      "created_at": "2026-09-27 18:23:24 UTC",
+      "created_at": "2026-09-27 18:42:27 UTC",
+      "closed_at": "",
+      "exit_price": null,
+      "last_price": 0.2277,
+      "last_check": "2026-09-27 18:42:27 UTC"
+    },
+    {
+      "id": "FLUXUSDT_1790534547",
+      "symbol": "FLUXUSDT",
+      "category": "CONFIRMED",
+      "score": 16,
+      "entry": 0.0744,
+      "sl": 0.0741024,
+      "tp1": 0.0748464,
+      "tp2": 0.07514399999999999,
+      "status": "OPEN",
+      "result": "",
+      "created_at": "2026-09-27 18:42:27 UTC",
       "closed_at": "",
       "exit_price": null,
       "last_price": 0.0744,
-      "last_check": "2026-09-27 18:23:24 UTC"
+      "last_check": "2026-09-27 18:42:27 UTC"
+    },
+    {
+      "id": "NEARUSDT_1790534547",
+      "symbol": "NEARUSDT",
+      "category": "CONFIRMED",
+      "score": 15,
+      "entry": 5.3517,
+      "sl": 5.3284199999999995,
+      "tp1": 5.386620000000001,
+      "tp2": 5.409900000000002,
+      "status": "OPEN",
+      "result": "",
+      "created_at": "2026-09-27 18:42:27 UTC",
+      "closed_at": "",
+      "exit_price": null,
+      "last_price": 5.3517,
+      "last_check": "2026-09-27 18:42:27 UTC"
     }
   ]
 }
