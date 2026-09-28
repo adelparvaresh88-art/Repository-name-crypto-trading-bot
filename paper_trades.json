@@ -644,7 +644,7 @@
       "last_price": 0.00017,
       "last_check": "2026-09-27 21:47:30 UTC",
       "trade_id": "7dd544dd1d598e6fb1afd6d7",
-      "notification_sent": false
+      "notification_sent": true
     },
     {
       "id": "LIGHTUSDT_1790542067",
@@ -758,7 +758,7 @@
       "last_price": 0.1477,
       "last_check": "2026-09-27 21:47:31 UTC",
       "trade_id": "b417aa60b2f3f168329eaa0f",
-      "notification_sent": false
+      "notification_sent": true
     },
     {
       "id": "FLUXUSDT_1790544197",
@@ -834,7 +834,7 @@
       "last_price": 0.6864,
       "last_check": "2026-09-27 21:49:02 UTC",
       "trade_id": "7fa36f443b5323d77f40055f",
-      "notification_sent": false
+      "notification_sent": true
     },
     {
       "id": "JUPUSDT_1790545742",
@@ -853,7 +853,7 @@
       "last_price": 0.3611,
       "last_check": "2026-09-27 21:49:02 UTC",
       "trade_id": "d4b81f279ae6a64851c40bd2",
-      "notification_sent": false
+      "notification_sent": true
     }
   ],
   "open": [],
