@@ -15,7 +15,9 @@
       "closed_at": "2026-09-27 18:22:49 UTC",
       "exit_price": 0.8928,
       "last_price": 0.8928,
-      "last_check": "2026-09-27 18:22:49 UTC"
+      "last_check": "2026-09-27 18:22:49 UTC",
+      "trade_id": "731752e23eaf8341764a2b4d",
+      "notification_sent": false
     },
     {
       "id": "CAPUSDT_1790532462",
@@ -32,7 +34,9 @@
       "closed_at": "2026-09-27 19:14:45 UTC",
       "exit_price": 0.053147,
       "last_price": 0.053147,
-      "last_check": "2026-09-27 19:14:45 UTC"
+      "last_check": "2026-09-27 19:14:45 UTC",
+      "trade_id": "7f9e4d30a6501172be5f25e0",
+      "notification_sent": false
     },
     {
       "id": "ENAUSDT_1790532462",
@@ -49,7 +53,9 @@
       "closed_at": "2026-09-27 18:56:51 UTC",
       "exit_price": 0.2941,
       "last_price": 0.2941,
-      "last_check": "2026-09-27 18:56:51 UTC"
+      "last_check": "2026-09-27 18:56:51 UTC",
+      "trade_id": "f601e143062fee046d722b93",
+      "notification_sent": false
     },
     {
       "id": "FLUXUSDT_1790532462",
@@ -66,7 +72,9 @@
       "closed_at": "2026-09-27 18:22:48 UTC",
       "exit_price": 0.0741,
       "last_price": 0.0741,
-      "last_check": "2026-09-27 18:22:48 UTC"
+      "last_check": "2026-09-27 18:22:48 UTC",
+      "trade_id": "1d7d791232c8503fa217ca54",
+      "notification_sent": false
     },
     {
       "id": "LIGHTUSDT_1790532462",
@@ -83,7 +91,9 @@
       "closed_at": "2026-09-27 19:29:57 UTC",
       "exit_price": 0.1818,
       "last_price": 0.1818,
-      "last_check": "2026-09-27 19:29:57 UTC"
+      "last_check": "2026-09-27 19:29:57 UTC",
+      "trade_id": "c91f2ede310f5b6a9f3cdc59",
+      "notification_sent": false
     },
     {
       "id": "FLUXUSDT_1790533404",
@@ -100,7 +110,9 @@
       "closed_at": "2026-09-27 18:41:54 UTC",
       "exit_price": 0.0741,
       "last_price": 0.0741,
-      "last_check": "2026-09-27 18:41:54 UTC"
+      "last_check": "2026-09-27 18:41:54 UTC",
+      "trade_id": "1d7d791232c8503fa217ca54",
+      "notification_sent": false
     },
     {
       "id": "ARBUSDT_1790534547",
@@ -117,7 +129,9 @@
       "closed_at": "2026-09-27 20:15:41 UTC",
       "exit_price": 0.2324,
       "last_price": 0.2324,
-      "last_check": "2026-09-27 20:15:41 UTC"
+      "last_check": "2026-09-27 20:15:41 UTC",
+      "trade_id": "65cf62d41d14b3dbefd5d388",
+      "notification_sent": false
     },
     {
       "id": "FLUXUSDT_1790534547",
@@ -134,7 +148,9 @@
       "closed_at": "2026-09-27 18:56:51 UTC",
       "exit_price": 0.0741,
       "last_price": 0.0741,
-      "last_check": "2026-09-27 18:56:51 UTC"
+      "last_check": "2026-09-27 18:56:51 UTC",
+      "trade_id": "1d7d791232c8503fa217ca54",
+      "notification_sent": false
     },
     {
       "id": "NEARUSDT_1790534547",
@@ -151,7 +167,9 @@
       "closed_at": "2026-09-27 18:56:51 UTC",
       "exit_price": 5.4566,
       "last_price": 5.4566,
-      "last_check": "2026-09-27 18:56:51 UTC"
+      "last_check": "2026-09-27 18:56:51 UTC",
+      "trade_id": "81aa1c18ae80990cedc4c61c",
+      "notification_sent": false
     },
     {
       "id": "ENAUSDT_1790535449",
@@ -168,7 +186,9 @@
       "closed_at": "2026-09-27 19:14:47 UTC",
       "exit_price": 0.2905,
       "last_price": 0.2905,
-      "last_check": "2026-09-27 19:14:47 UTC"
+      "last_check": "2026-09-27 19:14:47 UTC",
+      "trade_id": "8cc8da83e3ebdc2b4006088e",
+      "notification_sent": false
     },
     {
       "id": "FLUXUSDT_1790535449",
@@ -185,7 +205,9 @@
       "closed_at": "2026-09-27 19:14:46 UTC",
       "exit_price": 0.0741,
       "last_price": 0.0741,
-      "last_check": "2026-09-27 19:14:46 UTC"
+      "last_check": "2026-09-27 19:14:46 UTC",
+      "trade_id": "1d7d791232c8503fa217ca54",
+      "notification_sent": false
     },
     {
       "id": "MAJORUSDT_1790535449",
@@ -202,7 +224,9 @@
       "closed_at": "2026-09-27 19:14:47 UTC",
       "exit_price": 0.03877,
       "last_price": 0.03877,
-      "last_check": "2026-09-27 19:14:47 UTC"
+      "last_check": "2026-09-27 19:14:47 UTC",
+      "trade_id": "97f98e366d35426af4895a3f",
+      "notification_sent": false
     },
     {
       "id": "NEARUSDT_1790535449",
@@ -219,7 +243,9 @@
       "closed_at": "2026-09-27 19:14:46 UTC",
       "exit_price": 5.4291,
       "last_price": 5.4291,
-      "last_check": "2026-09-27 19:14:46 UTC"
+      "last_check": "2026-09-27 19:14:46 UTC",
+      "trade_id": "e766c57222f9990d48fdc254",
+      "notification_sent": false
     },
     {
       "id": "OPUSDT_1790535449",
@@ -236,7 +262,9 @@
       "closed_at": "2026-09-27 19:43:54 UTC",
       "exit_price": 0.147,
       "last_price": 0.147,
-      "last_check": "2026-09-27 19:43:54 UTC"
+      "last_check": "2026-09-27 19:43:54 UTC",
+      "trade_id": "12ef2b971b64b083c6db3121",
+      "notification_sent": false
     },
     {
       "id": "ERAUSDT_1790536528",
@@ -253,7 +281,9 @@
       "closed_at": "",
       "exit_price": null,
       "last_price": 0.0707,
-      "last_check": "2026-09-27 21:47:30 UTC"
+      "last_check": "2026-09-27 21:47:30 UTC",
+      "trade_id": "c2e3a704af0fd8888e7e35bb",
+      "notification_sent": false
     },
     {
       "id": "FLUXUSDT_1790536528",
@@ -270,7 +300,9 @@
       "closed_at": "2026-09-27 19:29:57 UTC",
       "exit_price": 0.0741,
       "last_price": 0.0741,
-      "last_check": "2026-09-27 19:29:57 UTC"
+      "last_check": "2026-09-27 19:29:57 UTC",
+      "trade_id": "1d7d791232c8503fa217ca54",
+      "notification_sent": false
     },
     {
       "id": "FIDAUSDT_1790537494",
@@ -287,7 +319,9 @@
       "closed_at": "2026-09-27 19:56:02 UTC",
       "exit_price": 0.02296,
       "last_price": 0.02296,
-      "last_check": "2026-09-27 19:56:02 UTC"
+      "last_check": "2026-09-27 19:56:02 UTC",
+      "trade_id": "7f703e8588c83186d2a3742e",
+      "notification_sent": false
     },
     {
       "id": "JUPUSDT_1790537494",
@@ -304,7 +338,9 @@
       "closed_at": "2026-09-27 20:47:14 UTC",
       "exit_price": 0.3436,
       "last_price": 0.3436,
-      "last_check": "2026-09-27 20:47:14 UTC"
+      "last_check": "2026-09-27 20:47:14 UTC",
+      "trade_id": "499d3d419d10cb6e4082d733",
+      "notification_sent": false
     },
     {
       "id": "LIGHTUSDT_1790537494",
@@ -321,7 +357,9 @@
       "closed_at": "2026-09-27 19:43:53 UTC",
       "exit_price": 0.1818,
       "last_price": 0.1818,
-      "last_check": "2026-09-27 19:43:53 UTC"
+      "last_check": "2026-09-27 19:43:53 UTC",
+      "trade_id": "c91f2ede310f5b6a9f3cdc59",
+      "notification_sent": false
     },
     {
       "id": "RUNEUSDT_1790537494",
@@ -338,7 +376,9 @@
       "closed_at": "2026-09-27 19:43:55 UTC",
       "exit_price": 0.7576,
       "last_price": 0.7576,
-      "last_check": "2026-09-27 19:43:55 UTC"
+      "last_check": "2026-09-27 19:43:55 UTC",
+      "trade_id": "e1c3340bd45dc65a17186e08",
+      "notification_sent": false
     },
     {
       "id": "FLUXUSDT_1790538275",
@@ -355,7 +395,9 @@
       "closed_at": "2026-09-27 19:56:02 UTC",
       "exit_price": 0.0741,
       "last_price": 0.0741,
-      "last_check": "2026-09-27 19:56:02 UTC"
+      "last_check": "2026-09-27 19:56:02 UTC",
+      "trade_id": "1d7d791232c8503fa217ca54",
+      "notification_sent": false
     },
     {
       "id": "LIGHTUSDT_1790538275",
@@ -372,7 +414,9 @@
       "closed_at": "2026-09-27 19:56:03 UTC",
       "exit_price": 0.1818,
       "last_price": 0.1818,
-      "last_check": "2026-09-27 19:56:03 UTC"
+      "last_check": "2026-09-27 19:56:03 UTC",
+      "trade_id": "c91f2ede310f5b6a9f3cdc59",
+      "notification_sent": false
     },
     {
       "id": "FLUXUSDT_1790539002",
@@ -389,7 +433,9 @@
       "closed_at": "2026-09-27 20:15:42 UTC",
       "exit_price": 0.0741,
       "last_price": 0.0741,
-      "last_check": "2026-09-27 20:15:42 UTC"
+      "last_check": "2026-09-27 20:15:42 UTC",
+      "trade_id": "1d7d791232c8503fa217ca54",
+      "notification_sent": false
     },
     {
       "id": "LIGHTUSDT_1790539002",
@@ -406,7 +452,9 @@
       "closed_at": "2026-09-27 20:15:41 UTC",
       "exit_price": 0.1818,
       "last_price": 0.1818,
-      "last_check": "2026-09-27 20:15:41 UTC"
+      "last_check": "2026-09-27 20:15:41 UTC",
+      "trade_id": "c91f2ede310f5b6a9f3cdc59",
+      "notification_sent": false
     },
     {
       "id": "ARBUSDT_1790540175",
@@ -423,7 +471,9 @@
       "closed_at": "2026-09-27 20:32:29 UTC",
       "exit_price": 0.23,
       "last_price": 0.23,
-      "last_check": "2026-09-27 20:32:29 UTC"
+      "last_check": "2026-09-27 20:32:29 UTC",
+      "trade_id": "109ff9af46f2fb1cea55ee0c",
+      "notification_sent": false
     },
     {
       "id": "FLUXUSDT_1790540175",
@@ -440,7 +490,9 @@
       "closed_at": "2026-09-27 20:32:26 UTC",
       "exit_price": 0.0741,
       "last_price": 0.0741,
-      "last_check": "2026-09-27 20:32:26 UTC"
+      "last_check": "2026-09-27 20:32:26 UTC",
+      "trade_id": "1d7d791232c8503fa217ca54",
+      "notification_sent": false
     },
     {
       "id": "LIGHTUSDT_1790540175",
@@ -457,7 +509,9 @@
       "closed_at": "2026-09-27 20:32:26 UTC",
       "exit_price": 0.1818,
       "last_price": 0.1818,
-      "last_check": "2026-09-27 20:32:26 UTC"
+      "last_check": "2026-09-27 20:32:26 UTC",
+      "trade_id": "c91f2ede310f5b6a9f3cdc59",
+      "notification_sent": false
     },
     {
       "id": "PENDLEUSDT_1790540175",
@@ -474,7 +528,9 @@
       "closed_at": "2026-09-27 20:59:11 UTC",
       "exit_price": 2.6599,
       "last_price": 2.6599,
-      "last_check": "2026-09-27 20:59:11 UTC"
+      "last_check": "2026-09-27 20:59:11 UTC",
+      "trade_id": "59c738812ca8a4d5511d1ae9",
+      "notification_sent": false
     },
     {
       "id": "SEIUSDT_1790540175",
@@ -491,7 +547,9 @@
       "closed_at": "2026-09-27 20:32:27 UTC",
       "exit_price": 0.0749,
       "last_price": 0.0749,
-      "last_check": "2026-09-27 20:32:27 UTC"
+      "last_check": "2026-09-27 20:32:27 UTC",
+      "trade_id": "2068fa5704f3dd1ce3bc0c05",
+      "notification_sent": false
     },
     {
       "id": "FLUXUSDT_1790541184",
@@ -508,7 +566,9 @@
       "closed_at": "2026-09-27 20:47:12 UTC",
       "exit_price": 0.0741,
       "last_price": 0.0741,
-      "last_check": "2026-09-27 20:47:12 UTC"
+      "last_check": "2026-09-27 20:47:12 UTC",
+      "trade_id": "1d7d791232c8503fa217ca54",
+      "notification_sent": false
     },
     {
       "id": "GALAUSDT_1790541184",
@@ -525,7 +585,9 @@
       "closed_at": "2026-09-27 20:47:11 UTC",
       "exit_price": 0.00231,
       "last_price": 0.00231,
-      "last_check": "2026-09-27 20:47:11 UTC"
+      "last_check": "2026-09-27 20:47:11 UTC",
+      "trade_id": "d0c6a351bad79ee846c7c20e",
+      "notification_sent": false
     },
     {
       "id": "LIGHTUSDT_1790541184",
@@ -542,7 +604,9 @@
       "closed_at": "2026-09-27 20:47:12 UTC",
       "exit_price": 0.1818,
       "last_price": 0.1818,
-      "last_check": "2026-09-27 20:47:12 UTC"
+      "last_check": "2026-09-27 20:47:12 UTC",
+      "trade_id": "c91f2ede310f5b6a9f3cdc59",
+      "notification_sent": false
     },
     {
       "id": "FLUXUSDT_1790542067",
@@ -559,7 +623,9 @@
       "closed_at": "2026-09-27 20:59:12 UTC",
       "exit_price": 0.0741,
       "last_price": 0.0741,
-      "last_check": "2026-09-27 20:59:12 UTC"
+      "last_check": "2026-09-27 20:59:12 UTC",
+      "trade_id": "1d7d791232c8503fa217ca54",
+      "notification_sent": false
     },
     {
       "id": "HIPPOUSDT_1790542067",
@@ -570,13 +636,15 @@
       "sl": 0.00016779999999999999,
       "tp1": 0.00017079999999999998,
       "tp2": 0.000172,
-      "status": "OPEN",
-      "result": "",
+      "status": "CLOSED",
+      "result": "SL",
       "created_at": "2026-09-27 20:47:47 UTC",
-      "closed_at": "",
-      "exit_price": null,
+      "closed_at": "2026-09-28 05:16:32 UTC",
+      "exit_price": 0.000147,
       "last_price": 0.00017,
-      "last_check": "2026-09-27 21:47:30 UTC"
+      "last_check": "2026-09-27 21:47:30 UTC",
+      "trade_id": "7dd544dd1d598e6fb1afd6d7",
+      "notification_sent": false
     },
     {
       "id": "LIGHTUSDT_1790542067",
@@ -593,7 +661,9 @@
       "closed_at": "2026-09-27 20:59:12 UTC",
       "exit_price": 0.1818,
       "last_price": 0.1818,
-      "last_check": "2026-09-27 20:59:12 UTC"
+      "last_check": "2026-09-27 20:59:12 UTC",
+      "trade_id": "c91f2ede310f5b6a9f3cdc59",
+      "notification_sent": false
     },
     {
       "id": "QNTUSDT_1790542067",
@@ -610,7 +680,9 @@
       "closed_at": "2026-09-27 21:22:45 UTC",
       "exit_price": 210.246,
       "last_price": 210.246,
-      "last_check": "2026-09-27 21:22:45 UTC"
+      "last_check": "2026-09-27 21:22:45 UTC",
+      "trade_id": "e54755a05e96d60e074cea06",
+      "notification_sent": false
     },
     {
       "id": "FLUXUSDT_1790542790",
@@ -627,7 +699,9 @@
       "closed_at": "2026-09-27 21:17:24 UTC",
       "exit_price": 0.0741,
       "last_price": 0.0741,
-      "last_check": "2026-09-27 21:17:24 UTC"
+      "last_check": "2026-09-27 21:17:24 UTC",
+      "trade_id": "1d7d791232c8503fa217ca54",
+      "notification_sent": false
     },
     {
       "id": "LIGHTUSDT_1790542790",
@@ -644,7 +718,9 @@
       "closed_at": "2026-09-27 21:47:30 UTC",
       "exit_price": 0.1786,
       "last_price": 0.1786,
-      "last_check": "2026-09-27 21:47:30 UTC"
+      "last_check": "2026-09-27 21:47:30 UTC",
+      "trade_id": "c91f2ede310f5b6a9f3cdc59",
+      "notification_sent": false
     },
     {
       "id": "FLUXUSDT_1790543876",
@@ -661,7 +737,9 @@
       "closed_at": "2026-09-27 21:22:44 UTC",
       "exit_price": 0.0741,
       "last_price": 0.0741,
-      "last_check": "2026-09-27 21:22:44 UTC"
+      "last_check": "2026-09-27 21:22:44 UTC",
+      "trade_id": "1d7d791232c8503fa217ca54",
+      "notification_sent": false
     },
     {
       "id": "MINAUSDT_1790543876",
@@ -672,13 +750,15 @@
       "sl": 0.14691996000000002,
       "tp1": 0.14839506,
       "tp2": 0.1489851,
-      "status": "OPEN",
-      "result": "",
+      "status": "CLOSED",
+      "result": "SL",
       "created_at": "2026-09-27 21:17:56 UTC",
-      "closed_at": "",
-      "exit_price": null,
+      "closed_at": "2026-09-28 05:16:34 UTC",
+      "exit_price": 0.14122,
       "last_price": 0.1477,
-      "last_check": "2026-09-27 21:47:31 UTC"
+      "last_check": "2026-09-27 21:47:31 UTC",
+      "trade_id": "b417aa60b2f3f168329eaa0f",
+      "notification_sent": false
     },
     {
       "id": "FLUXUSDT_1790544197",
@@ -695,7 +775,9 @@
       "closed_at": "2026-09-27 21:34:27 UTC",
       "exit_price": 0.0741,
       "last_price": 0.0741,
-      "last_check": "2026-09-27 21:34:27 UTC"
+      "last_check": "2026-09-27 21:34:27 UTC",
+      "trade_id": "1d7d791232c8503fa217ca54",
+      "notification_sent": false
     },
     {
       "id": "QNTUSDT_1790544197",
@@ -712,7 +794,9 @@
       "closed_at": "2026-09-27 21:34:28 UTC",
       "exit_price": 223.479,
       "last_price": 223.479,
-      "last_check": "2026-09-27 21:34:28 UTC"
+      "last_check": "2026-09-27 21:34:28 UTC",
+      "trade_id": "2cb9487c5f3ae20c20582cc3",
+      "notification_sent": false
     },
     {
       "id": "FLUXUSDT_1790545742",
@@ -729,7 +813,9 @@
       "closed_at": "",
       "exit_price": null,
       "last_price": 0.0744,
-      "last_check": "2026-09-27 21:49:02 UTC"
+      "last_check": "2026-09-27 21:49:02 UTC",
+      "trade_id": "1d7d791232c8503fa217ca54",
+      "notification_sent": false
     },
     {
       "id": "GRASSUSDT_1790545742",
@@ -740,13 +826,15 @@
       "sl": 0.682704,
       "tp1": 0.6919440000000001,
       "tp2": 0.69564,
-      "status": "OPEN",
-      "result": "",
+      "status": "CLOSED",
+      "result": "SL",
       "created_at": "2026-09-27 21:49:02 UTC",
-      "closed_at": "",
-      "exit_price": null,
+      "closed_at": "2026-09-28 05:16:37 UTC",
+      "exit_price": 0.6304,
       "last_price": 0.6864,
-      "last_check": "2026-09-27 21:49:02 UTC"
+      "last_check": "2026-09-27 21:49:02 UTC",
+      "trade_id": "7fa36f443b5323d77f40055f",
+      "notification_sent": false
     },
     {
       "id": "JUPUSDT_1790545742",
@@ -757,13 +845,15 @@
       "sl": 0.35965559999999996,
       "tp1": 0.3632666,
       "tp2": 0.36471099999999995,
-      "status": "OPEN",
-      "result": "",
+      "status": "CLOSED",
+      "result": "SL",
       "created_at": "2026-09-27 21:49:02 UTC",
-      "closed_at": "",
-      "exit_price": null,
+      "closed_at": "2026-09-28 05:16:39 UTC",
+      "exit_price": 0.3543,
       "last_price": 0.3611,
-      "last_check": "2026-09-27 21:49:02 UTC"
+      "last_check": "2026-09-27 21:49:02 UTC",
+      "trade_id": "d4b81f279ae6a64851c40bd2",
+      "notification_sent": false
     }
   ],
   "open": [],
