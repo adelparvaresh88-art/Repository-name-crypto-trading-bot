@@ -7,12 +7,12 @@ import requests
 
 
 # ============================================================
-# ATI CRYPTO BOT V39.9.0
-# PRECISION FILTER
-# EARLY ENTRY + CLEAN BREAKOUT + PULLBACK
+# ATI CRYPTO BOT V40.0
+# REAL BREAKOUT + RETEST + CLEAN EARLY ENTRY
+# ANTI-CHASE / ANTI-FAKE-BREAKOUT
 # ============================================================
 
-VERSION = "V39.9.0"
+VERSION = "V40.0"
 
 BASE_URL = "https://api1.tabdeal.org"
 
@@ -31,52 +31,46 @@ PAPER_TRACKING = True
 
 
 # ============================================================
-# PRECISION FILTERS
+# MOMENTUM FILTERS
 # ============================================================
 
 EARLY_5M_MIN = 0.20
-EARLY_5M_MAX = 3.00
+EARLY_5M_MAX = 2.50
 
-# بالاتر از این مقدار تعقیب قیمت محسوب می‌شود
-HARD_5M_REJECT = 5.00
-
-# برای BUY سخت‌گیرانه‌تر
+BUY_5M_MIN = 0.20
 BUY_5M_MAX = 2.50
 
+HARD_5M_REJECT = 3.50
+
 MIN_15M = 0.30
-BUY_15M_MAX = 12.00
+BUY_15M_MAX = 8.00
 
 MIN_30M = 0.50
-
-# اگر 30M بیش از این رشد کرده باشد، BUY ممنوع
 BUY_30M_MAX = 7.00
 
-# فاصله از سقف اخیر
-NEAR_HIGH_MAX = 2.00
+HARD_30M_REJECT = 12.00
 
-# حداقل Score فقط برای کمک به فیلتر
-WATCH_SCORE = 7
+NEAR_HIGH_MAX = 1.50
+
+
+# ============================================================
+# SIGNAL THRESHOLDS
+# ============================================================
+
+BUY_SCORE = 12
 EARLY_SCORE = 9
-BUY_SCORE = 11
+WATCH_SCORE = 7
 
 
 # ============================================================
 # TELEGRAM
 # ============================================================
 
-TELEGRAM_BOT_TOKEN = os.getenv(
-    "TELEGRAM_BOT_TOKEN",
-    ""
-)
-
-TELEGRAM_CHAT_ID = os.getenv(
-    "TELEGRAM_CHAT_ID",
-    ""
-)
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
 
 def telegram(message):
-
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         return False
 
@@ -87,20 +81,18 @@ def telegram(message):
     )
 
     try:
-
         response = requests.post(
             url,
             data={
                 "chat_id": TELEGRAM_CHAT_ID,
-                "text": message,
+                "text": message
             },
-            timeout=15,
+            timeout=15
         )
 
         return response.status_code == 200
 
     except Exception:
-
         return False
 
 
@@ -109,38 +101,26 @@ def telegram(message):
 # ============================================================
 
 def now_utc():
-
-    return datetime.now(
-        timezone.utc
-    ).strftime(
+    return datetime.now(timezone.utc).strftime(
         "%Y-%m-%d %H:%M:%S UTC"
     )
 
 
 def safe_float(value, default=0.0):
-
     try:
         return float(value)
-
     except Exception:
-
         return default
 
 
 def pct(old, new):
-
     if old <= 0:
         return 0.0
 
-    return (
-        (new - old)
-        / old
-        * 100.0
-    )
+    return ((new - old) / old) * 100.0
 
 
 def fmt_price(value):
-
     value = safe_float(value)
 
     if value >= 100:
@@ -168,7 +148,7 @@ def fmt_price(value):
 
 
 # ============================================================
-# API
+# HTTP SESSION
 # ============================================================
 
 session = requests.Session()
@@ -181,7 +161,7 @@ def api_get(path, params=None):
         response = session.get(
             BASE_URL + path,
             params=params,
-            timeout=REQUEST_TIMEOUT,
+            timeout=REQUEST_TIMEOUT
         )
 
         response.raise_for_status()
@@ -194,7 +174,7 @@ def api_get(path, params=None):
 
 
 # ============================================================
-# MARKETS
+# MARKET LIST
 # ============================================================
 
 def get_markets():
@@ -214,22 +194,13 @@ def get_markets():
 
     elif isinstance(data, dict):
 
-        if isinstance(
-            data.get("symbols"),
-            list
-        ):
+        if isinstance(data.get("symbols"), list):
             raw = data["symbols"]
 
-        elif isinstance(
-            data.get("data"),
-            list
-        ):
+        elif isinstance(data.get("data"), list):
             raw = data["data"]
 
-        elif isinstance(
-            data.get("result"),
-            list
-        ):
+        elif isinstance(data.get("result"), list):
             raw = data["result"]
 
     markets = []
@@ -255,34 +226,27 @@ def get_markets():
             or ""
         )
 
-        symbol = str(
-            symbol
-        ).upper()
+        symbol = str(symbol).upper()
 
         if not symbol.endswith("USDT"):
             continue
 
         status = str(
-            item.get(
-                "status",
-                "TRADING"
-            )
+            item.get("status", "TRADING")
         ).upper()
 
         if status in (
             "TRADING",
             "ACTIVE",
-            "1",
+            "1"
         ):
             markets.append(symbol)
 
-    return list(
-        dict.fromkeys(markets)
-    )[:MAX_MARKETS]
+    return list(dict.fromkeys(markets))[:MAX_MARKETS]
 
 
 # ============================================================
-# TRADES
+# TRADE DATA
 # ============================================================
 
 def get_trades(symbol):
@@ -291,8 +255,8 @@ def get_trades(symbol):
         "/r/api/v1/trades",
         {
             "symbol": symbol,
-            "limit": 1000,
-        },
+            "limit": 1000
+        }
     )
 
     if data is None:
@@ -350,7 +314,7 @@ def quick_rank(symbol):
 
     prices = get_trades(symbol)
 
-    if len(prices) < 40:
+    if len(prices) < 50:
         return None
 
     current = prices[-1]
@@ -370,34 +334,38 @@ def quick_rank(symbol):
         current
     )
 
-    # حذف پامپ شدید از Ranking
-    if move5 > HARD_5M_REJECT:
+    # --------------------------------------------------------
+    # HARD ANTI-CHASE
+    # --------------------------------------------------------
+
+    if move5 >= HARD_5M_REJECT:
         return None
 
-    if move30 > 20:
+    if move30 >= HARD_30M_REJECT:
         return None
 
     score = 0
 
-    if move5 > 0:
-        score += 2
-
-    if (
-        EARLY_5M_MIN
-        <= move5
-        <= EARLY_5M_MAX
-    ):
+    # Early momentum
+    if EARLY_5M_MIN <= move5 <= EARLY_5M_MAX:
         score += 4
 
-    if move15 > MIN_15M:
+    elif 0 < move5 < EARLY_5M_MIN:
+        score += 1
+
+    # 15M trend
+    if move15 >= MIN_15M:
         score += 3
 
+    # Healthy acceleration
     if move15 > move5:
+        score += 3
+
+    # 30M trend
+    if MIN_30M <= move30 <= BUY_30M_MAX:
         score += 2
 
-    if move30 > MIN_30M:
-        score += 2
-
+    # All timeframes positive
     if (
         move5 > 0
         and move15 > 0
@@ -405,7 +373,8 @@ def quick_rank(symbol):
     ):
         score += 2
 
-    if move5 > 3:
+    # Penalize excessive movement
+    if move5 > 2.8:
         score -= 3
 
     if move15 > BUY_15M_MAX:
@@ -420,12 +389,12 @@ def quick_rank(symbol):
         "move5": move5,
         "move15": move15,
         "move30": move30,
-        "score": score,
+        "score": score
     }
 
 
 # ============================================================
-# RANK ALL MARKETS
+# TOP CANDIDATES
 # ============================================================
 
 def select_top(markets):
@@ -433,14 +402,10 @@ def select_top(markets):
     total = len(markets)
 
     telegram(
-        "🔄 ATI "
-        + VERSION
-        + "\n"
-        "📊 RANKING PRECISION CANDIDATES\n"
-        "📈 Markets: "
-        + str(total)
-        + "\n"
-        "🚫 ANTI-CHASE: ON"
+        "🔄 ATI " + VERSION +
+        "\n📊 RANKING REAL SETUPS" +
+        "\n📈 Markets: " + str(total) +
+        "\n🚫 ANTI-CHASE: ON"
     )
 
     results = []
@@ -460,9 +425,7 @@ def select_top(markets):
             for symbol in markets
         ]
 
-        for future in as_completed(
-            futures
-        ):
+        for future in as_completed(futures):
 
             completed += 1
 
@@ -474,40 +437,32 @@ def select_top(markets):
                     results.append(result)
 
             except Exception:
-
                 pass
 
             if (
-                completed
-                - last_progress
-                >= PROGRESS_STEP
+                completed - last_progress >= PROGRESS_STEP
                 or completed == total
             ):
 
                 last_progress = completed
 
                 progress = (
-                    completed
-                    / total
-                    * 100
+                    completed / total * 100
                     if total
                     else 100
                 )
 
                 telegram(
-                    "🔄 ATI "
-                    + VERSION
-                    + "\n"
-                    "📊 RANKING PRECISION\n"
-                    "⏳ Progress: "
+                    "🔄 ATI " + VERSION +
+                    "\n📊 RANKING" +
+                    "\n⏳ Progress: "
                     + str(completed)
                     + "/"
                     + str(total)
-                    + "\n"
-                    "📈 "
-                    + f"{progress:.0f}%"
-                    + " completed\n"
-                    "🎯 Valid: "
+                    + "\n📈 "
+                    + f"{progress:.0f}"
+                    + "% completed"
+                    + "\n🎯 Valid: "
                     + str(len(results))
                 )
 
@@ -520,84 +475,109 @@ def select_top(markets):
 
 
 # ============================================================
-# STRUCTURE
+# STRUCTURE ANALYSIS
 # ============================================================
 
 def structure_analysis(prices):
 
     current = prices[-1]
 
-    if len(prices) < 60:
+    if len(prices) < 80:
 
         return {
-            "recent_high": current,
+            "resistance": current,
             "recent_low": current,
-            "distance_high": 0,
+            "distance_resistance": 0,
             "breakout": False,
-            "pullback": False,
-            "hold": False,
+            "confirmed_breakout": False,
+            "retest": False,
+            "hold": False
         }
 
-    # محدوده قبل از حرکت فعلی
-    base = prices[-36:-6]
+    # --------------------------------------------------------
+    # OLD RANGE / RESISTANCE
+    # --------------------------------------------------------
 
-    recent_high = max(base)
-    recent_low = min(base)
+    range_prices = prices[-60:-15]
 
-    distance_high = pct(
-        recent_high,
+    resistance = max(range_prices)
+
+    recent_low = min(range_prices)
+
+    distance_resistance = pct(
+        resistance,
         current
     )
 
-    # شکست سقف
-    breakout = (
-        current
-        > recent_high
+    # --------------------------------------------------------
+    # BREAKOUT
+    # --------------------------------------------------------
+
+    last12 = prices[-12:]
+
+    above_count = sum(
+        1 for p in last12
+        if p > resistance
+    )
+
+    breakout = current > resistance
+
+    confirmed_breakout = (
+        breakout
+        and above_count >= 3
     )
 
     # --------------------------------------------------------
-    # بررسی پولبک
+    # BREAKOUT LEVEL
     # --------------------------------------------------------
 
-    last10 = prices[-10:]
+    breakout_level = resistance
 
-    local_high = max(
-        last10[:-2]
+    # --------------------------------------------------------
+    # RETEST
+    #
+    # Price must have traded above resistance
+    # and then returned close to it.
+    # --------------------------------------------------------
+
+    had_above = any(
+        p > resistance
+        for p in prices[-18:-2]
     )
 
-    latest = last10[-1]
-
-    pullback_pct = pct(
-        local_high,
-        latest
+    retest_zone = (
+        resistance * 0.997
+        <= current
+        <= resistance * 1.006
     )
 
-    pullback = (
-        -2.0
-        <= pullback_pct
-        <= 0.60
-        and local_high >= recent_high
+    retest = (
+        had_above
+        and retest_zone
     )
 
     # --------------------------------------------------------
     # HOLD
     # --------------------------------------------------------
 
-    last_low = min(
-        prices[-8:]
-    )
+    recent8 = prices[-8:]
+
+    local_low = min(recent8)
 
     hold = (
-        current >= last_low
+        current >= resistance * 0.997
+        and current >= local_low
     )
 
     return {
-        "recent_high": recent_high,
+        "resistance": resistance,
         "recent_low": recent_low,
-        "distance_high": distance_high,
+        "distance_resistance": distance_resistance,
         "breakout": breakout,
-        "pullback": pullback,
+        "confirmed_breakout": confirmed_breakout,
+        "retest": retest,
         "hold": hold,
+        "breakout_level": breakout_level
     }
 
 
@@ -611,7 +591,7 @@ def deep_scan(candidate):
 
     prices = get_trades(symbol)
 
-    if len(prices) < 60:
+    if len(prices) < 80:
         return None
 
     current = prices[-1]
@@ -635,14 +615,11 @@ def deep_scan(candidate):
         prices
     )
 
-    score = 0
-    reasons = []
-
     # ========================================================
-    # HARD FILTERS
+    # HARD REJECTS
     # ========================================================
 
-    if move5 > HARD_5M_REJECT:
+    if move5 >= HARD_5M_REJECT:
 
         return {
             "symbol": symbol,
@@ -655,10 +632,10 @@ def deep_scan(candidate):
             "reason": "5M CHASE",
             "sl": 0,
             "tp1": 0,
-            "tp2": 0,
+            "tp2": 0
         }
 
-    if move30 > 15:
+    if move30 >= HARD_30M_REJECT:
 
         return {
             "symbol": symbol,
@@ -671,75 +648,92 @@ def deep_scan(candidate):
             "reason": "30M TOO HOT",
             "sl": 0,
             "tp1": 0,
-            "tp2": 0,
+            "tp2": 0
         }
 
     # ========================================================
-    # MOMENTUM
+    # SCORE
     # ========================================================
+
+    score = 0
+
+    reasons = []
+
+    # --------------------------------------------------------
+    # 5M
+    # --------------------------------------------------------
 
     if (
-        EARLY_5M_MIN
+        BUY_5M_MIN
         <= move5
-        <= EARLY_5M_MAX
+        <= BUY_5M_MAX
     ):
 
-        score += 3
-        reasons.append(
-            "5M EARLY"
-        )
+        score += 2
+        reasons.append("5M CLEAN")
 
-    elif move5 > 0:
+    elif (
+        0 < move5 < BUY_5M_MIN
+    ):
 
         score += 1
-
-    else:
-
-        score -= 3
-
-    # ========================================================
-    # 15M
-    # ========================================================
-
-    if move15 > MIN_15M:
-
-        score += 2
-        reasons.append(
-            "15M UP"
-        )
+        reasons.append("5M EARLY")
 
     else:
 
         score -= 2
 
-    if move15 > move5:
-
-        score += 2
-        reasons.append(
-            "15M > 5M"
-        )
-
-    # ========================================================
-    # 30M
-    # ========================================================
+    # --------------------------------------------------------
+    # 15M
+    # --------------------------------------------------------
 
     if (
-        move30 > MIN_30M
-        and move30 <= BUY_30M_MAX
+        move15 >= MIN_15M
+        and move15 <= BUY_15M_MAX
     ):
 
         score += 2
-        reasons.append(
-            "30M HEALTHY"
-        )
+        reasons.append("15M UP")
+
+    elif move15 > BUY_15M_MAX:
+
+        score -= 3
+        reasons.append("15M HOT")
+
+    else:
+
+        score -= 2
+
+    # --------------------------------------------------------
+    # 15M > 5M
+    # --------------------------------------------------------
+
+    if move15 > move5:
+
+        score += 2
+        reasons.append("15M > 5M")
+
+    # --------------------------------------------------------
+    # 30M
+    # --------------------------------------------------------
+
+    if (
+        MIN_30M
+        <= move30
+        <= BUY_30M_MAX
+    ):
+
+        score += 2
+        reasons.append("30M HEALTHY")
 
     elif move30 > BUY_30M_MAX:
 
         score -= 3
+        reasons.append("30M HOT")
 
-    # ========================================================
-    # MULTI TF
-    # ========================================================
+    # --------------------------------------------------------
+    # MULTI TIMEFRAME
+    # --------------------------------------------------------
 
     if (
         move5 > 0
@@ -747,155 +741,189 @@ def deep_scan(candidate):
         and move30 > 0
     ):
 
-        score += 2
-        reasons.append(
-            "MULTI TF"
-        )
+        score += 1
+        reasons.append("MULTI TF")
 
     # ========================================================
-    # NEAR HIGH
+    # STRUCTURE
     # ========================================================
 
-    distance_high = (
-        structure["distance_high"]
-    )
+    distance = structure[
+        "distance_resistance"
+    ]
 
     if (
         -NEAR_HIGH_MAX
-        <= distance_high
+        <= distance
         <= NEAR_HIGH_MAX
     ):
 
         score += 2
-        reasons.append(
-            "NEAR HIGH"
-        )
+        reasons.append("NEAR RESISTANCE")
 
-    # ========================================================
-    # BREAKOUT
-    # ========================================================
+    # --------------------------------------------------------
+    # CONFIRMED BREAKOUT
+    # --------------------------------------------------------
 
-    if structure["breakout"]:
-
-        score += 3
-        reasons.append(
-            "BREAKOUT"
-        )
-
-    # ========================================================
-    # PULLBACK
-    # ========================================================
-
-    if structure["pullback"]:
+    if structure[
+        "confirmed_breakout"
+    ]:
 
         score += 3
         reasons.append(
-            "PULLBACK"
+            "CONFIRMED BREAKOUT"
         )
 
-    # ========================================================
+    # --------------------------------------------------------
+    # RETEST
+    # --------------------------------------------------------
+
+    if structure["retest"]:
+
+        score += 3
+        reasons.append("RETEST")
+
+    # --------------------------------------------------------
     # HOLD
-    # ========================================================
+    # --------------------------------------------------------
 
     if structure["hold"]:
 
         score += 1
-        reasons.append(
-            "HOLD"
-        )
+        reasons.append("HOLD")
 
     # ========================================================
-    # ADDITIONAL ANTI-CHASE
+    # EXTRA ANTI-CHASE
     # ========================================================
 
-    if move5 > 2.5:
+    if move5 > 2.50:
 
         score -= 3
 
-    if move15 > BUY_15M_MAX:
+    if move30 > 7.00:
 
-        score -= 4
-
-    if move30 > BUY_30M_MAX:
-
-        score -= 4
+        score -= 3
 
     # ========================================================
-    # BUY STRUCTURE REQUIREMENTS
-    # ========================================================
-
-    valid_momentum = (
-        EARLY_5M_MIN
-        <= move5
-        <= BUY_5M_MAX
-        and move15 > MIN_15M
-        and move30 > MIN_30M
-        and move30 <= BUY_30M_MAX
-    )
-
-    has_structure = (
-        structure["breakout"]
-        or structure["pullback"]
-    )
-
-    clean_structure = (
-        structure["hold"]
-        and distance_high
-        <= NEAR_HIGH_MAX
-    )
-
-    # ========================================================
-    # SIGNAL
+    # SIGNAL LOGIC
     # ========================================================
 
     signal = "NONE"
 
-    # BUY بسیار سخت‌گیر
+    # --------------------------------------------------------
+    # BUY REQUIREMENTS
+    #
+    # Must have:
+    # 1. Clean 5M
+    # 2. Healthy 15M
+    # 3. Healthy 30M
+    # 4. Confirmed breakout
+    # 5. Retest
+    # 6. Hold
+    # --------------------------------------------------------
+
+    buy_momentum = (
+        BUY_5M_MIN
+        <= move5
+        <= BUY_5M_MAX
+        and
+        MIN_15M
+        <= move15
+        <= BUY_15M_MAX
+        and
+        MIN_30M
+        <= move30
+        <= BUY_30M_MAX
+    )
+
+    buy_structure = (
+        structure["confirmed_breakout"]
+        and structure["retest"]
+        and structure["hold"]
+    )
+
     if (
         score >= BUY_SCORE
-        and valid_momentum
-        and has_structure
-        and clean_structure
+        and buy_momentum
+        and buy_structure
     ):
 
         signal = "CONFIRMED BUY"
 
+    # --------------------------------------------------------
     # EARLY ENTRY
-    elif (
-        score >= EARLY_SCORE
-        and EARLY_5M_MIN
+    #
+    # No chase.
+    # Must be near resistance and healthy.
+    # Does NOT buy an already extended pump.
+    # --------------------------------------------------------
+
+    early_structure = (
+        abs(distance)
+        <= 1.50
+        and
+        (
+            structure["confirmed_breakout"]
+            or structure["retest"]
+            or structure["hold"]
+        )
+    )
+
+    early_momentum = (
+        EARLY_5M_MIN
         <= move5
         <= EARLY_5M_MAX
-        and move15 > MIN_15M
-        and move30 > MIN_30M
-        and move30 <= BUY_30M_MAX
+        and
+        MIN_15M
+        <= move15
+        <= BUY_15M_MAX
+        and
+        MIN_30M
+        <= move30
+        <= BUY_30M_MAX
+    )
+
+    if (
+        signal == "NONE"
+        and score >= EARLY_SCORE
+        and early_momentum
+        and early_structure
     ):
 
         signal = "EARLY ENTRY"
 
+    # --------------------------------------------------------
     # WATCH
-    elif (
-        score >= WATCH_SCORE
-        and move5 >= 0
-        and move5 <= BUY_5M_MAX
+    # --------------------------------------------------------
+
+    watch_structure = (
+        structure["confirmed_breakout"]
+        or structure["retest"]
+        or
+        abs(distance) <= 1.50
+    )
+
+    if (
+        signal == "NONE"
+        and score >= WATCH_SCORE
+        and 0 <= move5 <= BUY_5M_MAX
         and move15 > 0
-        and (
-            structure["breakout"]
-            or structure["pullback"]
-            or distance_high
-            <= NEAR_HIGH_MAX
-        )
+        and watch_structure
     ):
 
         signal = "WATCH"
 
     # ========================================================
-    # SL
+    # SL / TP
     # ========================================================
 
-    recent_low = (
-        structure["recent_low"]
-    )
+    resistance = structure[
+        "resistance"
+    ]
+
+    recent_low = structure[
+        "recent_low"
+    ]
 
     if recent_low > 0:
 
@@ -905,7 +933,7 @@ def deep_scan(candidate):
 
         sl = current * 0.995
 
-    # SL خیلی دور نباشد
+    # Don't allow extremely wide SL
     if (
         current - sl
         > current * 0.012
@@ -913,7 +941,7 @@ def deep_scan(candidate):
 
         sl = current * 0.995
 
-    # حداقل فاصله
+    # Don't allow microscopic SL
     if (
         current - sl
         < current * 0.002
@@ -937,6 +965,10 @@ def deep_scan(candidate):
         risk * 2.5
     )
 
+    # ========================================================
+    # RETURN
+    # ========================================================
+
     return {
         "symbol": symbol,
         "price": current,
@@ -952,12 +984,12 @@ def deep_scan(candidate):
         ),
         "sl": sl,
         "tp1": tp1,
-        "tp2": tp2,
+        "tp2": tp2
     }
 
 
 # ============================================================
-# DEEP SCAN WITH HEARTBEAT
+# DEEP SCAN
 # ============================================================
 
 def scan_candidates(candidates):
@@ -965,14 +997,11 @@ def scan_candidates(candidates):
     total = len(candidates)
 
     telegram(
-        "🔎 ATI "
-        + VERSION
-        + "\n"
-        "🎯 DEEP PRECISION SCAN\n"
-        "📊 Candidates: "
-        + str(total)
-        + "\n"
-        "🚫 ANTI-CHASE: ON"
+        "🔎 ATI " + VERSION +
+        "\n🎯 DEEP REAL SETUP SCAN" +
+        "\n📊 Candidates: "
+        + str(total) +
+        "\n🚫 ANTI-CHASE: ON"
     )
 
     results = []
@@ -1005,33 +1034,28 @@ def scan_candidates(candidates):
                     results.append(result)
 
             except Exception:
-
                 pass
 
-            # heartbeat every 5 candidates
             if (
                 completed % 5 == 0
                 or completed == total
             ):
 
                 telegram(
-                    "🔎 ATI "
-                    + VERSION
-                    + "\n"
-                    "🎯 DEEP SCAN\n"
-                    "⏳ Progress: "
+                    "🔎 ATI " + VERSION +
+                    "\n🎯 DEEP SCAN" +
+                    "\n⏳ Progress: "
                     + str(completed)
                     + "/"
                     + str(total)
-                    + "\n"
-                    "📡 API: OK"
+                    + "\n📡 API: OK"
                 )
 
     return results
 
 
 # ============================================================
-# FORMAT
+# FORMAT SIGNAL
 # ============================================================
 
 def format_signal(item, rank):
@@ -1040,13 +1064,20 @@ def format_signal(item, rank):
         f"#{rank}\n"
         f"🪙 {item['symbol']}\n"
         f"⭐ SCORE: {item['score']}\n"
-        f"💰 PRICE: {fmt_price(item['price'])}\n"
-        f"📈 5M: {item['move5']:+.2f}%\n"
-        f"📊 15M: {item['move15']:+.2f}%\n"
-        f"📊 30M: {item['move30']:+.2f}%\n"
-        f"🛑 SL: {fmt_price(item['sl'])}\n"
-        f"🎯 TP1: {fmt_price(item['tp1'])}\n"
-        f"🎯 TP2: {fmt_price(item['tp2'])}\n"
+        f"💰 PRICE: "
+        f"{fmt_price(item['price'])}\n"
+        f"📈 5M: "
+        f"{item['move5']:+.2f}%\n"
+        f"📊 15M: "
+        f"{item['move15']:+.2f}%\n"
+        f"📊 30M: "
+        f"{item['move30']:+.2f}%\n"
+        f"🛑 SL: "
+        f"{fmt_price(item['sl'])}\n"
+        f"🎯 TP1: "
+        f"{fmt_price(item['tp1'])}\n"
+        f"🎯 TP2: "
+        f"{fmt_price(item['tp2'])}\n"
         f"📌 {item['reason']}"
     )
 
@@ -1059,250 +1090,10 @@ def main():
 
     start = time.time()
 
-    telegram(
-        "⚡ ATI CRYPTO BOT "
-        + VERSION
-        + "\n"
-        "🎯 PRECISION FILTER\n"
-        "🚀 CLEAN EARLY ENTRY\n"
-        "🔎 BREAKOUT + PULLBACK\n"
-        "🚫 ANTI-CHASE\n"
-        "📡 TABDEAL API: CONNECTING...\n"
-        "⏱ TIMEFRAME: 5m\n"
-        "📊 PAPER TRACKING: ON\n"
-        "🔧 REAL ORDERS: DISABLED\n"
-        "🕐 "
-        + now_utc()
-    )
-
-    markets = get_markets()
-
-    if not markets:
-
-        telegram(
-            "❌ ATI "
-            + VERSION
-            + "\n"
-            "TABDEAL MARKET DATA ERROR"
-        )
-
-        return
+    # --------------------------------------------------------
+    # BOOT MESSAGE
+    # --------------------------------------------------------
 
     telegram(
-        "⚡ ATI "
-        + VERSION
-        + "\n"
-        "📡 TABDEAL API: OK\n"
-        "📊 USDT MARKETS: "
-        + str(len(markets))
-        + "\n"
-        "🎯 PRECISION FILTER: ON\n"
-        "🚫 BUY 5M MAX: "
-        + str(BUY_5M_MAX)
-        + "%\n"
-        "🚫 BUY 30M MAX: "
-        + str(BUY_30M_MAX)
-        + "%"
-    )
-
-    candidates = select_top(
-        markets
-    )
-
-    if not candidates:
-
-        telegram(
-            "⚠️ ATI "
-            + VERSION
-            + "\n"
-            "❌ NO PRECISION CANDIDATES"
-        )
-
-        return
-
-    telegram(
-        "🎯 ATI "
-        + VERSION
-        + "\n"
-        "📊 TOP "
-        + str(len(candidates))
-        + " PRECISION CANDIDATES\n"
-        "🔎 DEEP SCAN STARTING..."
-    )
-
-    results = scan_candidates(
-        candidates
-    )
-
-    valid = [
-        x for x in results
-        if x["signal"] != "REJECT"
-    ]
-
-    valid.sort(
-        key=lambda x: x["score"],
-        reverse=True
-    )
-
-    buys = [
-        x for x in valid
-        if x["signal"]
-        == "CONFIRMED BUY"
-    ]
-
-    early = [
-        x for x in valid
-        if x["signal"]
-        == "EARLY ENTRY"
-    ]
-
-    watch = [
-        x for x in valid
-        if x["signal"]
-        == "WATCH"
-    ]
-
-    # ========================================================
-    # FINAL
-    # ========================================================
-
-    message = (
-        "⚡ ATI CRYPTO BOT "
-        + VERSION
-        + "\n"
-        "🎯 PRECISION FILTER\n"
-        "🚀 CLEAN EARLY ENTRY\n"
-        "🔎 BREAKOUT + PULLBACK\n"
-        "🚫 ANTI-CHASE\n\n"
-        "📡 TABDEAL API: OK\n"
-        "📊 USDT MARKETS: "
-        + str(len(markets))
-        + "\n"
-        "🎯 DEEP SCAN: TOP "
-        + str(len(candidates))
-        + "\n"
-        "🕐 "
-        + now_utc()
-        + "\n\n"
-    )
-
-    # BUY
-    message += (
-        "━━━━━━━━━━━━━━━━━━\n"
-        "🟢 CONFIRMED BUY\n"
-        "━━━━━━━━━━━━━━━━━━\n"
-    )
-
-    if buys:
-
-        for i, item in enumerate(
-            buys[:5],
-            1
-        ):
-
-            message += (
-                "\n"
-                + format_signal(
-                    item,
-                    i
-                )
-                + "\n"
-            )
-
-    else:
-
-        message += "NONE\n"
-
-    # EARLY
-    message += (
-        "\n━━━━━━━━━━━━━━━━━━\n"
-        "⚡ EARLY ENTRY\n"
-        "━━━━━━━━━━━━━━━━━━\n"
-    )
-
-    if early:
-
-        for i, item in enumerate(
-            early[:5],
-            1
-        ):
-
-            message += (
-                "\n"
-                + format_signal(
-                    item,
-                    i
-                )
-                + "\n"
-            )
-
-    else:
-
-        message += "NONE\n"
-
-    # WATCH
-    message += (
-        "\n━━━━━━━━━━━━━━━━━━\n"
-        "🟡 WATCH\n"
-        "━━━━━━━━━━━━━━━━━━\n"
-    )
-
-    if watch:
-
-        for i, item in enumerate(
-            watch[:5],
-            1
-        ):
-
-            message += (
-                "\n"
-                + format_signal(
-                    item,
-                    i
-                )
-                + "\n"
-            )
-
-    else:
-
-        message += "NONE\n"
-
-    elapsed = (
-        time.time() - start
-    )
-
-    message += (
-        "\n━━━━━━━━━━━━━━━━━━\n"
-        "📊 PAPER STATS\n"
-        "━━━━━━━━━━━━━━━━━━\n"
-        "Trades: 0 | TP: 0 | SL: 0 | OPEN: 0\n"
-        "⏱ Scan time: "
-        + f"{elapsed:.1f}"
-        + " sec\n"
-        "🔧 REAL ORDERS: DISABLED"
-    )
-
-    telegram(message)
-
-
-# ============================================================
-# START
-# ============================================================
-
-if __name__ == "__main__":
-
-    try:
-
-        main()
-
-    except Exception as e:
-
-        telegram(
-            "🚨 ATI "
-            + VERSION
-            + "\n"
-            "❌ BOT ERROR\n"
-            + str(e)
-        )
-
-        raise
+        "⚡ ATI CRYPTO BOT " + VERSION +
+        "\n
