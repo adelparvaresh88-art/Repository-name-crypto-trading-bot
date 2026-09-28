@@ -9,17 +9,26 @@ import requests
 
 
 # ============================================================
-# ATI CRYPTO BOT V39.6.6
-# CLEAN EARLY ENTRY + CONFIRMED BREAKOUT
+# ATI CRYPTO BOT V39.6.7
+# AUTO TOP 10 + CLEAN EARLY ENTRY + CONFIRMED BREAKOUT
 # ============================================================
 
-VERSION = "V39.6.6"
+VERSION = "V39.6.7"
 
 BASE_URL = "https://api1.tabdeal.org"
 TIMEFRAME = "5m"
 
 CANDLE_LIMIT = 180
 MAX_MARKETS = 1000
+
+# ------------------------------------------------------------
+# IMPORTANT:
+# All USDT markets are ranked first.
+# Only TOP_SCAN_MARKETS are deeply analyzed.
+# ------------------------------------------------------------
+
+TOP_SCAN_MARKETS = 10
+
 REQUEST_TIMEOUT = 10
 MAX_WORKERS = 20
 
@@ -27,9 +36,9 @@ TOP_CONFIRMED = 3
 TOP_EARLY = 5
 TOP_WATCH = 5
 
-CONFIRMED_MIN_SCORE = 12
-EARLY_MIN_SCORE = 9
-WATCH_MIN_SCORE = 8
+CONFIRMED_MIN_SCORE = 11
+EARLY_MIN_SCORE = 7
+WATCH_MIN_SCORE = 6
 
 BREAKOUT_BUFFER = 0.05
 
@@ -60,7 +69,7 @@ session = requests.Session()
 
 session.headers.update(
     {
-        "User-Agent": "ATI-Crypto-Bot/39.6.6"
+        "User-Agent": "ATI-Crypto-Bot/39.6.7"
     }
 )
 
@@ -88,7 +97,6 @@ def telegram(text):
     url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
 
     try:
-
         response = session.post(
             url,
             json={
@@ -182,7 +190,6 @@ def normalize_symbol(value):
 
 # ============================================================
 # EXCHANGE INFO PARSER
-# Handles LIST and DICT responses
 # ============================================================
 
 def extract_exchange_symbols(data):
@@ -224,17 +231,9 @@ def extract_exchange_symbols(data):
 
         symbol = ""
 
-        # -------------------------
-        # String item
-        # -------------------------
-
         if isinstance(item, str):
 
             symbol = normalize_symbol(item)
-
-        # -------------------------
-        # Dictionary item
-        # -------------------------
 
         elif isinstance(item, dict):
 
@@ -320,10 +319,6 @@ def get_markets():
 
 def parse_trade(item):
 
-    # -------------------------
-    # LIST / TUPLE
-    # -------------------------
-
     if isinstance(
         item,
         (list, tuple)
@@ -359,30 +354,25 @@ def parse_trade(item):
 
             return None
 
-    # -------------------------
-    # DICT
-    # -------------------------
-
     if isinstance(item, dict):
 
         try:
 
-            price = float(
+            raw_price = item.get(
+                "price",
+                item.get("p")
+            )
+
+            raw_quantity = item.get(
+                "qty",
                 item.get(
-                    "price",
-                    item.get("p")
+                    "quantity",
+                    item.get("q")
                 )
             )
 
-            quantity = float(
-                item.get(
-                    "qty",
-                    item.get(
-                        "quantity",
-                        item.get("q")
-                    )
-                )
-            )
+            price = float(raw_price)
+            quantity = float(raw_quantity)
 
             timestamp = int(
                 float(
@@ -664,831 +654,7 @@ def strong_bullish_candle(candle):
 
 
 # ============================================================
-# ANALYZE SYMBOL
-# ============================================================
-
-def analyze_symbol(symbol):
-
-    trades = get_trades(symbol)
-
-    candles = build_5m_candles(
-        trades
-    )
-
-    if len(candles) < 40:
-        return None
-
-    # Ignore currently forming candle
-    closed = candles[:-1]
-
-    if len(closed) < 35:
-        return None
-
-    candle = closed[-1]
-
-    candles_15m = aggregate(
-        closed,
-        15
-    )
-
-    candles_1h = aggregate(
-        closed,
-        60
-    )
-
-    if (
-        len(candles_15m) < 4
-        or len(candles_1h) < 2
-    ):
-        return None
-
-    price = candle["c"]
-
-    change_5m = pct(
-        closed[-2]["c"],
-        price
-    )
-
-    change_15m = pct(
-        candles_15m[-2]["c"],
-        candles_15m[-1]["c"]
-    )
-
-    change_1h = pct(
-        candles_1h[-2]["c"],
-        candles_1h[-1]["c"]
-    )
-
-    vol_ratio = volume_ratio(
-        closed
-    )
-
-    res = resistance(
-        closed
-    )
-
-    if res:
-
-        resistance_distance = pct(
-            price,
-            res
-        )
-
-    else:
-
-        resistance_distance = 99.0
-
-    breakout = False
-
-    if res:
-
-        breakout = (
-            price
-            >= res
-            * (
-                1
-                + BREAKOUT_BUFFER / 100
-            )
-        )
-
-    near_resistance = (
-        0.0
-        <= resistance_distance
-        <= 2.2
-    )
-
-    retest = False
-
-    if (
-        len(closed) >= 3
-        and res
-    ):
-
-        retest = (
-            closed[-2]["l"]
-            <= res * 1.002
-            and price > res
-        )
-
-    strong_candle = (
-        strong_bullish_candle(
-            candle
-        )
-    )
-
-    # ========================================================
-    # SCORE
-    # ========================================================
-
-    score = 0
-
-    if change_5m > 0.20:
-        score += 2
-
-    if change_15m > 0.50:
-        score += 2
-
-    if change_1h > 1.00:
-        score += 2
-
-    if vol_ratio >= 1.2:
-        score += 2
-
-    if strong_candle:
-        score += 1
-
-    if breakout:
-        score += 3
-
-    if retest:
-        score += 2
-
-    if near_resistance:
-        score += 1
-
-    # ========================================================
-    # CONFIRMED
-    # ========================================================
-
-    confirmed = (
-        score >= CONFIRMED_MIN_SCORE
-        and 0.20
-        <= change_5m
-        <= 4.0
-        and change_15m >= 0.50
-        and change_1h >= 1.00
-        and 1.20
-        <= vol_ratio
-        <= 8.00
-        and (
-            breakout
-            or retest
-        )
-    )
-
-    # ========================================================
-    # EARLY
-    # ========================================================
-
-    early = (
-        score >= EARLY_MIN_SCORE
-        and -0.10
-        <= change_5m
-        <= 3.00
-        and change_15m >= 0.30
-        and change_1h >= 0.60
-        and 0.60
-        <= vol_ratio
-        <= 8.00
-        and 0.03
-        <= resistance_distance
-        <= 1.80
-    )
-
-    # ========================================================
-    # WATCH
-    # ========================================================
-
-    watch = (
-        score >= WATCH_MIN_SCORE
-        and -0.10
-        <= change_5m
-        <= 3.00
-        and change_15m >= 0.20
-        and change_1h >= 0.50
-        and 0.60
-        <= vol_ratio
-        <= 8.00
-        and 0.03
-        <= resistance_distance
-        <= 2.20
-    )
-
-    if not (
-        confirmed
-        or early
-        or watch
-    ):
-        return None
-
-    # ========================================================
-    # SL / TP
-    # ========================================================
-
-    risk = (
-        average_range(closed)
-        * 1.2
-    )
-
-    minimum_risk = (
-        price * 0.004
-    )
-
-    maximum_risk = (
-        price * 0.012
-    )
-
-    risk = max(
-        risk,
-        minimum_risk
-    )
-
-    risk = min(
-        risk,
-        maximum_risk
-    )
-
-    stop_loss = (
-        price - risk
-    )
-
-    tp1 = (
-        price + risk * 1.5
-    )
-
-    tp2 = (
-        price + risk * 2.5
-    )
-
-    return {
-        "symbol": symbol,
-        "price": price,
-        "score": score,
-
-        "ch5": change_5m,
-        "ch15": change_15m,
-        "ch1h": change_1h,
-
-        "vr": vol_ratio,
-        "dist": resistance_distance,
-
-        "confirmed": confirmed,
-        "early": early,
-        "watch": watch,
-
-        "breakout": breakout,
-        "retest": retest,
-
-        "sl": stop_loss,
-        "tp1": tp1,
-        "tp2": tp2
-    }
-
-
-# ============================================================
-# SORT
-# ============================================================
-
-def sort_key(item):
-
-    return (
-        item["score"],
-        item["ch1h"],
-        item["ch15"],
-        item["vr"]
-    )
-
-
-# ============================================================
-# FORMAT SIGNAL
-# IMPORTANT:
-# No fragile multiline f-string
-# ============================================================
-
-def format_candidate(item, label):
-
-    if label == "BUY":
-        emoji = "🟢"
-    else:
-        emoji = "🟡"
-
-    lines = []
-
-    lines.append(
-        f"{emoji} {label}"
-    )
-
-    lines.append(
-        f"🪙 {item['symbol']}"
-    )
-
-    lines.append(
-        f"⭐ SCORE: {item['score']}"
-    )
-
-    lines.append(
-        f"💰 PRICE: {item['price']:.8g}"
-    )
-
-    lines.append(
-        f"📈 5M: {item['ch5']:+.2f}% | "
-        f"15M: {item['ch15']:+.2f}% | "
-        f"1H: {item['ch1h']:+.2f}%"
-    )
-
-    lines.append(
-        f"📊 VOL: {item['vr']:.2f}x | "
-        f"RES DIST: {item['dist']:.2f}%"
-    )
-
-    lines.append(
-        f"🎯 SL: {item['sl']:.8g} | "
-        f"TP1: {item['tp1']:.8g} | "
-        f"TP2: {item['tp2']:.8g}"
-    )
-
-    flags = []
-
-    if item["breakout"]:
-        flags.append("BREAKOUT")
-
-    if item["retest"]:
-        flags.append("RETEST")
-
-    if flags:
-
-        lines.append(
-            "🔥 "
-            + " + ".join(flags)
-        )
-
-    return "\n".join(lines)
-
-
-# ============================================================
-# SCAN ALL MARKETS
-# ============================================================
-
-def scan(markets):
-
-    results = []
-
-    with ThreadPoolExecutor(
-        max_workers=MAX_WORKERS
-    ) as executor:
-
-        futures = {
-            executor.submit(
-                analyze_symbol,
-                symbol
-            ): symbol
-            for symbol in markets
-        }
-
-        for future in as_completed(
-            futures
-        ):
-
-            symbol = futures[future]
-
-            try:
-
-                result = future.result()
-
-                if result:
-                    results.append(result)
-
-            except Exception as e:
-
-                print(
-                    "Analyze error:",
-                    symbol,
-                    e
-                )
-
-    results.sort(
-        key=sort_key,
-        reverse=True
-    )
-
-    return results
-
-
-# ============================================================
-# PAPER STATE
-# ============================================================
-
-def load_state():
-
-    try:
-
-        if os.path.exists(
-            STATE_FILE
-        ):
-
-            with open(
-                STATE_FILE,
-                "r",
-                encoding="utf-8"
-            ) as file:
-
-                data = json.load(file)
-
-            if isinstance(
-                data,
-                list
-            ):
-
-                return data
-
-    except Exception as e:
-
-        print(
-            "State load error:",
-            e
-        )
-
-    return []
-
-
-# ============================================================
-# SAVE STATE
-# ============================================================
-
-def save_state(state):
-
-    state = state[
-        -MAX_HISTORY:
-    ]
-
-    try:
-
-        with open(
-            STATE_FILE,
-            "w",
-            encoding="utf-8"
-        ) as file:
-
-            json.dump(
-                state,
-                file,
-                ensure_ascii=False,
-                indent=2
-            )
-
-    except Exception as e:
-
-        print(
-            "State save error:",
-            e
-        )
-
-
-# ============================================================
-# PAPER TRADE ID
-# ============================================================
-
-def make_trade_id(item):
-
-    raw = (
-        f"{item['symbol']}|"
-        f"{item['price']}|"
-        f"{item['sl']}|"
-        f"{item['tp1']}|"
-        f"{item['tp2']}|"
-        f"{now_text()}"
-    )
-
-    return hashlib.sha256(
-        raw.encode()
-    ).hexdigest()[:16]
-
-
-# ============================================================
-# ADD PAPER TRADES
-# ============================================================
-
-def paper_add(results):
-
-    if not PAPER_TRACKING:
-        return
-
-    state = load_state()
-
-    existing = {
-        item.get("symbol")
-        for item in state
-        if item.get("status") == "OPEN"
-    }
-
-    for item in results:
-
-        if item["symbol"] in existing:
-            continue
-
-        if not (
-            item["confirmed"]
-            or item["early"]
-        ):
-            continue
-
-        state.append(
-            {
-                "id": make_trade_id(item),
-
-                "symbol": item["symbol"],
-
-                "entry": item["price"],
-
-                "sl": item["sl"],
-
-                "tp1": item["tp1"],
-
-                "tp2": item["tp2"],
-
-                "opened_at": now_text(),
-
-                "status": "OPEN"
-            }
-        )
-
-        existing.add(
-            item["symbol"]
-        )
-
-    save_state(state)
-
-
-# ============================================================
-# PAPER STATISTICS
-# ============================================================
-
-def paper_stats():
-
-    state = load_state()
-
-    total = len(state)
-
-    tp = sum(
-        1
-        for item in state
-        if item.get("status") == "TP"
-    )
-
-    sl = sum(
-        1
-        for item in state
-        if item.get("status") == "SL"
-    )
-
-    open_count = sum(
-        1
-        for item in state
-        if item.get("status") == "OPEN"
-    )
-
-    return (
-        total,
-        tp,
-        sl,
-        open_count
-    )
-
-
-# ============================================================
-# MAIN
-# ============================================================
-
-def main():
-
-    startup_lines = [
-        f"⚡ ATI CRYPTO BOT {VERSION}",
-        "🚀 CLEAN EARLY ENTRY + CONFIRMED BREAKOUT",
-        "📡 TABDEAL API: CONNECTING...",
-        "📊 SCAN: STARTING",
-        "⏱ TIMEFRAME: 5m",
-        "🕯 CLOSED CANDLE: YES",
-    ]
-
-    if PAPER_TRACKING:
-
-        startup_lines.append(
-            "📊 PAPER TRACKING: ON"
-        )
-
-    else:
-
-        startup_lines.append(
-            "📊 PAPER TRACKING: OFF"
-        )
-
-    startup_lines.extend(
-        [
-            "🔧 REAL ORDERS: DISABLED",
-            f"🕐 {now_text()}"
-        ]
-    )
-
-    telegram(
-        "\n".join(
-            startup_lines
-        )
-    )
-
-    # ========================================================
-    # MARKET DISCOVERY
-    # ========================================================
-
-    markets = get_markets()
-
-    if not markets:
-
-        error_lines = [
-            f"⚠️ ATI BOT {VERSION}",
-            "❌ TABDEAL MARKET DATA ERROR",
-            "📡 No USDT markets found.",
-            "🔎 MARKET DISCOVERY FAILED",
-            f"🕐 {now_text()}"
-        ]
-
-        telegram(
-            "\n".join(
-                error_lines
-            )
-        )
-
-        return
-
-    # ========================================================
-    # SCAN
-    # ========================================================
-
-    results = scan(
-        markets
-    )
-
-    confirmed = [
-        item
-        for item in results
-        if item["confirmed"]
-    ][:TOP_CONFIRMED]
-
-    early = [
-        item
-        for item in results
-        if item["early"]
-        and not item["confirmed"]
-    ][:TOP_EARLY]
-
-    watch = [
-        item
-        for item in results
-        if item["watch"]
-        and not item["confirmed"]
-        and not item["early"]
-    ][:TOP_WATCH]
-
-    # ========================================================
-    # PAPER
-    # ========================================================
-
-    paper_add(
-        results
-    )
-
-    total, tp, sl, open_count = (
-        paper_stats()
-    )
-
-    # ========================================================
-    # TELEGRAM MESSAGE
-    # ========================================================
-
-    lines = [
-        f"⚡ ATI CRYPTO BOT {VERSION}",
-        "🚀 CLEAN EARLY ENTRY + CONFIRMED BREAKOUT",
-        "📡 TABDEAL API: OK",
-        f"📊 USDT MARKETS: {len(markets)}",
-        f"🕐 {now_text()}",
-        ""
-    ]
-
-    # --------------------------------------------------------
-    # CONFIRMED
-    # --------------------------------------------------------
-
-    if confirmed:
-
-        lines.append(
-            "🟢 CONFIRMED BUY"
-        )
-
-        for item in confirmed:
-
-            lines.append(
-                format_candidate(
-                    item,
-                    "BUY"
-                )
-            )
-
-            lines.append("")
-
-    else:
-
-        lines.append(
-            "🟢 CONFIRMED BUY"
-        )
-
-        lines.append(
-            "NONE"
-        )
-
-        lines.append("")
-
-    # --------------------------------------------------------
-    # EARLY
-    # --------------------------------------------------------
-
-    if early:
-
-        lines.append(
-            "⚡ EARLY ENTRY"
-        )
-
-        for item in early:
-
-            lines.append(
-                format_candidate(
-                    item,
-                    "BUY"
-                )
-            )
-
-            lines.append("")
-
-    else:
-
-        lines.append(
-            "⚡ EARLY ENTRY"
-        )
-
-        lines.append(
-            "NONE"
-        )
-
-        lines.append("")
-
-    # --------------------------------------------------------
-    # WATCH
-    # --------------------------------------------------------
-
-    if watch:
-
-        lines.append(
-            "🟡 WATCH"
-        )
-
-        for item in watch:
-
-            lines.append(
-                format_candidate(
-                    item,
-                    "WATCH"
-                )
-            )
-
-            lines.append("")
-
-    else:
-
-        lines.append(
-            "🟡 WATCH"
-        )
-
-        lines.append(
-            "NONE"
-        )
-
-        lines.append("")
-
-    # --------------------------------------------------------
-    # PAPER STATS
-    # --------------------------------------------------------
-
-    lines.append(
-        "📊 PAPER STATS"
-    )
-
-    lines.append(
-        f"Trades: {total} | "
-        f"TP: {tp} | "
-        f"SL: {sl} | "
-        f"OPEN: {open_count}"
-    )
-
-    lines.append(
-        "🔧 REAL ORDERS: DISABLED"
-    )
-
-    telegram(
-        "\n".join(lines)
-    )
-
-
-# ============================================================
-# START
-# ============================================================
-
-if __name__ == "__main__":
-    main()
+# QUICK RANKING
+#
+# This function is used to choose the automatic TOP 10.
+# It does NOT require
