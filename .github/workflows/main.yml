@@ -3,18 +3,23 @@ name: Run ATI Bot
 on:
   workflow_dispatch:
 
-# فقط یک اجرای ATI در هر لحظه
-# اگر اجرای قدیمی فعال باشد، با شروع اجرای جدید لغو می‌شود
+permissions:
+  contents: read
+
+# فقط یک اجرای ATI Bot در هر لحظه
 concurrency:
-  group: ati-crypto-bot
-  cancel-in-progress: true
+  group: ati-bot-single-run
+  cancel-in-progress: false
 
 jobs:
   run-bot:
+    name: ATI Crypto Bot
     runs-on: ubuntu-latest
 
+    timeout-minutes: 350
+
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Setup Python
@@ -22,20 +27,28 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install requirements
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install requests
 
       - name: Run ATI Bot
         env:
+          TABDEAL_API_KEY: ${{ secrets.TABDEAL_API_KEY }}
+          TABDEAL_API_SECRET: ${{ secrets.TABDEAL_API_SECRET }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          TABDEAL_API_KEY: ${{ secrets.TABDEAL_API_KEY }}
-          TABDIL_API_KEY: ${{ secrets.TABDIL_API_KEY }}
-          TABDIL_API_SECRET: ${{ secrets.TABDIL_API_SECRET }}
-          LIVE_TRADING: ${{ secrets.LIVE_TRADING }}
+          LIVE_TRADING: "false"
           ORDER_QTY: ${{ secrets.ORDER_QTY }}
-
+          PYTHONUNBUFFERED: "1"
         run: |
-          python main.py
+          echo "=========================================="
+          echo "       ATI CRYPTO BOT STARTING"
+          echo "=========================================="
+          echo "Telegram Heartbeat: 5 minutes"
+          echo "Continuous Mode: ON"
+          echo "Real Orders: DISABLED"
+          echo "Single Run Lock: ON"
+          echo "=========================================="
+
+          python -u main.py
