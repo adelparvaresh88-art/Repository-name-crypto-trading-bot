@@ -7,47 +7,34 @@ import requests
 
 
 # ============================================================
-# ATI CRYPTO BOT V40.2
+# ATI CRYPTO BOT V40.2.1
+# FIXED MARKET DISCOVERY
 # DATA RECOVERY + RATE LIMIT PROTECTION
-# CLEAN EARLY ENTRY + CONFIRMED BREAKOUT
 # ============================================================
 
-VERSION = "V40.2"
+VERSION = "V40.2.1"
 
 BASE_URL = "https://api1.tabdeal.org"
 
 TIMEFRAME = "5m"
 
-# ------------------------------------------------------------
-# SCAN SETTINGS
-# ------------------------------------------------------------
-
 MAX_MARKETS = 529
-
-# مهم:
-# قبلاً 12 درخواست همزمان باعث می‌شد تعداد زیادی از بازارها
-# بدون DATA باقی بمانند.
 MAX_WORKERS = 6
 
 TRADE_LIMIT = 1000
-
 REQUEST_TIMEOUT = 15
 
 SCAN_INTERVAL_SECONDS = 300
-
-# بین درخواست‌ها فاصله کوتاه برای کاهش Rate Limit
 REQUEST_DELAY = 0.08
-
 MAX_RETRIES = 4
 
 RECENT_MINUTES = 15
-
 TOP_RESULTS = 15
 
 
-# ------------------------------------------------------------
+# ============================================================
 # SIGNAL SETTINGS
-# ------------------------------------------------------------
+# ============================================================
 
 SL_PERCENT = 0.60
 TP1_PERCENT = 1.00
@@ -59,30 +46,32 @@ CONFIRMED_MIN_SCORE = 8
 EARLY_MIN_SCORE = 7
 
 MIN_BUY_PRESSURE_CONFIRMED = 58.0
-
 MIN_CANDLE_POSITION = 0.65
 
 
-# ------------------------------------------------------------
+# ============================================================
 # TELEGRAM
-# ------------------------------------------------------------
+# ============================================================
 
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+TELEGRAM_BOT_TOKEN = os.getenv(
+    "TELEGRAM_BOT_TOKEN",
+    ""
+).strip()
 
+TELEGRAM_CHAT_ID = os.getenv(
+    "TELEGRAM_CHAT_ID",
+    ""
+).strip()
 
-# ------------------------------------------------------------
-# HTTP SESSION
-# ------------------------------------------------------------
 
 HEADERS = {
-    "User-Agent": "ATI-Crypto-Bot/40.2",
+    "User-Agent": "ATI-Crypto-Bot/40.2.1",
     "Accept": "application/json",
 }
 
 
 # ============================================================
-# BASIC HELPERS
+# TIME
 # ============================================================
 
 def utc_now():
@@ -90,11 +79,19 @@ def utc_now():
 
 
 def utc_string():
-    return utc_now().strftime("%Y-%m-%d %H:%M:%S UTC")
+    return utc_now().strftime(
+        "%Y-%m-%d %H:%M:%S UTC"
+    )
 
+
+# ============================================================
+# SAFE FLOAT
+# ============================================================
 
 def safe_float(value, default=0.0):
+
     try:
+
         if value is None:
             return default
 
@@ -104,14 +101,26 @@ def safe_float(value, default=0.0):
         return float(value)
 
     except Exception:
+
         return default
 
 
+# ============================================================
+# NORMALIZE SYMBOL
+# ============================================================
+
 def clean_symbol(symbol):
+
     if not symbol:
         return ""
 
-    return str(symbol).upper().replace("/", "").replace("-", "")
+    return (
+        str(symbol)
+        .upper()
+        .replace("/", "")
+        .replace("-", "")
+        .replace("_", "")
+    )
 
 
 # ============================================================
@@ -119,12 +128,17 @@ def clean_symbol(symbol):
 # ============================================================
 
 def send_telegram(message):
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print("TELEGRAM CONFIG MISSING")
+
+    if not TELEGRAM_BOT_TOKEN:
+        print("TELEGRAM_BOT_TOKEN MISSING")
+        return False
+
+    if not TELEGRAM_CHAT_ID:
+        print("TELEGRAM_CHAT_ID MISSING")
         return False
 
     url = (
-        f"https://api.telegram.org/bot"
+        "https://api.telegram.org/bot"
         f"{TELEGRAM_BOT_TOKEN}/sendMessage"
     )
 
@@ -135,6 +149,7 @@ def send_telegram(message):
     }
 
     try:
+
         response = requests.post(
             url,
             json=payload,
@@ -151,14 +166,24 @@ def send_telegram(message):
         )
 
     except Exception as exc:
-        print("TELEGRAM EXCEPTION:", exc)
+
+        print(
+            "TELEGRAM EXCEPTION:",
+            exc,
+        )
 
     return False
 
 
-def send_long_telegram(message, chunk_size=3900):
+def send_long_telegram(
+    message,
+    chunk_size=3900,
+):
+
     if len(message) <= chunk_size:
+
         send_telegram(message)
+
         return
 
     parts = []
@@ -167,20 +192,27 @@ def send_long_telegram(message, chunk_size=3900):
 
     for line in message.splitlines(True):
 
-        if len(current) + len(line) > chunk_size:
+        if (
+            len(current) + len(line)
+            > chunk_size
+        ):
+
             if current:
                 parts.append(current)
 
             current = line
 
         else:
+
             current += line
 
     if current:
         parts.append(current)
 
     for part in parts:
+
         send_telegram(part)
+
         time.sleep(0.3)
 
 
@@ -188,7 +220,12 @@ def send_long_telegram(message, chunk_size=3900):
 # HTTP GET WITH RETRY
 # ============================================================
 
-def get_json(path, params=None, retries=MAX_RETRIES):
+def get_json(
+    path,
+    params=None,
+    retries=MAX_RETRIES,
+):
+
     url = BASE_URL + path
 
     last_error = None
@@ -196,7 +233,10 @@ def get_json(path, params=None, retries=MAX_RETRIES):
     for attempt in range(retries):
 
         try:
-            time.sleep(REQUEST_DELAY)
+
+            time.sleep(
+                REQUEST_DELAY
+            )
 
             response = requests.get(
                 url,
@@ -214,10 +254,14 @@ def get_json(path, params=None, retries=MAX_RETRIES):
             if status == 200:
 
                 try:
+
                     return response.json()
 
                 except Exception as exc:
-                    last_error = f"JSON ERROR: {exc}"
+
+                    last_error = (
+                        f"JSON ERROR: {exc}"
+                    )
 
             # ------------------------------------------------
             # RATE LIMIT
@@ -231,12 +275,14 @@ def get_json(path, params=None, retries=MAX_RETRIES):
                 )
 
                 print(
-                    f"RATE LIMIT 429 | "
+                    "RATE LIMIT 429 | "
                     f"attempt={attempt + 1} | "
                     f"wait={wait_seconds}s"
                 )
 
-                time.sleep(wait_seconds)
+                time.sleep(
+                    wait_seconds
+                )
 
                 last_error = "HTTP 429"
 
@@ -256,9 +302,13 @@ def get_json(path, params=None, retries=MAX_RETRIES):
                     f"attempt={attempt + 1}"
                 )
 
-                time.sleep(wait_seconds)
+                time.sleep(
+                    wait_seconds
+                )
 
-                last_error = f"HTTP {status}"
+                last_error = (
+                    f"HTTP {status}"
+                )
 
             # ------------------------------------------------
             # OTHER ERROR
@@ -268,11 +318,9 @@ def get_json(path, params=None, retries=MAX_RETRIES):
 
                 last_error = (
                     f"HTTP {status}: "
-                    f"{response.text[:200]}"
+                    f"{response.text[:300]}"
                 )
 
-                # برای 4xxهای غیر از 429
-                # Retry بی‌فایده است.
                 break
 
         except requests.RequestException as exc:
@@ -284,7 +332,9 @@ def get_json(path, params=None, retries=MAX_RETRIES):
                 6.0,
             )
 
-            time.sleep(wait_seconds)
+            time.sleep(
+                wait_seconds
+            )
 
         except Exception as exc:
 
@@ -292,11 +342,16 @@ def get_json(path, params=None, retries=MAX_RETRIES):
 
             time.sleep(1)
 
+    print(
+        f"GET FAILED {path}: "
+        f"{last_error}"
+    )
+
     return None
 
 
 # ============================================================
-# TABDEAL PING
+# TABDEAL API TEST
 # ============================================================
 
 def ping_tabdeal():
@@ -314,14 +369,14 @@ def ping_tabdeal():
 
 
 # ============================================================
-# EXTRACT SYMBOLS
+# MARKET SYMBOL EXTRACTION
 # ============================================================
 
-def extract_symbols(data):
+def extract_exchange_symbols(data):
 
     symbols = []
 
-    def add_item(item):
+    def add_symbol(item):
 
         if isinstance(item, str):
 
@@ -335,35 +390,66 @@ def extract_symbols(data):
         if not isinstance(item, dict):
             return
 
-        possible_keys = [
+        symbol_value = None
+
+        for key in [
             "symbol",
             "market",
             "pair",
+            "instrument",
             "code",
             "name",
-        ]
+        ]:
 
-        for key in possible_keys:
+            if item.get(key):
 
-            value = item.get(key)
+                symbol_value = item.get(key)
 
-            if value:
+                break
 
-                symbol = clean_symbol(value)
+        if not symbol_value:
+            return
 
-                if symbol:
-                    symbols.append(symbol)
+        symbol = clean_symbol(
+            symbol_value
+        )
 
-                return
+        if not symbol:
+            return
+
+        # ----------------------------------------------------
+        # MARKET STATUS
+        # ----------------------------------------------------
+
+        status = str(
+            item.get(
+                "status",
+                ""
+            )
+        ).upper()
+
+        allowed_status = {
+            "",
+            "TRADING",
+            "ACTIVE",
+            "ENABLED",
+            "1",
+        }
+
+        if status not in allowed_status:
+            return
+
+        symbols.append(symbol)
 
     # --------------------------------------------------------
-    # LIST
+    # TOP LEVEL LIST
     # --------------------------------------------------------
 
     if isinstance(data, list):
 
         for item in data:
-            add_item(item)
+
+            add_symbol(item)
 
     # --------------------------------------------------------
     # DICT
@@ -371,94 +457,116 @@ def extract_symbols(data):
 
     elif isinstance(data, dict):
 
-        for key in [
+        containers = [
+            "symbols",
             "data",
             "result",
             "markets",
-            "symbols",
             "items",
-        ]:
+        ]
+
+        for key in containers:
 
             value = data.get(key)
 
             if isinstance(value, list):
 
                 for item in value:
-                    add_item(item)
 
-                if symbols:
-                    break
+                    add_symbol(item)
 
-        # اگر خود دیکشنری یک بازار باشد
-        if not symbols:
-            add_item(data)
+            elif isinstance(value, dict):
 
-    return list(dict.fromkeys(symbols))
+                # بعضی پاسخ‌ها:
+                # {"symbols": {"data": [...]}}
+                for subkey in [
+                    "symbols",
+                    "data",
+                    "result",
+                    "markets",
+                    "items",
+                ]:
+
+                    subvalue = value.get(
+                        subkey
+                    )
+
+                    if isinstance(
+                        subvalue,
+                        list,
+                    ):
+
+                        for item in subvalue:
+
+                            add_symbol(item)
+
+        # اگر خود dict یک market باشد
+        add_symbol(data)
+
+    return list(
+        dict.fromkeys(symbols)
+    )
 
 
 # ============================================================
-# GET MARKET LIST
+# GET USDT MARKETS
 # ============================================================
 
 def get_usdt_markets():
 
-    candidate_paths = [
-        "/r/api/v1/markets",
-        "/r/api/v1/tickers",
-        "/r/api/v1/market",
-    ]
-
-    for path in candidate_paths:
-
-        data = get_json(
-            path,
-            retries=3,
-        )
-
-        if data is None:
-            continue
-
-        symbols = extract_symbols(data)
-
-        usdt = []
-
-        for symbol in symbols:
-
-            if symbol.endswith("USDT"):
-
-                usdt.append(symbol)
-
-        if usdt:
-
-            # حذف تکراری
-            usdt = list(dict.fromkeys(usdt))
-
-            return usdt[:MAX_MARKETS]
-
-    # --------------------------------------------------------
-    # FALLBACK
-    # --------------------------------------------------------
+    # ========================================================
+    # مهم‌ترین اصلاح V40.2.1
     #
-    # اگر endpoint بازارها تغییر کرده باشد، سعی می‌کنیم
-    # از endpoint اصلی موجود در نسخه‌های قبلی استفاده کنیم.
-    # --------------------------------------------------------
+    # این همان endpoint سالم نسخه‌های قبلی است
+    # که 529 بازار USDT برمی‌گرداند.
+    # ========================================================
 
-    fallback = get_json(
-        "/r/api/v1/trades",
-        params={
-            "limit": 1000,
-        },
-        retries=3,
+    data = get_json(
+        "/r/api/v1/exchangeInfo",
+        retries=4,
     )
 
-    symbols = extract_symbols(fallback)
+    if data is None:
 
-    usdt = [
-        s for s in symbols
-        if s.endswith("USDT")
+        print(
+            "EXCHANGE INFO REQUEST FAILED"
+        )
+
+        return []
+
+    symbols = extract_exchange_symbols(
+        data
+    )
+
+    usdt_markets = []
+
+    for symbol in symbols:
+
+        if symbol.endswith("USDT"):
+
+            usdt_markets.append(
+                symbol
+            )
+
+    usdt_markets = list(
+        dict.fromkeys(
+            usdt_markets
+        )
+    )
+
+    print(
+        f"EXCHANGE INFO SYMBOLS: "
+        f"{len(symbols)}"
+    )
+
+    print(
+        f"USDT MARKETS FOUND: "
+        f"{len(usdt_markets)}"
+    )
+
+    return usdt_markets[
+        :MAX_MARKETS
     ]
-
-    return list(dict.fromkeys(usdt))[:MAX_MARKETS]
 
 
 # ============================================================
@@ -467,16 +575,9 @@ def get_usdt_markets():
 
 def extract_trades(data):
 
-    # --------------------------------------------------------
-    # مستقیم LIST
-    # --------------------------------------------------------
-
     if isinstance(data, list):
-        return data
 
-    # --------------------------------------------------------
-    # DICT
-    # --------------------------------------------------------
+        return data
 
     if isinstance(data, dict):
 
@@ -490,12 +591,17 @@ def extract_trades(data):
             value = data.get(key)
 
             if isinstance(value, list):
+
                 return value
 
-        # بعضی APIها ممکن است result خودش dict باشد
-        result = data.get("result")
+        result = data.get(
+            "result"
+        )
 
-        if isinstance(result, dict):
+        if isinstance(
+            result,
+            dict,
+        ):
 
             for key in [
                 "data",
@@ -503,9 +609,15 @@ def extract_trades(data):
                 "items",
             ]:
 
-                value = result.get(key)
+                value = result.get(
+                    key
+                )
 
-                if isinstance(value, list):
+                if isinstance(
+                    value,
+                    list,
+                ):
+
                     return value
 
     return []
@@ -525,10 +637,7 @@ def normalize_trade(item):
     timestamp = None
     side = ""
 
-    # --------------------------------------------------------
     # PRICE
-    # --------------------------------------------------------
-
     for key in [
         "price",
         "p",
@@ -537,15 +646,14 @@ def normalize_trade(item):
 
         if key in item:
 
-            price = safe_float(item.get(key))
+            price = safe_float(
+                item.get(key)
+            )
 
             if price > 0:
                 break
 
-    # --------------------------------------------------------
     # QUANTITY
-    # --------------------------------------------------------
-
     for key in [
         "quantity",
         "qty",
@@ -556,15 +664,14 @@ def normalize_trade(item):
 
         if key in item:
 
-            quantity = safe_float(item.get(key))
+            quantity = safe_float(
+                item.get(key)
+            )
 
             if quantity > 0:
                 break
 
-    # --------------------------------------------------------
-    # TIME
-    # --------------------------------------------------------
-
+    # TIMESTAMP
     for key in [
         "timestamp",
         "time",
@@ -575,15 +682,14 @@ def normalize_trade(item):
 
         if key in item:
 
-            timestamp = item.get(key)
+            timestamp = item.get(
+                key
+            )
 
             if timestamp is not None:
                 break
 
-    # --------------------------------------------------------
     # SIDE
-    # --------------------------------------------------------
-
     for key in [
         "side",
         "S",
@@ -592,7 +698,9 @@ def normalize_trade(item):
 
         if key in item:
 
-            side = str(item.get(key)).lower()
+            side = str(
+                item.get(key)
+            ).lower()
 
             if side:
                 break
@@ -614,10 +722,6 @@ def normalize_trade(item):
 
 def get_symbol_trades(symbol):
 
-    # --------------------------------------------------------
-    # مسیر اصلی Tabdeal که در نسخه‌های قبلی کار کرده
-    # --------------------------------------------------------
-
     data = get_json(
         "/r/api/v1/trades",
         params={
@@ -629,16 +733,23 @@ def get_symbol_trades(symbol):
     if data is None:
         return []
 
-    raw_trades = extract_trades(data)
+    raw_trades = extract_trades(
+        data
+    )
 
     normalized = []
 
     for item in raw_trades:
 
-        trade = normalize_trade(item)
+        trade = normalize_trade(
+            item
+        )
 
         if trade:
-            normalized.append(trade)
+
+            normalized.append(
+                trade
+            )
 
     return normalized
 
@@ -654,11 +765,13 @@ def build_5m_candles(trades):
 
     prepared = []
 
-    now_ms = int(time.time() * 1000)
+    now_ms = int(
+        time.time() * 1000
+    )
 
-    # فقط داده اخیر
-    min_time_ms = now_ms - (
-        RECENT_MINUTES * 60 * 1000
+    min_time_ms = (
+        now_ms
+        - RECENT_MINUTES * 60 * 1000
     )
 
     for trade in trades:
@@ -672,14 +785,12 @@ def build_5m_candles(trades):
             0.0,
         )
 
-        timestamp = trade.get("timestamp")
+        timestamp = trade.get(
+            "timestamp"
+        )
 
         if price <= 0:
             continue
-
-        # ----------------------------------------------------
-        # TIMESTAMP NORMALIZATION
-        # ----------------------------------------------------
 
         ts = safe_float(
             timestamp,
@@ -689,7 +800,7 @@ def build_5m_candles(trades):
         if ts <= 0:
             continue
 
-        # ثانیه یا میلی‌ثانیه
+        # seconds -> milliseconds
         if ts < 10000000000:
             ts *= 1000
 
@@ -701,7 +812,10 @@ def build_5m_candles(trades):
                 int(ts),
                 price,
                 quantity,
-                trade.get("side", ""),
+                trade.get(
+                    "side",
+                    ""
+                ),
             )
         )
 
@@ -714,11 +828,21 @@ def build_5m_candles(trades):
 
     candles = {}
 
-    for ts, price, qty, side in prepared:
+    for (
+        ts,
+        price,
+        qty,
+        side,
+    ) in prepared:
 
         bucket = (
-            ts // (5 * 60 * 1000)
-        ) * (5 * 60 * 1000)
+            ts
+            // (
+                5 * 60 * 1000
+            )
+        ) * (
+            5 * 60 * 1000
+        )
 
         if bucket not in candles:
 
@@ -734,7 +858,9 @@ def build_5m_candles(trades):
                 "trades": 0,
             }
 
-        candle = candles[bucket]
+        candle = candles[
+            bucket
+        ]
 
         candle["high"] = max(
             candle["high"],
@@ -752,10 +878,6 @@ def build_5m_candles(trades):
 
         candle["trades"] += 1
 
-        # ----------------------------------------------------
-        # SIDE
-        # ----------------------------------------------------
-
         side_lower = str(
             side or ""
         ).lower()
@@ -766,7 +888,9 @@ def build_5m_candles(trades):
             "b",
         ]:
 
-            candle["buy_volume"] += qty
+            candle[
+                "buy_volume"
+            ] += qty
 
         elif side_lower in [
             "sell",
@@ -774,12 +898,16 @@ def build_5m_candles(trades):
             "s",
         ]:
 
-            candle["sell_volume"] += qty
+            candle[
+                "sell_volume"
+            ] += qty
 
     return list(
         sorted(
             candles.values(),
-            key=lambda x: x["timestamp"],
+            key=lambda x: x[
+                "timestamp"
+            ],
         )
     )
 
@@ -788,7 +916,9 @@ def build_5m_candles(trades):
 # BUY PRESSURE
 # ============================================================
 
-def calculate_buy_pressure(candles):
+def calculate_buy_pressure(
+    candles
+):
 
     if not candles:
         return 0.0
@@ -801,11 +931,15 @@ def calculate_buy_pressure(candles):
     for candle in recent:
 
         buy += safe_float(
-            candle.get("buy_volume")
+            candle.get(
+                "buy_volume"
+            )
         )
 
         sell += safe_float(
-            candle.get("sell_volume")
+            candle.get(
+                "sell_volume"
+            )
         )
 
     total = buy + sell
@@ -841,25 +975,27 @@ def analyze_market(symbol):
             return None
 
         current = candles[-1]
-
         previous = candles[-2]
 
         close = safe_float(
             current["close"]
         )
 
-        if close <= 0:
-            return None
-
         previous_close = safe_float(
             previous["close"]
         )
+
+        if close <= 0:
+            return None
 
         if previous_close <= 0:
             return None
 
         change_5m = (
-            (close - previous_close)
+            (
+                close
+                - previous_close
+            )
             / previous_close
         ) * 100.0
 
@@ -871,12 +1007,16 @@ def analyze_market(symbol):
             current["low"]
         )
 
-        candle_range = high - low
+        candle_range = (
+            high - low
+        )
 
         if candle_range <= 0:
+
             candle_position = 0.5
 
         else:
+
             candle_position = (
                 close - low
             ) / candle_range
@@ -892,17 +1032,23 @@ def analyze_market(symbol):
         # ----------------------------------------------------
 
         lookback = candles[
-            max(0, len(candles) - 6):-1
+            max(
+                0,
+                len(candles) - 6,
+            ):-1
         ]
 
         if lookback:
 
             previous_high = max(
-                safe_float(c["high"])
-                for c in lookback
+                safe_float(
+                    candle["high"]
+                )
+                for candle in lookback
             )
 
         else:
+
             previous_high = high
 
         breakout = (
@@ -917,7 +1063,6 @@ def analyze_market(symbol):
 
         reasons = []
 
-        # 5M MOMENTUM
         if change_5m >= 0.15:
 
             score += 1
@@ -926,7 +1071,6 @@ def analyze_market(symbol):
                 "5M MOMENTUM"
             )
 
-        # BUY PRESSURE
         if buy_pressure >= 58:
 
             score += 1
@@ -935,7 +1079,6 @@ def analyze_market(symbol):
                 "BUY PRESSURE"
             )
 
-        # STRONG CLOSE
         if candle_position >= 0.65:
 
             score += 1
@@ -944,7 +1087,6 @@ def analyze_market(symbol):
                 "STRONG CLOSE"
             )
 
-        # BREAKOUT
         if breakout:
 
             score += 1
@@ -953,7 +1095,6 @@ def analyze_market(symbol):
                 "BREAKOUT"
             )
 
-        # EARLY MOMENTUM
         if (
             change_5m >= 0.10
             and buy_pressure >= 55
@@ -965,7 +1106,6 @@ def analyze_market(symbol):
                 "EARLY MOMENTUM"
             )
 
-        # BUYING
         if buy_pressure >= 70:
 
             score += 1
@@ -978,7 +1118,9 @@ def analyze_market(symbol):
         # ANTI CHASE
         # ----------------------------------------------------
 
-        if change_5m >= CHASE_LIMIT_5M:
+        if change_5m >= (
+            CHASE_LIMIT_5M
+        ):
 
             return None
 
@@ -989,9 +1131,12 @@ def analyze_market(symbol):
         confirmed = (
             breakout
             and change_5m > 0
-            and buy_pressure >= MIN_BUY_PRESSURE_CONFIRMED
-            and candle_position >= MIN_CANDLE_POSITION
-            and score >= CONFIRMED_MIN_SCORE
+            and buy_pressure
+            >= MIN_BUY_PRESSURE_CONFIRMED
+            and candle_position
+            >= MIN_CANDLE_POSITION
+            and score
+            >= CONFIRMED_MIN_SCORE
         )
 
         # ----------------------------------------------------
@@ -1023,18 +1168,31 @@ def analyze_market(symbol):
             or early
             or watch
         ):
+
             return None
 
-        sl = close * (
-            1 - SL_PERCENT / 100
+        sl = (
+            close
+            * (
+                1
+                - SL_PERCENT / 100
+            )
         )
 
-        tp1 = close * (
-            1 + TP1_PERCENT / 100
+        tp1 = (
+            close
+            * (
+                1
+                + TP1_PERCENT / 100
+            )
         )
 
-        tp2 = close * (
-            1 + TP2_PERCENT / 100
+        tp2 = (
+            close
+            * (
+                1
+                + TP2_PERCENT / 100
+            )
         )
 
         return {
@@ -1056,7 +1214,8 @@ def analyze_market(symbol):
     except Exception as exc:
 
         print(
-            f"ANALYZE ERROR {symbol}: {exc}"
+            f"ANALYZE ERROR "
+            f"{symbol}: {exc}"
         )
 
         return None
@@ -1068,65 +1227,49 @@ def analyze_market(symbol):
 
 def format_result(result):
 
-    symbol = result["symbol"]
-
-    price = result["price"]
-
-    change = result["change_5m"]
-
-    score = result["score"]
-
-    pressure = result["buy_pressure"]
-
-    sl = result["sl"]
-
-    tp1 = result["tp1"]
-
-    tp2 = result["tp2"]
-
-    reasons = " + ".join(
-        result["reasons"]
-    )
-
     return (
-        f"🟢 {symbol}\n"
-        f"💰 Price: {price:.10g}\n"
-        f"📈 5M: {change:+.2f}%\n"
-        f"🎯 Score: {score}\n"
-        f"🟢 Buy Pressure: {pressure:.0f}%\n"
+        f"🟢 {result['symbol']}\n"
+        f"💰 Price: "
+        f"{result['price']:.10g}\n"
+        f"📈 5M: "
+        f"{result['change_5m']:+.2f}%\n"
+        f"🎯 Score: "
+        f"{result['score']}\n"
+        f"🟢 Buy Pressure: "
+        f"{result['buy_pressure']:.0f}%\n"
         f"🚀 Breakout: "
         f"{'YES' if result['breakout'] else 'NO'}\n"
-        f"🛡 SL: {sl:.10g}\n"
-        f"🎯 TP1: {tp1:.10g}\n"
-        f"🎯 TP2: {tp2:.10g}\n"
-        f"🔎 {reasons}"
+        f"🛡 SL: "
+        f"{result['sl']:.10g}\n"
+        f"🎯 TP1: "
+        f"{result['tp1']:.10g}\n"
+        f"🎯 TP2: "
+        f"{result['tp2']:.10g}\n"
+        f"🔎 "
+        f"{' + '.join(result['reasons'])}"
     )
 
 
 # ============================================================
-# SCAN ONE MARKET
-# ============================================================
-
-def scan_one(symbol):
-    return analyze_market(symbol)
-
-
-# ============================================================
-# SCAN ALL MARKETS
+# RUN SCAN
 # ============================================================
 
 def run_scan():
 
     print(
-        "ATI V40.2 SCAN START"
+        "ATI V40.2.1 SCAN START"
     )
+
+    # --------------------------------------------------------
+    # API
+    # --------------------------------------------------------
 
     if not ping_tabdeal():
 
         send_telegram(
-            "⚠️ ATI BOT V40.2\n\n"
+            "⚠️ ATI BOT V40.2.1\n\n"
             "❌ TABDEAL API ERROR\n"
-            "Retrying on next scan."
+            "🔄 RETRYING NEXT SCAN"
         )
 
         return {
@@ -1136,15 +1279,21 @@ def run_scan():
             "early": 0,
             "watch": 0,
         }
+
+    # --------------------------------------------------------
+    # MARKETS
+    # --------------------------------------------------------
 
     markets = get_usdt_markets()
 
     if not markets:
 
         send_telegram(
-            "⚠️ ATI BOT V40.2\n\n"
-            "❌ NO USDT MARKETS FOUND\n"
-            "Retrying on next scan."
+            "⚠️ ATI BOT V40.2.1\n\n"
+            "❌ NO USDT MARKETS FOUND\n\n"
+            "Endpoint:\n"
+            "/r/api/v1/exchangeInfo\n\n"
+            "🔄 RETRYING NEXT SCAN"
         )
 
         return {
@@ -1155,20 +1304,22 @@ def run_scan():
             "watch": 0,
         }
 
-    markets = markets[:MAX_MARKETS]
+    markets = markets[
+        :MAX_MARKETS
+    ]
 
     print(
-        f"MARKETS: {len(markets)}"
+        f"USDT MARKETS: "
+        f"{len(markets)}"
     )
+
+    # --------------------------------------------------------
+    # PARALLEL SCAN
+    # --------------------------------------------------------
 
     results = []
 
     data_count = 0
-
-    # --------------------------------------------------------
-    # IMPORTANT:
-    # فقط 6 درخواست همزمان
-    # --------------------------------------------------------
 
     with ThreadPoolExecutor(
         max_workers=MAX_WORKERS
@@ -1176,8 +1327,8 @@ def run_scan():
 
         futures = {
             executor.submit(
-                scan_one,
-                symbol
+                analyze_market,
+                symbol,
             ): symbol
             for symbol in markets
         }
@@ -1186,7 +1337,9 @@ def run_scan():
             futures
         ):
 
-            symbol = futures[future]
+            symbol = futures[
+                future
+            ]
 
             try:
 
@@ -1203,9 +1356,13 @@ def run_scan():
             except Exception as exc:
 
                 print(
-                    f"SCAN ERROR {symbol}: "
-                    f"{exc}"
+                    f"SCAN ERROR "
+                    f"{symbol}: {exc}"
                 )
+
+    # --------------------------------------------------------
+    # GROUP
+    # --------------------------------------------------------
 
     confirmed = [
         r for r in results
@@ -1222,30 +1379,30 @@ def run_scan():
         if r["watch"]
     ]
 
-    confirmed.sort(
-        key=lambda x: (
+    # --------------------------------------------------------
+    # SORT
+    # --------------------------------------------------------
+
+    sort_key = (
+        lambda x: (
             x["score"],
             x["buy_pressure"],
             x["change_5m"],
-        ),
+        )
+    )
+
+    confirmed.sort(
+        key=sort_key,
         reverse=True,
     )
 
     early.sort(
-        key=lambda x: (
-            x["score"],
-            x["buy_pressure"],
-            x["change_5m"],
-        ),
+        key=sort_key,
         reverse=True,
     )
 
     watch.sort(
-        key=lambda x: (
-            x["score"],
-            x["buy_pressure"],
-            x["change_5m"],
-        ),
+        key=sort_key,
         reverse=True,
     )
 
@@ -1262,22 +1419,29 @@ def run_scan():
     ]
 
     # --------------------------------------------------------
-    # TELEGRAM MESSAGE
+    # MESSAGE
     # --------------------------------------------------------
 
     message = (
         f"⚡ ATI CRYPTO BOT {VERSION}\n"
-        f"🚀 CLEAN EARLY ENTRY + CONFIRMED BREAKOUT\n"
-        f"🛡 ANTI-FAKE BREAKOUT\n"
-        f"🚫 ANTI-CHASE\n\n"
-        f"📡 TABDEAL API: OK\n"
-        f"📊 USDT MARKETS: {len(markets)}\n"
-        f"🎯 MARKETS WITH DATA: {data_count}\n"
-        f"⏱ TIMEFRAME: 5m\n"
-        f"🕯 RECENT 5M DATA: YES\n"
-        f"💓 HEARTBEAT: ON\n"
-        f"🔧 REAL ORDERS: DISABLED\n"
+        "🚀 CLEAN EARLY ENTRY + "
+        "CONFIRMED BREAKOUT\n"
+        "🛡 ANTI-FAKE BREAKOUT\n"
+        "🚫 ANTI-CHASE\n\n"
+        "📡 TABDEAL API: OK\n"
+        f"📊 USDT MARKETS: "
+        f"{len(markets)}\n"
+        f"🎯 MARKETS WITH DATA: "
+        f"{data_count}\n"
+        "⏱ TIMEFRAME: 5m\n"
+        "🕯 RECENT 5M DATA: YES\n"
+        "💓 HEARTBEAT: ON\n"
+        "🔧 REAL ORDERS: DISABLED\n"
     )
+
+    # --------------------------------------------------------
+    # CONFIRMED
+    # --------------------------------------------------------
 
     message += (
         "\n━━━━━━━━━━━━━━━━━━\n"
@@ -1299,6 +1463,10 @@ def run_scan():
 
         message += "NONE\n"
 
+    # --------------------------------------------------------
+    # EARLY
+    # --------------------------------------------------------
+
     message += (
         "━━━━━━━━━━━━━━━━━━\n"
         "⚡ EARLY ENTRY\n"
@@ -1318,6 +1486,10 @@ def run_scan():
     else:
 
         message += "NONE\n"
+
+    # --------------------------------------------------------
+    # WATCH
+    # --------------------------------------------------------
 
     message += (
         "━━━━━━━━━━━━━━━━━━\n"
@@ -1339,26 +1511,27 @@ def run_scan():
 
         message += "NONE\n"
 
+    # --------------------------------------------------------
+    # SUMMARY
+    # --------------------------------------------------------
+
     message += (
         "\n━━━━━━━━━━━━━━━━━━\n"
         "📊 SCAN SUMMARY\n"
         "━━━━━━━━━━━━━━━━━━\n"
-        f"🟢 Confirmed: {len(confirmed)}\n"
-        f"⚡ Early: {len(early)}\n"
-        f"🟡 Watch: {len(watch)}\n\n"
-        "🔄 NEXT SCAN: ABOUT 5 MINUTES\n\n"
+        f"🟢 Confirmed: "
+        f"{len(confirmed)}\n"
+        f"⚡ Early: "
+        f"{len(early)}\n"
+        f"🟡 Watch: "
+        f"{len(watch)}\n\n"
+        "🔄 NEXT SCAN: "
+        "ABOUT 5 MINUTES\n\n"
         f"🕐 {utc_string()}"
     )
 
     send_long_telegram(
         message
-    )
-
-    print(
-        f"DATA={data_count} "
-        f"CONFIRMED={len(confirmed)} "
-        f"EARLY={len(early)} "
-        f"WATCH={len(watch)}"
     )
 
     return {
@@ -1381,8 +1554,10 @@ def send_heartbeat(stats):
         f"⚡ VERSION: {VERSION}\n"
         "📡 STATUS: ALIVE\n"
         "⏱ TIMEFRAME: 5m\n"
-        f"📊 MARKETS: {stats.get('markets', 0)}\n"
-        f"📊 DATA: {stats.get('data', 0)}\n"
+        f"📊 MARKETS: "
+        f"{stats.get('markets', 0)}\n"
+        f"📊 DATA: "
+        f"{stats.get('data', 0)}\n"
         f"🟢 CONFIRMED: "
         f"{stats.get('confirmed', 0)}\n"
         f"⚡ EARLY: "
@@ -1390,7 +1565,8 @@ def send_heartbeat(stats):
         f"🟡 WATCH: "
         f"{stats.get('watch', 0)}\n"
         "🔧 REAL ORDERS: DISABLED\n\n"
-        "🔄 NEXT SCAN: ABOUT 5 MINUTES\n"
+        "🔄 NEXT SCAN: "
+        "ABOUT 5 MINUTES\n"
         f"🕐 {utc_string()}"
     )
 
@@ -1400,7 +1576,7 @@ def send_heartbeat(stats):
 
 
 # ============================================================
-# FOREVER LOOP
+# CONTINUOUS LOOP
 # ============================================================
 
 def run_forever():
@@ -1429,10 +1605,6 @@ def run_forever():
 
             stats = run_scan()
 
-            # ------------------------------------------------
-            # HEARTBEAT
-            # ------------------------------------------------
-
             send_heartbeat(
                 stats
             )
@@ -1451,10 +1623,6 @@ def run_forever():
                 "🔄 BOT WILL RETRY"
             )
 
-        # ----------------------------------------------------
-        # دقیقاً حدود 5 دقیقه بین شروع اسکن‌ها
-        # ----------------------------------------------------
-
         elapsed = (
             time.time()
             - scan_start
@@ -1467,7 +1635,7 @@ def run_forever():
         )
 
         print(
-            f"NEXT SCAN IN "
+            "NEXT SCAN IN "
             f"{wait_seconds} SECONDS"
         )
 
