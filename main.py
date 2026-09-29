@@ -7,20 +7,21 @@ import requests
 
 
 # ============================================================
-# ATI CRYPTO BOT V40.2.5
-# OPPORTUNITY ENGINE
+# ATI CRYPTO BOT V40.2.6
+# OPPORTUNITY ENGINE - EARLY ENTRY REFINEMENT
 # ============================================================
 
-VERSION = "V40.2.5"
+VERSION = "V40.2.6"
 
 BASE_URL = "https://api1.tabdeal.org"
-
 TIMEFRAME = "5m"
 
-TRADE_LIMIT = 1000
+# ---------------- CONFIG ----------------
+
 MAX_MARKETS = 529
 MAX_WORKERS = 6
 
+TRADE_LIMIT = 1000
 REQUEST_TIMEOUT = 15
 MAX_RETRIES = 4
 REQUEST_DELAY = 0.08
@@ -28,87 +29,77 @@ REQUEST_DELAY = 0.08
 SCAN_INTERVAL_SECONDS = 300
 
 MIN_CANDLES_FOR_SIGNAL = 12
+BREAKOUT_LOOKBACK = 12
 
-# ------------------------------------------------------------
-# MARKET MOVEMENT
-# ------------------------------------------------------------
-
+# Movement
 MIN_5M_CHANGE = 0.10
 MAX_5M_CHANGE = 7.0
 
-# ------------------------------------------------------------
-# PRESSURE
-# ------------------------------------------------------------
-
+# Pressure
 MIN_BUY_PRESSURE = 58.0
 STRONG_BUY_PRESSURE = 65.0
+
 EARLY_BUY_PRESSURE = 62.0
 WATCH_BUY_PRESSURE = 55.0
 
 PRESSURE_TRADES = 80
 
-# ------------------------------------------------------------
-# STRUCTURE
-# ------------------------------------------------------------
-
-BREAKOUT_LOOKBACK = 12
-
-# Early entry can be close to resistance
-EARLY_RESISTANCE_DISTANCE = 0.45
-
-# Watch can be slightly farther away
+# Resistance distance
+EARLY_RESISTANCE_DISTANCE = 0.30
 WATCH_RESISTANCE_DISTANCE = 0.90
 
-# ------------------------------------------------------------
-# CANDLE QUALITY
-# ------------------------------------------------------------
-
+# Candle quality
 MIN_BODY_RATIO = 0.25
 MIN_CANDLE_POSITION = 0.60
 
-# ------------------------------------------------------------
-# SCORES
-# ------------------------------------------------------------
-
+# Scores
 CONFIRMED_SCORE = 8
 EARLY_SCORE = 7
 WATCH_SCORE = 5
 
-# ------------------------------------------------------------
-# RISK LEVELS
-# ------------------------------------------------------------
-
+# Risk levels
 SL_PERCENT = 0.60
 TP1_PERCENT = 1.00
 TP2_PERCENT = 1.60
 
-# Avoid chasing a very extended 5m candle
 MAX_CANDLE_EXTENSION = 2.50
 
-# ------------------------------------------------------------
-# REAL TRADING
-# ------------------------------------------------------------
-
+# Safety
 REAL_ORDERS = False
-
 
 # ============================================================
 # TELEGRAM
 # ============================================================
 
-TELEGRAM_BOT_TOKEN = os.getenv(
-    "TELEGRAM_BOT_TOKEN",
-    ""
-)
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
-TELEGRAM_CHAT_ID = os.getenv(
-    "TELEGRAM_CHAT_ID",
-    ""
-)
+
+def send_telegram(message):
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        return False
+
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": message,
+        "disable_web_page_preview": True,
+    }
+
+    try:
+        r = requests.post(
+            url,
+            json=payload,
+            timeout=15,
+        )
+        return r.ok
+    except Exception:
+        return False
 
 
 # ============================================================
-# STATS
+# GLOBAL STATS
 # ============================================================
 
 LAST_STATS = {
@@ -118,225 +109,94 @@ LAST_STATS = {
     "markets_with_data": 0,
     "insufficient": 0,
     "unknown_pressure": 0,
-    "candles": 0,
-    "confirmed": 0,
-    "early": 0,
-    "watch": 0,
-    "rejected": 0,
+    "total_candles": 0,
 }
 
 
 # ============================================================
-# HELPERS
+# HTTP
 # ============================================================
 
-def utc_now():
-    return datetime.now(timezone.utc)
+SESSION = requests.Session()
+
+SESSION.headers.update(
+    {
+        "User-Agent": "ATI-Crypto-Bot/40.2.6",
+        "Accept": "application/json",
+    }
+)
 
 
-def now_text():
-    return utc_now().strftime(
-        "%Y-%m-%d %H:%M:%S UTC"
-    )
+def get_json(path, params=None):
+
+    url = BASE_URL + path
+
+    for attempt in range(MAX_RETRIES):
+
+        try:
+            response = SESSION.get(
+                url,
+                params=params,
+                timeout=REQUEST_TIMEOUT,
+            )
+
+            if response.status_code == 429:
+                time.sleep(1.5 * (attempt + 1))
+                continue
+
+            if response.status_code >= 500:
+                time.sleep(1.0 * (attempt + 1))
+                continue
+
+            if response.status_code != 200:
+                return None
+
+            return response.json()
+
+        except Exception:
+
+            if attempt < MAX_RETRIES - 1:
+                time.sleep(0.8 * (attempt + 1))
+
+    return None
 
 
-def safe_float(value):
-    try:
-        if value is None:
-            return None
-        return float(value)
-    except Exception:
-        return None
-
+# ============================================================
+# NORMALIZATION
+# ============================================================
 
 def normalize_symbol(value):
+
     if value is None:
         return ""
 
     s = str(value).upper().strip()
 
-    for char in ["-", "_", "/", ":", " "]:
+    for char in ["-", "_", "/", " "]:
         s = s.replace(char, "")
 
     return s
 
 
 # ============================================================
-# TELEGRAM
+# EXCHANGE INFO
 # ============================================================
-
-def send_telegram(message):
-
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print(message)
-        return False
-
-    url = (
-        "https://api.telegram.org/bot"
-        f"{TELEGRAM_BOT_TOKEN}/sendMessage"
-    )
-
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": message,
-        "disable_web_page_preview": True,
-    }
-
-    try:
-
-        response = requests.post(
-            url,
-            json=payload,
-            timeout=REQUEST_TIMEOUT,
-        )
-
-        if response.ok:
-            return True
-
-        print(
-            "Telegram error:",
-            response.status_code,
-            response.text[:300],
-        )
-
-        return False
-
-    except Exception as e:
-
-        print(
-            "Telegram exception:",
-            e
-        )
-
-        return False
-
-
-# ============================================================
-# API
-# ============================================================
-
-def get_json(path, params=None):
-
-    url = BASE_URL + path
-
-    for attempt in range(
-        1,
-        MAX_RETRIES + 1
-    ):
-
-        try:
-
-            response = requests.get(
-                url,
-                params=params,
-                timeout=REQUEST_TIMEOUT,
-            )
-
-            if response.status_code == 200:
-
-                try:
-                    return response.json()
-                except Exception:
-                    return None
-
-            if response.status_code in (
-                429,
-                500,
-                502,
-                503,
-                504,
-            ):
-
-                time.sleep(
-                    min(2 * attempt, 8)
-                )
-
-                continue
-
-            print(
-                f"API ERROR "
-                f"{response.status_code}: "
-                f"{response.text[:200]}"
-            )
-
-            return None
-
-        except requests.RequestException as e:
-
-            if attempt >= MAX_RETRIES:
-                print(
-                    "REQUEST ERROR:",
-                    e
-                )
-                return None
-
-            time.sleep(
-                min(2 * attempt, 8)
-            )
-
-        except Exception as e:
-
-            print(
-                "JSON ERROR:",
-                e
-            )
-
-            return None
-
-    return None
-
-
-# ============================================================
-# MARKET DISCOVERY
-# ============================================================
-
-def find_symbol_objects(obj):
-
-    found = []
-
-    if isinstance(obj, dict):
-
-        keys = {
-            str(k).lower()
-            for k in obj.keys()
-        }
-
-        symbol_keys = {
-            "symbol",
-            "pair",
-            "market",
-            "instrument",
-            "code",
-            "name",
-        }
-
-        if keys.intersection(
-            symbol_keys
-        ):
-            found.append(obj)
-
-        for value in obj.values():
-
-            found.extend(
-                find_symbol_objects(value)
-            )
-
-    elif isinstance(obj, list):
-
-        for item in obj:
-
-            found.extend(
-                find_symbol_objects(item)
-            )
-
-    return found
-
 
 def extract_exchange_symbols(data):
 
-    symbols = set()
+    result = []
 
-    for item in find_symbol_objects(data):
+    def walk(obj):
+
+        if isinstance(obj, list):
+
+            for item in obj:
+                walk(item)
+
+            return
+
+        if not isinstance(obj, dict):
+            return
 
         symbol = None
 
@@ -348,50 +208,34 @@ def extract_exchange_symbols(data):
             "code",
             "name",
         ]:
-
-            if key in item:
-
-                symbol = item.get(key)
-
+            if key in obj:
+                symbol = obj.get(key)
                 if symbol:
                     break
 
-        normalized = normalize_symbol(
-            symbol
-        )
+        if symbol:
 
-        if not normalized.endswith("USDT"):
-            continue
+            normalized = normalize_symbol(symbol)
 
-        status = ""
+            if normalized.endswith("USDT"):
+                result.append(normalized)
 
         for key in [
-            "status",
-            "state",
-            "active",
-            "enabled",
+            "data",
+            "result",
+            "markets",
+            "symbols",
+            "instruments",
+            "items",
+            "rows",
         ]:
 
-            if key in item:
+            if key in obj:
+                walk(obj[key])
 
-                status = str(
-                    item.get(key)
-                ).upper()
+    walk(data)
 
-                break
-
-        if status in {
-            "",
-            "TRADING",
-            "ACTIVE",
-            "ENABLED",
-            "1",
-            "TRUE",
-        }:
-
-            symbols.add(normalized)
-
-    return sorted(symbols)
+    return list(dict.fromkeys(result))
 
 
 def get_usdt_markets():
@@ -403,15 +247,13 @@ def get_usdt_markets():
     if data is None:
         return []
 
-    symbols = extract_exchange_symbols(
-        data
-    )
+    symbols = extract_exchange_symbols(data)
 
     return symbols[:MAX_MARKETS]
 
 
 # ============================================================
-# TRADE PARSER
+# TRADE EXTRACTION
 # ============================================================
 
 def extract_trade_list(data):
@@ -428,7 +270,6 @@ def extract_trade_list(data):
         "trades",
         "items",
         "rows",
-        "list",
     ]:
 
         value = data.get(key)
@@ -438,43 +279,24 @@ def extract_trade_list(data):
 
         if isinstance(value, dict):
 
-            for nested_key in [
+            for subkey in [
                 "data",
-                "result",
                 "trades",
                 "items",
                 "rows",
-                "list",
             ]:
 
-                nested = value.get(
-                    nested_key
-                )
+                subvalue = value.get(subkey)
 
-                if isinstance(
-                    nested,
-                    list
-                ):
-                    return nested
+                if isinstance(subvalue, list):
+                    return subvalue
 
-    def recursive(obj):
+    return []
 
-        if isinstance(obj, list):
-            return obj
 
-        if isinstance(obj, dict):
-
-            for value in obj.values():
-
-                result = recursive(value)
-
-                if result:
-                    return result
-
-        return []
-
-    return recursive(data)
-
+# ============================================================
+# TIMESTAMP
+# ============================================================
 
 def normalize_timestamp(value):
 
@@ -483,20 +305,25 @@ def normalize_timestamp(value):
 
     try:
         ts = float(value)
+
+        if ts > 1e18:
+            ts /= 1e9
+
+        elif ts > 1e15:
+            ts /= 1e6
+
+        elif ts > 1e12:
+            ts /= 1e3
+
+        return ts
+
     except Exception:
         return None
 
-    if ts < 10_000_000_000:
-        return ts
 
-    if ts < 10_000_000_000_000:
-        return ts / 1000.0
-
-    if ts < 10_000_000_000_000_000:
-        return ts / 1_000_000.0
-
-    return ts / 1_000_000_000.0
-
+# ============================================================
+# TRADE PARSER
+# ============================================================
 
 def parse_trade(item):
 
@@ -504,65 +331,47 @@ def parse_trade(item):
         return None
 
     price = None
-    qty = None
+    quantity = None
     timestamp = None
     buyer_maker = None
 
-    # PRICE
+    # Price
     for key in [
         "price",
         "p",
-        "rate",
-        "px",
+        "Price",
     ]:
 
         if key in item:
+            price = item.get(key)
+            break
 
-            price = safe_float(
-                item.get(key)
-            )
-
-            if price is not None:
-                break
-
-    # QUANTITY
+    # Quantity
     for key in [
         "qty",
         "quantity",
         "q",
-        "amount",
-        "volume",
+        "Qty",
     ]:
 
         if key in item:
+            quantity = item.get(key)
+            break
 
-            qty = safe_float(
-                item.get(key)
-            )
-
-            if qty is not None:
-                break
-
-    # TIME
+    # Timestamp
     for key in [
         "time",
         "timestamp",
         "transactTime",
         "T",
-        "ts",
-        "createdAt",
+        "Time",
     ]:
 
         if key in item:
+            timestamp = item.get(key)
+            break
 
-            timestamp = normalize_timestamp(
-                item.get(key)
-            )
-
-            if timestamp is not None:
-                break
-
-    # BUYER MAKER
+    # Buyer maker
     for key in [
         "isBuyerMaker",
         "buyerMaker",
@@ -570,64 +379,57 @@ def parse_trade(item):
         "is_buyer_maker",
     ]:
 
-        if key not in item:
-            continue
-
-        value = item.get(key)
-
-        if isinstance(value, bool):
-
-            buyer_maker = value
+        if key in item:
+            buyer_maker = item.get(key)
             break
 
-        if isinstance(value, int):
+    try:
 
-            buyer_maker = bool(value)
-            break
+        price = float(price)
+        quantity = float(quantity)
 
-        if isinstance(value, str):
-
-            value = value.strip().lower()
-
-            if value in {
-                "true",
-                "1",
-                "yes",
-            }:
-
-                buyer_maker = True
-                break
-
-            if value in {
-                "false",
-                "0",
-                "no",
-            }:
-
-                buyer_maker = False
-                break
-
-    if price is None or qty is None:
+    except Exception:
         return None
 
-    if price <= 0 or qty <= 0:
-        return None
+    timestamp = normalize_timestamp(timestamp)
+
+    if timestamp is None:
+        timestamp = time.time()
+
+    if isinstance(buyer_maker, str):
+
+        x = buyer_maker.strip().lower()
+
+        if x in ["true", "1", "yes"]:
+            buyer_maker = True
+
+        elif x in ["false", "0", "no"]:
+            buyer_maker = False
+
+        else:
+            buyer_maker = None
+
+    elif isinstance(buyer_maker, (int, float, bool)):
+
+        buyer_maker = bool(buyer_maker)
+
+    else:
+
+        buyer_maker = None
 
     return {
         "price": price,
-        "qty": qty,
-        "timestamp": timestamp,
+        "qty": quantity,
+        "time": timestamp,
         "buyer_maker": buyer_maker,
     }
 
 
 # ============================================================
-# MARKET TRADES
+# GET TRADES
 # ============================================================
 
 def get_symbol_trades(symbol):
-
-    LAST_STATS["requested"] += 1
 
     data = get_json(
         "/r/api/v1/trades",
@@ -637,218 +439,138 @@ def get_symbol_trades(symbol):
         },
     )
 
-    raw = extract_trade_list(data)
+    trades = extract_trade_list(data)
 
-    if not raw:
-
-        fallback_symbol = (
-            symbol[:-4] + "_USDT"
-            if symbol.endswith("USDT")
-            else symbol
-        )
+    if not trades:
 
         data = get_json(
             "/r/api/v1/trades",
             {
-                "tabdealSymbol":
-                    fallback_symbol,
-                "limit":
-                    TRADE_LIMIT,
+                "tabdealSymbol": symbol.replace(
+                    "USDT",
+                    "_USDT"
+                ),
+                "limit": TRADE_LIMIT,
             },
         )
 
-        raw = extract_trade_list(data)
-
-    if not raw:
-        return []
-
-    LAST_STATS["responses"] += 1
+        trades = extract_trade_list(data)
 
     parsed = []
 
-    for item in raw:
+    for item in trades:
 
         trade = parse_trade(item)
 
-        if trade is not None:
+        if trade:
             parsed.append(trade)
-
-    LAST_STATS[
-        "valid_trades"
-    ] += len(parsed)
 
     return parsed
 
 
 # ============================================================
-# CANDLES
+# BUILD 5M CANDLES
 # ============================================================
-
-def candle_bucket(timestamp):
-
-    if timestamp is None:
-        return None
-
-    return int(
-        timestamp // 300
-    ) * 300
-
 
 def build_candles(trades):
 
-    timed = [
-        t for t in trades
-        if t.get("timestamp") is not None
-    ]
-
-    if not timed:
-        return []
-
-    timed.sort(
-        key=lambda x:
-        x["timestamp"]
-    )
-
     buckets = {}
 
-    for trade in timed:
+    for trade in trades:
 
-        bucket = candle_bucket(
-            trade["timestamp"]
-        )
+        ts = trade["time"]
 
-        if bucket is None:
-            continue
-
-        price = trade["price"]
-        qty = trade["qty"]
+        bucket = int(ts // 300) * 300
 
         if bucket not in buckets:
 
             buckets[bucket] = {
-                "timestamp": bucket,
-                "open": price,
-                "high": price,
-                "low": price,
-                "close": price,
-                "volume": qty,
+                "time": bucket,
+                "open": trade["price"],
+                "high": trade["price"],
+                "low": trade["price"],
+                "close": trade["price"],
+                "volume": 0.0,
             }
 
-        else:
+        candle = buckets[bucket]
 
-            candle = buckets[bucket]
+        price = trade["price"]
+        qty = trade["qty"]
 
-            candle["high"] = max(
-                candle["high"],
-                price,
-            )
+        candle["high"] = max(
+            candle["high"],
+            price,
+        )
 
-            candle["low"] = min(
-                candle["low"],
-                price,
-            )
+        candle["low"] = min(
+            candle["low"],
+            price,
+        )
 
-            candle["close"] = price
+        candle["close"] = price
 
-            candle["volume"] += qty
+        candle["volume"] += qty
 
-    candles = list(
-        buckets.values()
+    candles = sorted(
+        buckets.values(),
+        key=lambda x: x["time"],
     )
 
-    candles.sort(
-        key=lambda x:
-        x["timestamp"]
-    )
+    # Only CLOSED candles
+    now_bucket = int(time.time() // 300) * 300
+
+    candles = [
+        c for c in candles
+        if c["time"] < now_bucket
+    ]
 
     return candles
 
 
 # ============================================================
-# PRESSURE ENGINE
+# BUY PRESSURE
 # ============================================================
 
 def calculate_buy_pressure(trades):
 
     valid = [
         t for t in trades
-        if t.get("buyer_maker")
-        is not None
+        if t["buyer_maker"] is not None
     ]
 
     if len(valid) < 10:
         return None
 
-    recent = valid[
-        -PRESSURE_TRADES:
-    ]
+    valid = valid[-PRESSURE_TRADES:]
 
     buy_volume = 0.0
     sell_volume = 0.0
 
-    for trade in recent:
+    for trade in valid:
 
-        value = (
-            trade["price"]
-            *
+        volume = (
+            trade["price"] *
             trade["qty"]
         )
 
-        # buyer_maker False = aggressive BUY
+        # buyer_maker = False means
+        # aggressive buyer
         if trade["buyer_maker"] is False:
+            buy_volume += volume
 
-            buy_volume += value
+        else:
+            sell_volume += volume
 
-        # buyer_maker True = aggressive SELL
-        elif trade["buyer_maker"] is True:
-
-            sell_volume += value
-
-    total = (
-        buy_volume +
-        sell_volume
-    )
+    total = buy_volume + sell_volume
 
     if total <= 0:
         return None
 
     return (
         buy_volume /
-        total
-    ) * 100.0
-
-
-# ============================================================
-# CANDLE QUALITY
-# ============================================================
-
-def candle_metrics(candle):
-
-    high = candle["high"]
-    low = candle["low"]
-    open_price = candle["open"]
-    close = candle["close"]
-
-    rng = high - low
-
-    if rng <= 0:
-        return 0.0, 0.0
-
-    body = abs(
-        close - open_price
-    )
-
-    body_ratio = (
-        body / rng
-    )
-
-    position = (
-        close - low
-    ) / rng
-
-    return (
-        body_ratio,
-        position,
+        total *
+        100.0
     )
 
 
@@ -858,68 +580,46 @@ def candle_metrics(candle):
 
 def structure_info(candles):
 
-    previous = candles[
-        -BREAKOUT_LOOKBACK - 1:-1
-    ]
+    if len(candles) < BREAKOUT_LOOKBACK + 1:
+        return None
 
     current = candles[-1]
 
-    if len(previous) < 5:
-
-        return {
-            "resistance": None,
-            "breakout": False,
-            "distance": None,
-            "rising": False,
-        }
+    previous = candles[
+        -(BREAKOUT_LOOKBACK + 1):-1
+    ]
 
     resistance = max(
         c["high"]
         for c in previous
     )
 
-    price = current["close"]
+    close = current["close"]
 
-    if resistance <= 0:
+    breakout = close > resistance
 
-        return {
-            "resistance": None,
-            "breakout": False,
-            "distance": None,
-            "rising": False,
-        }
+    if resistance > 0:
 
-    distance = (
-        (resistance - price)
-        / resistance
-    ) * 100.0
+        distance = (
+            (resistance - close)
+            / resistance
+            * 100
+        )
 
-    breakout = (
-        price > resistance
-    )
+    else:
 
-    closes = [
-        c["close"]
-        for c in candles[-6:]
-    ]
+        distance = 999.0
+
+    recent = candles[-6:]
 
     rising_count = 0
 
-    for i in range(
-        1,
-        len(closes)
-    ):
+    for i in range(1, len(recent)):
 
-        if (
-            closes[i]
-            >
-            closes[i - 1]
-        ):
+        if recent[i]["close"] > recent[i - 1]["close"]:
             rising_count += 1
 
-    rising = (
-        rising_count >= 3
-    )
+    rising = rising_count >= 3
 
     return {
         "resistance": resistance,
@@ -930,21 +630,110 @@ def structure_info(candles):
 
 
 # ============================================================
-# OPPORTUNITY ENGINE
+# CANDLE QUALITY
 # ============================================================
 
-def analyze_market(symbol, trades):
+def candle_quality(candle):
+
+    high = candle["high"]
+    low = candle["low"]
+    open_price = candle["open"]
+    close = candle["close"]
+
+    candle_range = high - low
+
+    if candle_range <= 0:
+        return 0.0, 0.0
+
+    body = abs(close - open_price)
+
+    body_ratio = (
+        body /
+        candle_range
+    )
+
+    position = (
+        (close - low) /
+        candle_range
+    )
+
+    return body_ratio, position
+
+
+# ============================================================
+# SCORE
+# MAX SCORE = 11
+# ============================================================
+
+def calculate_score(
+    change_5m,
+    pressure,
+    breakout,
+    body_ratio,
+    candle_position,
+    rising,
+):
+
+    score = 0
+
+    # 1-2: movement
+    if change_5m >= MIN_5M_CHANGE:
+        score += 2
+
+    if change_5m <= MAX_5M_CHANGE:
+        score += 1
+
+    # 3-4: pressure
+    if pressure is not None:
+
+        if pressure >= MIN_BUY_PRESSURE:
+            score += 2
+
+        if pressure >= STRONG_BUY_PRESSURE:
+            score += 1
+
+    # 5-6: breakout
+    if breakout:
+        score += 2
+
+    # 7: candle body
+    if body_ratio >= MIN_BODY_RATIO:
+        score += 1
+
+    # 8: candle position
+    if candle_position >= MIN_CANDLE_POSITION:
+        score += 1
+
+    # 9: structure
+    if rising:
+        score += 1
+
+    # Total = 11
+    #
+    # movement       3
+    # pressure       3
+    # breakout       2
+    # body           1
+    # position       1
+    # rising         1
+    #
+    # MAX = 11
+
+    return score
+
+
+# ============================================================
+# ANALYZE MARKET
+# ============================================================
+
+def analyze_market(symbol):
+
+    trades = get_symbol_trades(symbol)
 
     if not trades:
+        return None
 
-        return {
-            "symbol": symbol,
-            "status": "NO DATA",
-        }
-
-    candles = build_candles(
-        trades
-    )
+    candles = build_candles(trades)
 
     if len(candles) < MIN_CANDLES_FOR_SIGNAL:
 
@@ -954,26 +743,7 @@ def analyze_market(symbol, trades):
             "candles": len(candles),
         }
 
-    current = candles[-1]
-    previous = candles[-2]
-
-    price = current["close"]
-
-    if previous["close"] <= 0:
-        return None
-
-    change_5m = (
-        (
-            price -
-            previous["close"]
-        )
-        /
-        previous["close"]
-    ) * 100.0
-
-    pressure = calculate_buy_pressure(
-        trades
-    )
+    pressure = calculate_buy_pressure(trades)
 
     if pressure is None:
 
@@ -983,271 +753,151 @@ def analyze_market(symbol, trades):
             "candles": len(candles),
         }
 
-    body_ratio, position = (
-        candle_metrics(current)
+    current = candles[-1]
+
+    previous = candles[-2]
+
+    price = current["close"]
+
+    previous_close = previous["close"]
+
+    if previous_close <= 0:
+        return None
+
+    change_5m = (
+        (price - previous_close)
+        / previous_close
+        * 100
     )
 
-    structure = structure_info(
-        candles
+    structure = structure_info(candles)
+
+    if structure is None:
+        return None
+
+    body_ratio, candle_position = candle_quality(
+        current
     )
 
-    resistance = structure[
-        "resistance"
-    ]
+    breakout = structure["breakout"]
+    distance = structure["distance"]
+    rising = structure["rising"]
 
-    breakout = structure[
-        "breakout"
-    ]
+    score = calculate_score(
+        change_5m,
+        pressure,
+        breakout,
+        body_ratio,
+        candle_position,
+        rising,
+    )
 
-    rising = structure[
-        "rising"
-    ]
-
-    # --------------------------------------------------------
-    # Distance from resistance
-    # --------------------------------------------------------
-
-    if resistance and resistance > 0:
-
-        distance = (
-            (
-                resistance -
-                price
-            )
-            /
-            resistance
-        ) * 100.0
-
-    else:
-
-        distance = None
-
-    # --------------------------------------------------------
-    # Extension
-    # --------------------------------------------------------
-
+    # Too extended
     too_extended = (
         change_5m >
         MAX_CANDLE_EXTENSION
     )
 
-    # --------------------------------------------------------
-    # SCORE
-    # --------------------------------------------------------
+    signal = "NONE"
 
-    score = 0
-
-    # Momentum
-    if change_5m >= MIN_5M_CHANGE:
-        score += 2
-
-    if change_5m <= MAX_5M_CHANGE:
-        score += 1
-
-    # Pressure
-    if pressure >= MIN_BUY_PRESSURE:
-        score += 2
-
-    if pressure >= STRONG_BUY_PRESSURE:
-        score += 1
-
-    # Breakout
-    if breakout:
-        score += 2
-
-    # Candle quality
-    if body_ratio >= MIN_BODY_RATIO:
-        score += 1
-
-    if position >= MIN_CANDLE_POSITION:
-        score += 1
-
-    # Structure
-    if rising:
-        score += 1
-
-    # --------------------------------------------------------
+    # ========================================================
     # CONFIRMED BUY
-    #
-    # Must have real breakout.
-    # --------------------------------------------------------
+    # ========================================================
 
     confirmed = (
         breakout
-        and
-        pressure >= MIN_BUY_PRESSURE
-        and
-        change_5m >= MIN_5M_CHANGE
-        and
-        change_5m <= MAX_5M_CHANGE
-        and
-        body_ratio >= MIN_BODY_RATIO
-        and
-        position >= MIN_CANDLE_POSITION
-        and
-        rising
-        and
-        score >= CONFIRMED_SCORE
-        and
-        not too_extended
-    )
-
-    # --------------------------------------------------------
-    # EARLY BUY
-    #
-    # Not broken yet, but close to resistance.
-    # --------------------------------------------------------
-
-    near_resistance = (
-        distance is not None
-        and
-        distance >= 0
-        and
-        distance <=
-        EARLY_RESISTANCE_DISTANCE
-    )
-
-    early = (
-        not breakout
-        and
-        near_resistance
-        and
-        pressure >= EARLY_BUY_PRESSURE
-        and
-        change_5m >= MIN_5M_CHANGE
-        and
-        change_5m <= MAX_5M_CHANGE
-        and
-        body_ratio >= MIN_BODY_RATIO
-        and
-        position >= MIN_CANDLE_POSITION
-        and
-        rising
-        and
-        score >= EARLY_SCORE
-        and
-        not too_extended
-    )
-
-    # --------------------------------------------------------
-    # WATCH
-    #
-    # Earlier stage.
-    # --------------------------------------------------------
-
-    watch_near = (
-        distance is not None
-        and
-        distance >= 0
-        and
-        distance <=
-        WATCH_RESISTANCE_DISTANCE
-    )
-
-    watch = (
-        not breakout
-        and
-        watch_near
-        and
-        pressure >= WATCH_BUY_PRESSURE
-        and
-        change_5m >= MIN_5M_CHANGE
-        and
-        change_5m <= MAX_5M_CHANGE
-        and
-        rising
-        and
-        score >= WATCH_SCORE
-        and
-        not too_extended
+        and pressure >= MIN_BUY_PRESSURE
+        and MIN_5M_CHANGE <= change_5m <= MAX_5M_CHANGE
+        and body_ratio >= MIN_BODY_RATIO
+        and candle_position >= MIN_CANDLE_POSITION
+        and rising
+        and score >= CONFIRMED_SCORE
+        and not too_extended
     )
 
     if confirmed:
 
-        status = "CONFIRMED BUY"
-
-    elif early:
-
-        status = "EARLY BUY"
-
-    elif watch:
-
-        status = "WATCH"
+        signal = "CONFIRMED BUY"
 
     else:
 
-        status = "REJECTED"
+        # ====================================================
+        # EARLY BUY
+        #
+        # Main refinement:
+        # distance <= 0.30%
+        # pressure >= 62%
+        # score >= 7
+        #
+        # Still NOT broken out.
+        # ====================================================
 
-    # --------------------------------------------------------
-    # SL / TP
-    # --------------------------------------------------------
+        early = (
+            not breakout
+            and 0.0 <= distance <= EARLY_RESISTANCE_DISTANCE
+            and pressure >= EARLY_BUY_PRESSURE
+            and MIN_5M_CHANGE <= change_5m <= MAX_5M_CHANGE
+            and body_ratio >= MIN_BODY_RATIO
+            and candle_position >= MIN_CANDLE_POSITION
+            and rising
+            and score >= EARLY_SCORE
+            and not too_extended
+        )
 
+        if early:
+
+            signal = "EARLY BUY"
+
+        else:
+
+            # =================================================
+            # WATCH
+            # =================================================
+
+            watch = (
+                not breakout
+                and 0.0 <= distance <= WATCH_RESISTANCE_DISTANCE
+                and pressure >= WATCH_BUY_PRESSURE
+                and MIN_5M_CHANGE <= change_5m <= MAX_5M_CHANGE
+                and rising
+                and score >= WATCH_SCORE
+                and not too_extended
+            )
+
+            if watch:
+                signal = "WATCH"
+
+    # Risk levels
     sl = price * (
-        1 -
-        SL_PERCENT / 100
+        1 - SL_PERCENT / 100
     )
 
     tp1 = price * (
-        1 +
-        TP1_PERCENT / 100
+        1 + TP1_PERCENT / 100
     )
 
     tp2 = price * (
-        1 +
-        TP2_PERCENT / 100
+        1 + TP2_PERCENT / 100
     )
 
     return {
         "symbol": symbol,
-        "status": status,
+        "status": "OK",
+        "signal": signal,
         "price": price,
         "change_5m": change_5m,
-        "score": score,
-        "buy_pressure": pressure,
-        "breakout": breakout,
-        "candles": len(candles),
-        "body_ratio": body_ratio,
-        "candle_position": position,
-        "rising": rising,
-        "resistance": resistance,
+        "pressure": pressure,
         "distance": distance,
+        "score": score,
+        "breakout": breakout,
+        "body_ratio": body_ratio,
+        "candle_position": candle_position,
+        "rising": rising,
+        "candles": len(candles),
         "sl": sl,
         "tp1": tp1,
         "tp2": tp2,
     }
-
-
-# ============================================================
-# WORKER
-# ============================================================
-
-def process_market(symbol):
-
-    try:
-
-        time.sleep(
-            REQUEST_DELAY
-        )
-
-        trades = get_symbol_trades(
-            symbol
-        )
-
-        if not trades:
-            return None
-
-        return analyze_market(
-            symbol,
-            trades
-        )
-
-    except Exception as e:
-
-        print(
-            f"{symbol} ERROR: {e}"
-        )
-
-        return None
 
 
 # ============================================================
@@ -1256,33 +906,19 @@ def process_market(symbol):
 
 def run_scan():
 
-    global LAST_STATS
-
-    LAST_STATS = {
-        "requested": 0,
-        "responses": 0,
-        "valid_trades": 0,
-        "markets_with_data": 0,
-        "insufficient": 0,
-        "unknown_pressure": 0,
-        "candles": 0,
-        "confirmed": 0,
-        "early": 0,
-        "watch": 0,
-        "rejected": 0,
-    }
+    for key in LAST_STATS:
+        LAST_STATS[key] = 0
 
     markets = get_usdt_markets()
 
     if not markets:
+        return {
+            "confirmed": [],
+            "early": [],
+            "watch": [],
+        }
 
-        send_telegram(
-            f"⚠️ ATI BOT {VERSION}\n"
-            f"❌ NO USDT MARKETS FOUND\n"
-            f"🕐 {now_text()}"
-        )
-
-        return
+    LAST_STATS["requested"] = len(markets)
 
     results = []
 
@@ -1292,133 +928,164 @@ def run_scan():
 
         futures = {
             executor.submit(
-                process_market,
+                analyze_market,
                 symbol,
             ): symbol
             for symbol in markets
         }
 
-        for future in as_completed(
-            futures
-        ):
+        for future in as_completed(futures):
 
             try:
 
                 result = future.result()
 
-                if result is None:
+                LAST_STATS["responses"] += 1
+
+                if not result:
                     continue
 
-                status = result.get(
-                    "status"
-                )
+                status = result.get("status")
 
                 if status == "INSUFFICIENT DATA":
 
-                    LAST_STATS[
-                        "insufficient"
-                    ] += 1
-
+                    LAST_STATS["insufficient"] += 1
                     continue
 
                 if status == "UNKNOWN PRESSURE":
 
-                    LAST_STATS[
-                        "unknown_pressure"
-                    ] += 1
-
+                    LAST_STATS["unknown_pressure"] += 1
                     continue
 
-                if status == "NO DATA":
+                if status != "OK":
                     continue
 
-                candles = result.get(
+                LAST_STATS["valid_trades"] += 1
+
+                LAST_STATS["markets_with_data"] += 1
+
+                LAST_STATS["total_candles"] += result.get(
                     "candles",
-                    0,
+                    0
                 )
 
-                if candles > 0:
-
-                    LAST_STATS[
-                        "markets_with_data"
-                    ] += 1
-
-                    LAST_STATS[
-                        "candles"
-                    ] += candles
-
-                if status == "CONFIRMED BUY":
-
-                    LAST_STATS[
-                        "confirmed"
-                    ] += 1
-
+                if result.get("signal") != "NONE":
                     results.append(result)
 
-                elif status == "EARLY BUY":
+            except Exception:
+                continue
 
-                    LAST_STATS[
-                        "early"
-                    ] += 1
+    confirmed = [
+        x for x in results
+        if x["signal"] == "CONFIRMED BUY"
+    ]
 
-                    results.append(result)
+    early = [
+        x for x in results
+        if x["signal"] == "EARLY BUY"
+    ]
 
-                elif status == "WATCH":
+    watch = [
+        x for x in results
+        if x["signal"] == "WATCH"
+    ]
 
-                    LAST_STATS[
-                        "watch"
-                    ] += 1
-
-                    results.append(result)
-
-                else:
-
-                    LAST_STATS[
-                        "rejected"
-                    ] += 1
-
-            except Exception as e:
-
-                print(
-                    "FUTURE ERROR:",
-                    e
-                )
-
-    # --------------------------------------------------------
-    # SORT
-    # --------------------------------------------------------
-
-    priority = {
-        "CONFIRMED BUY": 3,
-        "EARLY BUY": 2,
-        "WATCH": 1,
-    }
-
-    results.sort(
+    confirmed.sort(
         key=lambda x: (
-            priority.get(
-                x["status"],
-                0,
-            ),
-            x.get(
-                "score",
-                0,
-            ),
-            x.get(
-                "buy_pressure",
-                0,
-            ),
-            x.get(
-                "change_5m",
-                0,
-            ),
+            x["score"],
+            x["pressure"],
+            x["change_5m"],
         ),
         reverse=True,
     )
 
-    # --------------------------------------------------------
-    # MESSAGE
-    # --------------------------------------------------------
+    early.sort(
+        key=lambda x: (
+            x["score"],
+            x["pressure"],
+            -x["distance"],
+        ),
+        reverse=True,
+    )
+
+    watch.sort(
+        key=lambda x: (
+            x["score"],
+            x["pressure"],
+            -x["distance"],
+        ),
+        reverse=True,
+    )
+
+    return {
+        "confirmed": confirmed[:10],
+        "early": early[:10],
+        "watch": watch[:10],
+    }
+
+
+# ============================================================
+# FORMAT SIGNAL
+# ============================================================
+
+def format_signal(item, icon):
+
+    symbol = item["symbol"]
+
+    price = item["price"]
+
+    change = item["change_5m"]
+
+    pressure = item["pressure"]
+
+    score = item["score"]
+
+    breakout = (
+        "YES"
+        if item["breakout"]
+        else "NO"
+    )
+
+    message = (
+        f"{icon} {symbol}\n"
+        f"💰 PRICE: {price:.8g}\n"
+        f"📈 5m: {change:+.2f}%\n"
+        f"💚 BUY PRESSURE: {pressure:.1f}%\n"
+    )
+
+    if not item["breakout"]:
+
+        message += (
+            f"📏 RESISTANCE DIST: "
+            f"{item['distance']:.2f}%\n"
+        )
+
+    message += (
+        f"🎯 SCORE: {score}/11\n"
+        f"🚀 BREAKOUT: {breakout}\n"
+    )
+
+    if item["signal"] == "CONFIRMED BUY":
+
+        message += (
+            f"🕯 CANDLES: {item['candles']}\n"
+            f"🛡 SL: {item['sl']:.8g}\n"
+            f"🎯 TP1: {item['tp1']:.8g}\n"
+            f"🎯 TP2: {item['tp2']:.8g}\n"
+        )
+
+    return message
+
+
+# ============================================================
+# SCAN MESSAGE
+# ============================================================
+
+def build_scan_message(scan):
+
+    confirmed = scan["confirmed"]
+    early = scan["early"]
+    watch = scan["watch"]
 
     lines = []
 
@@ -1438,7 +1105,7 @@ def run_scan():
 
     lines.append(
         f"📊 USDT MARKETS: "
-        f"{len(markets)}"
+        f"{len(get_usdt_markets())}"
     )
 
     lines.append(
@@ -1473,7 +1140,7 @@ def run_scan():
 
     lines.append(
         f"🕯 TOTAL CANDLES: "
-        f"{LAST_STATS['candles']}"
+        f"{LAST_STATS['total_candles']}"
     )
 
     lines.append(
@@ -1483,216 +1150,67 @@ def run_scan():
 
     lines.append("")
 
-    # ========================================================
     # CONFIRMED
-    # ========================================================
+    lines.append("🟢 CONFIRMED BUY")
 
-    lines.append(
-        "🟢 CONFIRMED BUY"
-    )
+    if confirmed:
 
-    confirmed = [
-        r for r in results
-        if r["status"] ==
-        "CONFIRMED BUY"
-    ]
+        lines.append("")
 
-    if not confirmed:
-
-        lines.append("NONE")
+        for item in confirmed:
+            lines.append(
+                format_signal(
+                    item,
+                    "🟢",
+                )
+            )
+            lines.append("")
 
     else:
+        lines.append("NONE")
 
-        for r in confirmed[:8]:
+    lines.append("")
 
-            lines.append("")
-            lines.append(
-                f"🟢 {r['symbol']}"
-            )
-
-            lines.append(
-                f"💰 PRICE: "
-                f"{r['price']:.10g}"
-            )
-
-            lines.append(
-                f"📈 5m: "
-                f"{r['change_5m']:+.2f}%"
-            )
-
-            lines.append(
-                f"🎯 SCORE: "
-                f"{r['score']}/12"
-            )
-
-            lines.append(
-                f"💚 BUY PRESSURE: "
-                f"{r['buy_pressure']:.1f}%"
-            )
-
-            lines.append(
-                "🚀 BREAKOUT: YES"
-            )
-
-            lines.append(
-                f"🕯 CANDLES: "
-                f"{r['candles']}"
-            )
-
-            lines.append(
-                f"🛡 SL: "
-                f"{r['sl']:.10g}"
-            )
-
-            lines.append(
-                f"🎯 TP1: "
-                f"{r['tp1']:.10g}"
-            )
-
-            lines.append(
-                f"🎯 TP2: "
-                f"{r['tp2']:.10g}"
-            )
-
-    # ========================================================
     # EARLY
-    # ========================================================
+    lines.append("⚡ EARLY BUY")
 
-    lines.append("")
-    lines.append(
-        "⚡ EARLY BUY"
-    )
+    if early:
 
-    early = [
-        r for r in results
-        if r["status"] ==
-        "EARLY BUY"
-    ]
+        lines.append("")
 
-    if not early:
-
-        lines.append("NONE")
+        for item in early:
+            lines.append(
+                format_signal(
+                    item,
+                    "⚡",
+                )
+            )
+            lines.append("")
 
     else:
+        lines.append("NONE")
 
-        for r in early[:8]:
+    lines.append("")
 
-            lines.append("")
-            lines.append(
-                f"⚡ {r['symbol']}"
-            )
-
-            lines.append(
-                f"💰 PRICE: "
-                f"{r['price']:.10g}"
-            )
-
-            lines.append(
-                f"📈 5m: "
-                f"{r['change_5m']:+.2f}%"
-            )
-
-            lines.append(
-                f"🎯 SCORE: "
-                f"{r['score']}/12"
-            )
-
-            lines.append(
-                f"💚 BUY PRESSURE: "
-                f"{r['buy_pressure']:.1f}%"
-            )
-
-            lines.append(
-                f"📏 RESISTANCE DIST: "
-                f"{r['distance']:.2f}%"
-            )
-
-            lines.append(
-                "🚀 BREAKOUT: NO"
-            )
-
-            lines.append(
-                f"🕯 CANDLES: "
-                f"{r['candles']}"
-            )
-
-            lines.append(
-                f"🛡 SL: "
-                f"{r['sl']:.10g}"
-            )
-
-            lines.append(
-                f"🎯 TP1: "
-                f"{r['tp1']:.10g}"
-            )
-
-            lines.append(
-                f"🎯 TP2: "
-                f"{r['tp2']:.10g}"
-            )
-
-    # ========================================================
     # WATCH
-    # ========================================================
+    lines.append("🟡 WATCH")
 
-    lines.append("")
-    lines.append(
-        "🟡 WATCH"
-    )
+    if watch:
 
-    watch = [
-        r for r in results
-        if r["status"] ==
-        "WATCH"
-    ]
+        lines.append("")
 
-    if not watch:
-
-        lines.append("NONE")
+        for item in watch:
+            lines.append(
+                format_signal(
+                    item,
+                    "🟡",
+                )
+            )
+            lines.append("")
 
     else:
+        lines.append("NONE")
 
-        for r in watch[:8]:
-
-            lines.append("")
-            lines.append(
-                f"🟡 {r['symbol']}"
-            )
-
-            lines.append(
-                f"💰 PRICE: "
-                f"{r['price']:.10g}"
-            )
-
-            lines.append(
-                f"📈 5m: "
-                f"{r['change_5m']:+.2f}%"
-            )
-
-            lines.append(
-                f"💚 BUY PRESSURE: "
-                f"{r['buy_pressure']:.1f}%"
-            )
-
-            lines.append(
-                f"📏 RESISTANCE DIST: "
-                f"{r['distance']:.2f}%"
-            )
-
-            lines.append(
-                f"🎯 SCORE: "
-                f"{r['score']}/12"
-            )
-
-            lines.append(
-                "🚀 BREAKOUT: NO"
-            )
-
-    # ========================================================
-    # FOOTER
-    # ========================================================
-
-    lines.append("")
     lines.append(
         "━━━━━━━━━━━━━━━━━━"
     )
@@ -1714,12 +1232,15 @@ def run_scan():
     )
 
     lines.append(
-        "🕐 " + now_text()
+        "🕐 "
+        + datetime.now(
+            timezone.utc
+        ).strftime(
+            "%Y-%m-%d %H:%M:%S UTC"
+        )
     )
 
-    send_telegram(
-        "\n".join(lines)
-    )
+    return "\n".join(lines)
 
 
 # ============================================================
@@ -1728,29 +1249,26 @@ def run_scan():
 
 def send_heartbeat():
 
-    markets = get_usdt_markets()
-
     message = (
         f"💓 ATI BOT HEARTBEAT\n\n"
         f"⚡ VERSION: {VERSION}\n"
         f"📡 STATUS: ALIVE\n"
-        f"⏱ TIMEFRAME: 5m\n"
-        f"📊 MARKETS: {len(markets)}\n"
-        f"📊 DATA: "
-        f"{LAST_STATS['markets_with_data']}\n"
-        f"🕯 CANDLES: "
-        f"{LAST_STATS['candles']}\n"
-        f"🟢 CONFIRMED: "
-        f"{LAST_STATS['confirmed']}\n"
-        f"⚡ EARLY: "
-        f"{LAST_STATS['early']}\n"
-        f"🟡 WATCH: "
-        f"{LAST_STATS['watch']}\n"
+        f"⏱ TIMEFRAME: {TIMEFRAME}\n"
+        f"📊 MARKETS: {LAST_STATS['requested']}\n"
+        f"📊 DATA: {LAST_STATS['markets_with_data']}\n"
         f"⚠️ UNKNOWN PRESSURE: "
         f"{LAST_STATS['unknown_pressure']}\n"
+        f"🟢 CONFIRMED: CHECKED\n"
+        f"⚡ EARLY: CHECKED\n"
+        f"🟡 WATCH: CHECKED\n"
         f"🔧 REAL ORDERS: DISABLED\n"
         f"🔄 NEXT SCAN: ABOUT 5 MINUTES\n"
-        f"🕐 {now_text()}"
+        f"🕐 "
+        + datetime.now(
+            timezone.utc
+        ).strftime(
+            "%Y-%m-%d %H:%M:%S UTC"
+        )
     )
 
     send_telegram(message)
@@ -1760,11 +1278,12 @@ def send_heartbeat():
 # STARTUP
 # ============================================================
 
-def startup_message():
+def send_startup():
 
     message = (
         f"🟢 ATI CRYPTO BOT {VERSION}\n\n"
         f"🧠 OPPORTUNITY ENGINE\n"
+        f"🎯 EARLY ENTRY REFINED\n"
         f"📡 TABDEAL API: CONNECTING...\n"
         f"📊 SCAN: STARTING\n"
         f"⏱ TIMEFRAME: 5m\n"
@@ -1775,11 +1294,18 @@ def startup_message():
         f"{MIN_BUY_PRESSURE:.0f}%+\n"
         f"⚡ EARLY PRESSURE: "
         f"{EARLY_BUY_PRESSURE:.0f}%+\n"
+        f"📏 EARLY DISTANCE: "
+        f"≤ {EARLY_RESISTANCE_DISTANCE:.2f}%\n"
         f"🚀 BREAKOUT ENGINE: ON\n"
         f"💓 HEARTBEAT: ON\n"
         f"🔧 REAL ORDERS: DISABLED\n"
         f"🔄 CONTINUOUS MODE: ON\n"
-        f"🕐 {now_text()}"
+        f"🕐 "
+        + datetime.now(
+            timezone.utc
+        ).strftime(
+            "%Y-%m-%d %H:%M:%S UTC"
+        )
     )
 
     send_telegram(message)
@@ -1791,93 +1317,46 @@ def startup_message():
 
 def run_forever():
 
-    startup_message()
+    send_startup()
+
+    time.sleep(2)
 
     while True:
 
-        started = time.time()
-
         try:
 
-            run_scan()
+            scan = run_scan()
 
-        except Exception as e:
-
-            print(
-                "MAIN LOOP ERROR:",
-                e
+            message = build_scan_message(
+                scan
             )
 
-            send_telegram(
-                f"⚠️ ATI BOT {VERSION}\n"
-                f"❌ SCAN ERROR\n\n"
-                f"{str(e)[:500]}\n\n"
-                f"🔄 RETRYING\n"
-                f"🕐 {now_text()}"
-            )
-
-        try:
+            send_telegram(message)
 
             send_heartbeat()
 
         except Exception as e:
 
-            print(
-                "HEARTBEAT ERROR:",
-                e
+            error_message = (
+                f"⚠️ ATI BOT {VERSION}\n\n"
+                f"❌ SCAN ERROR\n"
+                f"{str(e)[:500]}\n\n"
+                f"🔄 BOT WILL RETRY"
             )
 
-        elapsed = (
-            time.time() -
-            started
-        )
+            send_telegram(
+                error_message
+            )
 
-        wait_time = max(
-            10,
-            SCAN_INTERVAL_SECONDS -
-            int(elapsed)
-        )
-
-        print(
-            f"Next scan in "
-            f"{wait_time} seconds..."
-        )
-
+        # Wait for next 5m cycle
         time.sleep(
-            wait_time
+            SCAN_INTERVAL_SECONDS
         )
 
 
 # ============================================================
-# ENTRY
+# START
 # ============================================================
 
 if __name__ == "__main__":
-
-    try:
-
-        run_forever()
-
-    except KeyboardInterrupt:
-
-        print(
-            "ATI BOT STOPPED"
-        )
-
-    except Exception as e:
-
-        print(
-            "FATAL ERROR:",
-            e
-        )
-
-        try:
-
-            send_telegram(
-                f"🚨 ATI BOT {VERSION}\n"
-                f"❌ FATAL ERROR\n\n"
-                f"{str(e)[:500]}"
-            )
-
-        except Exception:
-            pass
+    run_forever()
