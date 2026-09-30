@@ -119,6 +119,18 @@
       "signal": "CONFIRMED BUY",
       "status": "OPEN",
       "created_at": "2026-09-30 10:14:12 UTC"
+    },
+    "NIGHTUSDT_0.03544": {
+      "symbol": "NIGHTUSDT",
+      "entry": "0.0354400000000000",
+      "sl": "0.0350147200000000000",
+      "tp1": "0.036150217600000000000",
+      "tp2": "0.036575497600000000000",
+      "score": 10,
+      "pressure": 94.75047985413396,
+      "signal": "CONFIRMED BUY",
+      "status": "OPEN",
+      "created_at": "2026-09-30 10:36:12 UTC"
     }
   },
   "real_trades": {}
