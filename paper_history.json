@@ -227,6 +227,18 @@
       "signal": "CONFIRMED BUY",
       "status": "OPEN",
       "created_at": "2026-09-30 14:34:31 UTC"
+    },
+    "DYDXUSDT_0.1467": {
+      "symbol": "DYDXUSDT",
+      "entry": "0.1467000000000000",
+      "sl": "0.1449396000000000000",
+      "tp1": "0.149639868000000000000",
+      "tp2": "0.151400268000000000000",
+      "score": 11,
+      "pressure": 98.67427733272282,
+      "signal": "CONFIRMED BUY",
+      "status": "OPEN",
+      "created_at": "2026-09-30 15:13:35 UTC"
     }
   },
   "real_trades": {}
