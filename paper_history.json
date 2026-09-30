@@ -239,6 +239,18 @@
       "signal": "CONFIRMED BUY",
       "status": "OPEN",
       "created_at": "2026-09-30 15:13:35 UTC"
+    },
+    "BERAUSDT_0.2596": {
+      "symbol": "BERAUSDT",
+      "entry": "0.2596000000000000",
+      "sl": "0.2564848000000000000",
+      "tp1": "0.264802384000000000000",
+      "tp2": "0.267917584000000000000",
+      "score": 10,
+      "pressure": 94.17286493376828,
+      "signal": "CONFIRMED BUY",
+      "status": "OPEN",
+      "created_at": "2026-09-30 16:01:32 UTC"
     }
   },
   "real_trades": {}
