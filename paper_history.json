@@ -251,6 +251,18 @@
       "signal": "CONFIRMED BUY",
       "status": "OPEN",
       "created_at": "2026-09-30 16:01:32 UTC"
+    },
+    "SUIUSDT_1.1925": {
+      "symbol": "SUIUSDT",
+      "entry": "1.1925000000000000",
+      "sl": "1.1781900000000000000",
+      "tp1": "1.216397700000000000000",
+      "tp2": "1.230707700000000000000",
+      "score": 10,
+      "pressure": 95.98743249122658,
+      "signal": "CONFIRMED BUY",
+      "status": "OPEN",
+      "created_at": "2026-09-30 16:20:17 UTC"
     }
   },
   "real_trades": {}
