@@ -371,6 +371,18 @@
       "signal": "EARLY BUY",
       "status": "OPEN",
       "created_at": "2026-09-30 19:57:47 UTC"
+    },
+    "BLURUSDT_0.022": {
+      "symbol": "BLURUSDT",
+      "entry": "0.0220000000000000",
+      "sl": "0.0217360000000000000",
+      "tp1": "0.022440880000000000000",
+      "tp2": "0.022704880000000000000",
+      "score": 10,
+      "pressure": 60.71715577767321,
+      "signal": "CONFIRMED BUY",
+      "status": "OPEN",
+      "created_at": "2026-09-30 20:10:34 UTC"
     }
   },
   "real_trades": {}
