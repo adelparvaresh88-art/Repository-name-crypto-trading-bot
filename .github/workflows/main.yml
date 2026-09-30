@@ -8,14 +8,10 @@ on:
 permissions:
   contents: write
 
-concurrency:
-  group: ati-bot-single-run
-  cancel-in-progress: false
-
 jobs:
   run-bot:
     runs-on: ubuntu-latest
-    timeout-minutes: 4
+    timeout-minutes: 10
 
     steps:
       - name: Checkout
@@ -35,8 +31,10 @@ jobs:
         env:
           TABDEAL_API_KEY: ${{ secrets.TABDEAL_API_KEY }}
           TABDEAL_API_SECRET: ${{ secrets.TABDEAL_API_SECRET }}
+
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
           ORDER_QTY: ${{ secrets.ORDER_QTY }}
 
           LIVE_TRADING: ${{ secrets.LIVE_TRADING }}
@@ -45,6 +43,12 @@ jobs:
           PYTHONUNBUFFERED: "1"
 
         run: |
+          echo "========================================"
+          echo "ATI BOT START"
+          echo "========================================"
+          echo "UTC TIME:"
+          date -u
+          echo "========================================"
           python -u main.py
 
       - name: Save paper history
@@ -53,7 +57,11 @@ jobs:
           if [ -f paper_history.json ]; then
             git config user.name "ATI-bot"
             git config user.email "ati-bot@users.noreply.github.com"
+
             git add paper_history.json
-            git diff --cached --quiet || git commit -m "ATI bot history update"
-            git push || true
+
+            if ! git diff --cached --quiet; then
+              git commit -m "ATI bot history update"
+              git push || true
+            fi
           fi
