@@ -107,6 +107,18 @@
       "signal": "CONFIRMED BUY",
       "status": "OPEN",
       "created_at": "2026-09-30 09:58:54 UTC"
+    },
+    "FILUSDT_1.0835": {
+      "symbol": "FILUSDT",
+      "entry": "1.0835000000000000",
+      "sl": "1.0704980000000000000",
+      "tp1": "1.105213340000000000000",
+      "tp2": "1.118215340000000000000",
+      "score": 11,
+      "pressure": 67.78222033177371,
+      "signal": "CONFIRMED BUY",
+      "status": "OPEN",
+      "created_at": "2026-09-30 10:14:12 UTC"
     }
   },
   "real_trades": {}
