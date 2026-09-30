@@ -263,6 +263,18 @@
       "signal": "CONFIRMED BUY",
       "status": "OPEN",
       "created_at": "2026-09-30 16:20:17 UTC"
+    },
+    "DOTUSDT_1.2473": {
+      "symbol": "DOTUSDT",
+      "entry": "1.2473000000000000",
+      "sl": "1.2323324000000000000",
+      "tp1": "1.272295892000000000000",
+      "tp2": "1.287263492000000000000",
+      "score": 10,
+      "pressure": 93.01004228329809,
+      "signal": "CONFIRMED BUY",
+      "status": "OPEN",
+      "created_at": "2026-09-30 16:43:44 UTC"
     }
   },
   "real_trades": {}
