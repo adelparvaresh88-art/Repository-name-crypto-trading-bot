@@ -11,6 +11,18 @@
       "signal": "CONFIRMED BUY",
       "status": "OPEN",
       "created_at": "2026-09-30 06:57:26 UTC"
+    },
+    "PAXGUSDT_4195.44": {
+      "symbol": "PAXGUSDT",
+      "entry": "4195.4400000000000000",
+      "sl": "4178.7500000000000000",
+      "tp1": "4223.312300000000000000",
+      "tp2": "4240.002300000000000000",
+      "score": 10,
+      "pressure": 94.6819794190988,
+      "signal": "CONFIRMED BUY",
+      "status": "OPEN",
+      "created_at": "2026-09-30 07:09:31 UTC"
     }
   },
   "real_trades": {}
