@@ -167,6 +167,18 @@
       "signal": "CONFIRMED BUY",
       "status": "OPEN",
       "created_at": "2026-09-30 12:07:24 UTC"
+    },
+    "NAKAUSDT_0.12503": {
+      "symbol": "NAKAUSDT",
+      "entry": "0.1250300000000000",
+      "sl": "0.1235296400000000000",
+      "tp1": "0.127535601200000000000",
+      "tp2": "0.129035961200000000000",
+      "score": 10,
+      "pressure": 69.1768235868573,
+      "signal": "CONFIRMED BUY",
+      "status": "OPEN",
+      "created_at": "2026-09-30 12:39:54 UTC"
     }
   },
   "real_trades": {}
