@@ -347,6 +347,18 @@
       "signal": "EARLY BUY",
       "status": "OPEN",
       "created_at": "2026-09-30 19:17:30 UTC"
+    },
+    "HUMAUSDT_0.03248": {
+      "symbol": "HUMAUSDT",
+      "entry": "0.0324800000000000",
+      "sl": "0.0320902400000000000",
+      "tp1": "0.033130899200000000000",
+      "tp2": "0.033520659200000000000",
+      "score": 9,
+      "pressure": 89.88352829388946,
+      "signal": "EARLY BUY",
+      "status": "OPEN",
+      "created_at": "2026-09-30 19:39:53 UTC"
     }
   },
   "real_trades": {}
