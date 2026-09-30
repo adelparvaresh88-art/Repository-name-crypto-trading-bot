@@ -191,6 +191,18 @@
       "signal": "CONFIRMED BUY",
       "status": "OPEN",
       "created_at": "2026-09-30 13:05:28 UTC"
+    },
+    "ADAUSDT_0.2565": {
+      "symbol": "ADAUSDT",
+      "entry": "0.2565000000000000",
+      "sl": "0.2535680000000000",
+      "tp1": "0.261396440000000000",
+      "tp2": "0.264328440000000000",
+      "score": 11,
+      "pressure": 100.0,
+      "signal": "CONFIRMED BUY",
+      "status": "OPEN",
+      "created_at": "2026-09-30 13:49:45 UTC"
     }
   },
   "real_trades": {}
