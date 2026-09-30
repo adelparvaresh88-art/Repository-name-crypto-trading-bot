@@ -10,6 +10,7 @@ import requests
 # ============================================================
 # ATI CRYPTO BOT V40.2.8
 # OPPORTUNITY ENGINE + PERSISTENT BUY RESULT TRACKER
+# ROBUST TELEGRAM + MANDATORY HEARTBEAT
 # ============================================================
 
 VERSION = "V40.2.8"
@@ -22,6 +23,9 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 HISTORY_FILE = "paper_history.json"
 
 REQUEST_TIMEOUT = 15
+TELEGRAM_TIMEOUT = 15
+TELEGRAM_RETRIES = 4
+
 MAX_SYMBOLS = 529
 
 # Real trading is intentionally disabled.
@@ -42,6 +46,7 @@ WATCH_SCORE = 6
 # ============================================================
 
 session = requests.Session()
+
 session.headers.update({
     "User-Agent": "ATI-Crypto-Bot-V40.2.8"
 })
@@ -60,14 +65,27 @@ def utc_text():
 
 
 # ============================================================
-# TELEGRAM
+# TELEGRAM CONFIG
 # ============================================================
 
-def telegram_send(text):
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print("TELEGRAM CONFIG: MISSING")
+def telegram_config_ok():
+    if not TELEGRAM_BOT_TOKEN:
+        print("TELEGRAM CONFIG: BOT TOKEN MISSING")
         return False
 
+    if not TELEGRAM_CHAT_ID:
+        print("TELEGRAM CONFIG: CHAT ID MISSING")
+        return False
+
+    return True
+
+
+# ============================================================
+# TELEGRAM LOW LEVEL SEND
+# RETRY + TIMEOUT + RESPONSE VALIDATION
+# ============================================================
+
+def telegram_send_once(text):
     url = (
         f"https://api.telegram.org/bot"
         f"{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -75,29 +93,178 @@ def telegram_send(text):
 
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
-        "text": text
+        "text": text,
+        "disable_web_page_preview": True
     }
 
     try:
         response = session.post(
             url,
             json=payload,
-            timeout=REQUEST_TIMEOUT
+            timeout=TELEGRAM_TIMEOUT
         )
 
-        if response.status_code == 200:
+        print(
+            "TELEGRAM HTTP:",
+            response.status_code
+        )
+
+        if response.status_code != 200:
+            print(
+                "TELEGRAM ERROR:",
+                response.text[:500]
+            )
+            return False
+
+        try:
+            data = response.json()
+        except Exception:
+            print("TELEGRAM ERROR: INVALID JSON RESPONSE")
+            return False
+
+        if data.get("ok") is True:
             return True
 
         print(
-            "TELEGRAM ERROR:",
-            response.status_code,
-            response.text[:500]
+            "TELEGRAM API ERROR:",
+            str(data)[:500]
+        )
+
+        return False
+
+    except requests.exceptions.Timeout:
+        print("TELEGRAM ERROR: TIMEOUT")
+        return False
+
+    except requests.exceptions.RequestException as exc:
+        print(
+            "TELEGRAM REQUEST ERROR:",
+            repr(exc)
         )
         return False
 
     except Exception as exc:
-        print("TELEGRAM EXCEPTION:", repr(exc))
+        print(
+            "TELEGRAM UNKNOWN ERROR:",
+            repr(exc)
+        )
         return False
+
+
+# ============================================================
+# TELEGRAM ROBUST SEND
+# 4 RETRIES
+# ============================================================
+
+def telegram_send(text, retries=TELEGRAM_RETRIES):
+    if not telegram_config_ok():
+        return False
+
+    if text is None:
+        text = ""
+
+    text = str(text)
+
+    if not text.strip():
+        print("TELEGRAM ERROR: EMPTY MESSAGE")
+        return False
+
+    # Telegram message limit is around 4096 characters.
+    # Keep a safe margin.
+    chunk_size = 3500
+
+    chunks = []
+
+    if len(text) <= chunk_size:
+        chunks = [text]
+    else:
+        current = ""
+
+        for line in text.splitlines(True):
+            if len(current) + len(line) > chunk_size:
+                if current:
+                    chunks.append(current)
+                current = line
+            else:
+                current += line
+
+        if current:
+            chunks.append(current)
+
+    overall_success = True
+
+    for chunk_index, chunk in enumerate(chunks, start=1):
+
+        success = False
+
+        for attempt in range(1, retries + 1):
+
+            print(
+                f"TELEGRAM SEND "
+                f"[{chunk_index}/{len(chunks)}] "
+                f"ATTEMPT {attempt}/{retries}"
+            )
+
+            if telegram_send_once(chunk):
+                print(
+                    f"TELEGRAM SENT "
+                    f"[{chunk_index}/{len(chunks)}]"
+                )
+
+                success = True
+                break
+
+            if attempt < retries:
+                wait_seconds = attempt * 2
+
+                print(
+                    "TELEGRAM RETRY IN",
+                    wait_seconds,
+                    "SECONDS"
+                )
+
+                time.sleep(wait_seconds)
+
+        if not success:
+            print(
+                f"TELEGRAM FAILED "
+                f"[{chunk_index}/{len(chunks)}]"
+            )
+
+            overall_success = False
+
+    return overall_success
+
+
+# ============================================================
+# MANDATORY HEARTBEAT
+# ============================================================
+
+def send_heartbeat(stage, extra=""):
+    message = (
+        f"💓 ATI HEARTBEAT\n"
+        f"⚡ VERSION: {VERSION}\n"
+        f"📍 STAGE: {stage}\n"
+        f"🕐 {utc_text()}"
+    )
+
+    if extra:
+        message += f"\n{extra}"
+
+    result = telegram_send(message)
+
+    if result:
+        print(
+            "HEARTBEAT SENT:",
+            stage
+        )
+    else:
+        print(
+            "HEARTBEAT FAILED:",
+            stage
+        )
+
+    return result
 
 
 # ============================================================
@@ -133,7 +300,11 @@ def load_history():
         return data
 
     except Exception as exc:
-        print("HISTORY LOAD ERROR:", repr(exc))
+        print(
+            "HISTORY LOAD ERROR:",
+            repr(exc)
+        )
+
         return default_history()
 
 
@@ -157,7 +328,11 @@ def save_history(history):
         return True
 
     except Exception as exc:
-        print("HISTORY SAVE ERROR:", repr(exc))
+        print(
+            "HISTORY SAVE ERROR:",
+            repr(exc)
+        )
+
         return False
 
 
@@ -176,6 +351,7 @@ def api_get(path, params=None):
         )
 
         response.raise_for_status()
+
         return response.json()
 
     except Exception as exc:
@@ -184,6 +360,7 @@ def api_get(path, params=None):
             path,
             repr(exc)
         )
+
         return None
 
 
@@ -192,7 +369,9 @@ def api_get(path, params=None):
 # ============================================================
 
 def get_usdt_markets():
-    data = api_get("/r/api/v1/exchangeInfo")
+    data = api_get(
+        "/r/api/v1/exchangeInfo"
+    )
 
     if not data:
         return []
@@ -219,8 +398,10 @@ def get_usdt_markets():
     markets = []
 
     for item in raw:
+
         if isinstance(item, str):
             symbol = item.upper()
+
         elif isinstance(item, dict):
             symbol = (
                 item.get("symbol")
@@ -228,14 +409,15 @@ def get_usdt_markets():
                 or item.get("pair")
                 or ""
             )
+
             symbol = str(symbol).upper()
+
         else:
             continue
 
         if not symbol.endswith("USDT"):
             continue
 
-        # Ignore leveraged-looking symbols.
         if any(
             x in symbol
             for x in (
@@ -294,6 +476,7 @@ def get_trades(symbol):
 # ============================================================
 
 def trade_values(item):
+
     if not isinstance(item, dict):
         return None
 
@@ -369,9 +552,11 @@ def trade_values(item):
 # ============================================================
 
 def build_candles(trades):
+
     parsed = []
 
     for item in trades:
+
         value = trade_values(item)
 
         if value:
@@ -387,6 +572,7 @@ def build_candles(trades):
     buckets = {}
 
     for trade in parsed:
+
         bucket = int(
             trade["timestamp"] // 300000
         ) * 300000
@@ -399,6 +585,7 @@ def build_candles(trades):
     candles = []
 
     for timestamp in sorted(buckets):
+
         group = buckets[timestamp]
 
         prices = [
@@ -432,14 +619,15 @@ def build_candles(trades):
 # ============================================================
 
 def calculate_pressure(trades):
+
     if not trades:
         return None
 
     buy_volume = 0.0
     sell_volume = 0.0
-    total = 0.0
 
     for item in trades:
+
         if not isinstance(item, dict):
             continue
 
@@ -453,16 +641,18 @@ def calculate_pressure(trades):
             "volume"
         ):
             if key in item:
+
                 try:
-                    qty = abs(float(item[key]))
+                    qty = abs(
+                        float(item[key])
+                    )
                     break
+
                 except Exception:
                     pass
 
         if qty <= 0:
             continue
-
-        total += qty
 
         side = str(
             item.get("side")
@@ -482,12 +672,10 @@ def calculate_pressure(trades):
         ):
             sell_volume += qty
 
-        else:
-            # When exchange does not provide side,
-            # do not invent pressure.
-            continue
-
-    directional = buy_volume + sell_volume
+    directional = (
+        buy_volume +
+        sell_volume
+    )
 
     if directional <= 0:
         return None
@@ -503,6 +691,7 @@ def calculate_pressure(trades):
 # ============================================================
 
 def analyze_symbol(symbol, trades):
+
     candles = build_candles(trades)
 
     if len(candles) < MIN_CANDLES:
@@ -529,6 +718,9 @@ def analyze_symbol(symbol, trades):
         for c in recent[:-1]
     ]
 
+    if not high_values:
+        return None
+
     resistance = max(
         high_values
     )
@@ -542,6 +734,9 @@ def analyze_symbol(symbol, trades):
         c["low"]
         for c in closed[-6:-1]
     )
+
+    if previous["close"] <= 0:
+        return None
 
     move_5m = (
         (
@@ -558,10 +753,12 @@ def analyze_symbol(symbol, trades):
 
     # Pressure fallback based on candle body.
     if pressure is None:
+
         bullish = 0
         total = 0
 
         for c in closed[-12:]:
+
             total += 1
 
             if c["close"] > c["open"]:
@@ -572,40 +769,56 @@ def analyze_symbol(symbol, trades):
                 bullish /
                 total
             ) * 100.0
+
         else:
             pressure = 50.0
 
     score = 0
 
-    # Momentum
+    # --------------------------------------------------------
+    # MOMENTUM
+    # --------------------------------------------------------
+
     if move_5m > 0.15:
         score += 1
 
     if move_5m > 0.50:
         score += 1
 
-    # Pressure
+    # --------------------------------------------------------
+    # PRESSURE
+    # --------------------------------------------------------
+
     if pressure >= 55:
         score += 1
 
     if pressure >= 60:
         score += 1
 
-    # Candle structure
+    # --------------------------------------------------------
+    # CANDLE STRUCTURE
+    # --------------------------------------------------------
+
     if last["close"] > last["open"]:
         score += 1
 
     if last["close"] > previous["high"]:
         score += 2
 
-    # Recent higher structure
+    # --------------------------------------------------------
+    # HIGHER STRUCTURE
+    # --------------------------------------------------------
+
     if last["close"] > previous_high:
         score += 2
 
     if last["low"] >= previous_low:
         score += 1
 
-    # Volume expansion
+    # --------------------------------------------------------
+    # VOLUME
+    # --------------------------------------------------------
+
     volumes = [
         c["volume"]
         for c in closed[-6:-1]
@@ -613,18 +826,28 @@ def analyze_symbol(symbol, trades):
     ]
 
     if volumes:
+
         avg_volume = (
             sum(volumes) /
             len(volumes)
         )
 
-        if avg_volume > 0 and (
+        if (
+            avg_volume > 0
+            and
             last["volume"] >=
             avg_volume * 1.15
         ):
             score += 1
 
-    score = min(score, 11)
+    score = min(
+        score,
+        11
+    )
+
+    # --------------------------------------------------------
+    # BREAKOUT
+    # --------------------------------------------------------
 
     breakout = (
         last["close"] >
@@ -640,31 +863,48 @@ def analyze_symbol(symbol, trades):
         price
     ) * 100.0
 
-    # Confirmed breakout.
+    # --------------------------------------------------------
+    # CONFIRMED BUY
+    # --------------------------------------------------------
+
     confirmed = (
-        breakout and
-        score >= CONFIRMED_SCORE and
+        breakout
+        and
+        score >= CONFIRMED_SCORE
+        and
         pressure >= 58
     )
 
-    # Early entry:
-    # strong structure but breakout is not yet fully confirmed.
+    # --------------------------------------------------------
+    # EARLY BUY
+    # --------------------------------------------------------
+
     early = (
-        not confirmed and
-        score >= EARLY_SCORE and
-        pressure >= 60 and
+        not confirmed
+        and
+        score >= EARLY_SCORE
+        and
+        pressure >= 60
+        and
         move_5m > 0.15
     )
 
-    # Watch:
+    # --------------------------------------------------------
+    # WATCH
+    # --------------------------------------------------------
+
     watch = (
-        not confirmed and
-        not early and
+        not confirmed
+        and
+        not early
+        and
         score >= WATCH_SCORE
     )
 
-    # Risk model.
-    # Conservative SL below recent structural low.
+    # --------------------------------------------------------
+    # RISK MODEL
+    # --------------------------------------------------------
+
     structural_low = min(
         c["low"]
         for c in closed[-5:]
@@ -673,12 +913,14 @@ def analyze_symbol(symbol, trades):
     if structural_low <= 0:
         return None
 
-    risk = price - structural_low
+    risk = (
+        price -
+        structural_low
+    )
 
     if risk <= 0:
         risk = price * 0.006
 
-    # Avoid absurdly large stop.
     max_risk = price * 0.012
 
     if risk > max_risk:
@@ -718,8 +960,7 @@ def analyze_symbol(symbol, trades):
 # ============================================================
 
 def make_signal_id(signal):
-    # Same symbol + entry price rounded.
-    # Prevents duplicate signal records every 5 minutes.
+
     return (
         f"{signal['symbol']}_"
         f"{round(signal['price'], 12)}"
@@ -730,10 +971,18 @@ def make_signal_id(signal):
 # REGISTER NEW BUY
 # ============================================================
 
-def register_buy(history, signal, signal_type):
-    signal_id = make_signal_id(signal)
+def register_buy(
+    history,
+    signal,
+    signal_type
+):
+
+    signal_id = make_signal_id(
+        signal
+    )
 
     for old in history["signals"]:
+
         if old.get("id") == signal_id:
             return False
 
@@ -753,10 +1002,12 @@ def register_buy(history, signal, signal_type):
         "tp1_hit": False
     }
 
-    history["signals"].append(record)
+    history["signals"].append(
+        record
+    )
 
-    # Keep file manageable.
     if len(history["signals"]) > MAX_HISTORY:
+
         history["signals"] = (
             history["signals"][-MAX_HISTORY:]
         )
@@ -768,10 +1019,15 @@ def register_buy(history, signal, signal_type):
 # UPDATE OPEN SIGNALS
 # ============================================================
 
-def update_open_signals(history, market_data):
+def update_open_signals(
+    history,
+    market_data
+):
+
     changed = False
 
     for signal in history["signals"]:
+
         if signal.get("status") != "OPEN":
             continue
 
@@ -786,57 +1042,94 @@ def update_open_signals(history, market_data):
         high = info["high"]
         low = info["low"]
 
-        entry = float(signal["entry"])
-        sl = float(signal["sl"])
-        tp1 = float(signal["tp1"])
-        tp2 = float(signal["tp2"])
+        entry = float(
+            signal["entry"]
+        )
 
-        # TP1 notification only.
+        sl = float(
+            signal["sl"]
+        )
+
+        tp1 = float(
+            signal["tp1"]
+        )
+
+        tp2 = float(
+            signal["tp2"]
+        )
+
+        # ----------------------------------------------------
+        # TP1
+        # ----------------------------------------------------
+
         if not signal.get("tp1_hit"):
+
             if high >= tp1:
+
                 signal["tp1_hit"] = True
                 changed = True
 
-        # IMPORTANT:
-        # If TP2 and SL are both touched in the same candle,
-        # mark it as AMBIGUOUS instead of pretending we know
-        # which happened first.
+        # ----------------------------------------------------
+        # TP2 / SL
+        # ----------------------------------------------------
+
         hit_tp2 = high >= tp2
         hit_sl = low <= sl
 
         if hit_tp2 and hit_sl:
+
             signal["status"] = "AMBIGUOUS"
-            signal["result"] = "TP2/SL SAME CANDLE"
+
+            signal["result"] = (
+                "TP2/SL SAME CANDLE"
+            )
+
             signal["closed_at"] = utc_text()
+
             signal["pnl_percent"] = None
+
             changed = True
 
         elif hit_tp2:
+
             signal["status"] = "TP2"
+
             signal["result"] = "TP2"
+
             signal["closed_at"] = utc_text()
 
             signal["pnl_percent"] = (
-                (tp2 - entry) /
+                (
+                    tp2 -
+                    entry
+                )
+                /
                 entry
             ) * 100.0
 
             changed = True
 
         elif hit_sl:
+
             signal["status"] = "SL"
+
             signal["result"] = "SL"
+
             signal["closed_at"] = utc_text()
 
             signal["pnl_percent"] = (
-                (sl - entry) /
+                (
+                    sl -
+                    entry
+                )
+                /
                 entry
             ) * 100.0
 
             changed = True
 
         else:
-            # Keep OPEN.
+
             signal["last_price"] = price
 
     return changed
@@ -847,12 +1140,17 @@ def update_open_signals(history, market_data):
 # ============================================================
 
 def current_market_info(symbol):
-    trades = get_trades(symbol)
+
+    trades = get_trades(
+        symbol
+    )
 
     if not trades:
         return None
 
-    candles = build_candles(trades)
+    candles = build_candles(
+        trades
+    )
 
     if not candles:
         return None
@@ -871,6 +1169,7 @@ def current_market_info(symbol):
 # ============================================================
 
 def statistics(history):
+
     signals = history["signals"]
 
     total = len(signals)
@@ -905,10 +1204,16 @@ def statistics(history):
         if s.get("status") == "AMBIGUOUS"
     )
 
-    closed = tp2 + sl
+    closed = (
+        tp2 +
+        sl
+    )
 
     win_rate = (
-        (tp2 / closed) * 100
+        (
+            tp2 /
+            closed
+        ) * 100
         if closed > 0
         else 0.0
     )
@@ -916,9 +1221,15 @@ def statistics(history):
     pnl = 0.0
 
     for s in signals:
-        value = s.get("pnl_percent")
 
-        if isinstance(value, (int, float)):
+        value = s.get(
+            "pnl_percent"
+        )
+
+        if isinstance(
+            value,
+            (int, float)
+        ):
             pnl += value
 
     return {
@@ -934,10 +1245,11 @@ def statistics(history):
 
 
 # ============================================================
-# TELEGRAM FORMATTERS
+# FORMAT PRICE
 # ============================================================
 
 def format_price(value):
+
     if value is None:
         return "-"
 
@@ -953,26 +1265,51 @@ def format_price(value):
     return f"{value:.10f}"
 
 
-def format_signal(signal, title="🟢 BUY"):
+# ============================================================
+# FORMAT SIGNAL
+# ============================================================
+
+def format_signal(
+    signal,
+    title="🟢 BUY"
+):
+
     return (
         f"{title} {signal['symbol']}\n"
-        f"💰 PRICE: {format_price(signal['price'])}\n"
-        f"📈 5m: {signal['move_5m']:+.2f}%\n"
-        f"💚 BUY PRESSURE: {signal['pressure']:.1f}%\n"
-        f"🎯 SCORE: {signal['score']}/11\n"
+        f"💰 PRICE: "
+        f"{format_price(signal['price'])}\n"
+        f"📈 5m: "
+        f"{signal['move_5m']:+.2f}%\n"
+        f"💚 BUY PRESSURE: "
+        f"{signal['pressure']:.1f}%\n"
+        f"🎯 SCORE: "
+        f"{signal['score']}/11\n"
         f"🚀 BREAKOUT: "
         f"{'YES' if signal['breakout'] else 'NO'}\n"
-        f"🕯 CANDLES: {signal['candles']}\n"
-        f"🛡 SL: {format_price(signal['sl'])}\n"
-        f"🎯 TP1: {format_price(signal['tp1'])}\n"
-        f"🎯 TP2: {format_price(signal['tp2'])}"
+        f"🕯 CANDLES: "
+        f"{signal['candles']}\n"
+        f"🛡 SL: "
+        f"{format_price(signal['sl'])}\n"
+        f"🎯 TP1: "
+        f"{format_price(signal['tp1'])}\n"
+        f"🎯 TP2: "
+        f"{format_price(signal['tp2'])}"
     )
 
 
-def format_summary(history):
-    stats = statistics(history)
+# ============================================================
+# FORMAT SUMMARY
+# ============================================================
 
-    recent = history["signals"][-8:]
+def format_summary(history):
+
+    stats = statistics(
+        history
+    )
+
+    recent = history[
+        "signals"
+    ][-8:]
 
     lines = [
         "📊 BUY RESULT SUMMARY",
@@ -990,23 +1327,48 @@ def format_summary(history):
     ]
 
     if recent:
-        lines.append("📋 RECENT BUY RESULTS")
+
+        lines.append(
+            "📋 RECENT BUY RESULTS"
+        )
 
         for s in recent:
-            symbol = s.get("symbol", "?")
-            status = s.get("status", "?")
-            pnl = s.get("pnl_percent")
 
-            if isinstance(pnl, (int, float)):
-                pnl_text = f" | {pnl:+.2f}%"
+            symbol = s.get(
+                "symbol",
+                "?"
+            )
+
+            status = s.get(
+                "status",
+                "?"
+            )
+
+            pnl = s.get(
+                "pnl_percent"
+            )
+
+            if isinstance(
+                pnl,
+                (int, float)
+            ):
+                pnl_text = (
+                    f" | {pnl:+.2f}%"
+                )
             else:
                 pnl_text = ""
 
-            if s.get("tp1_hit") and status == "OPEN":
+            if (
+                s.get("tp1_hit")
+                and
+                status == "OPEN"
+            ):
                 status = "TP1 → OPEN"
 
             lines.append(
-                f"{symbol} | {status}{pnl_text}"
+                f"{symbol} | "
+                f"{status}"
+                f"{pnl_text}"
             )
 
     return "\n".join(lines)
@@ -1017,380 +1379,619 @@ def format_summary(history):
 # ============================================================
 
 def main():
+
     start = time.time()
 
     print("=" * 60)
-    print(f"ATI CRYPTO BOT {VERSION}")
-    print("OPPORTUNITY ENGINE")
+    print(
+        f"ATI CRYPTO BOT {VERSION}"
+    )
+    print(
+        "OPPORTUNITY ENGINE"
+    )
     print("=" * 60)
 
     history = load_history()
 
-    # --------------------------------------------------------
-    # STARTUP TELEGRAM
-    # --------------------------------------------------------
+    run_completed = False
 
-    telegram_send(
-        f"⚡ ATI CRYPTO BOT {VERSION}\n"
-        f"🧠 OPPORTUNITY ENGINE\n\n"
-        f"📡 TABDEAL API: CONNECTING...\n"
-        f"📊 SCAN: STARTING\n"
-        f"⏱ TIMEFRAME: 5m\n"
-        f"🕯 CLOSED CANDLE: YES\n"
-        f"📊 PAPER SIGNALS: ON\n"
-        f"🔧 REAL ORDERS: DISABLED\n"
-        f"💓 HEARTBEAT: ON\n"
-        f"🔄 CONTINUOUS MODE: ON\n\n"
-        f"🕐 {utc_text()}"
-    )
+    try:
 
-    # --------------------------------------------------------
-    # MARKET LIST
-    # --------------------------------------------------------
-
-    markets = get_usdt_markets()
-
-    if not markets:
-        print("NO MARKETS")
+        # ====================================================
+        # MANDATORY START HEARTBEAT
+        # ====================================================
 
         telegram_send(
-            f"⚠️ ATI {VERSION}\n\n"
-            f"❌ TABDEAL API / MARKET LIST FAILED\n"
+            f"⚡ ATI CRYPTO BOT {VERSION}\n"
+            f"🧠 OPPORTUNITY ENGINE\n\n"
+            f"📡 TABDEAL API: CONNECTING...\n"
+            f"📊 SCAN: STARTING\n"
+            f"⏱ TIMEFRAME: 5m\n"
+            f"🕯 CLOSED CANDLE: YES\n"
+            f"📊 PAPER SIGNALS: ON\n"
+            f"🔧 REAL ORDERS: DISABLED\n"
+            f"💓 HEARTBEAT: ON\n"
+            f"🔄 NEXT RUN: 5 MIN APPROX.\n\n"
             f"🕐 {utc_text()}"
         )
 
-        return
+        # ====================================================
+        # MARKET LIST
+        # ====================================================
 
-    print("TABDEAL API: OK")
-    print("USDT MARKETS:", len(markets))
+        markets = get_usdt_markets()
 
-    # --------------------------------------------------------
-    # SCAN ALL MARKETS
-    # --------------------------------------------------------
+        if not markets:
 
-    requested = len(markets)
-    responses = 0
-    valid_trades = 0
-    markets_with_data = 0
-    insufficient = 0
-    unknown_pressure = 0
-    total_candles = 0
+            print(
+                "NO MARKETS"
+            )
 
-    confirmed = []
-    early = []
-    watch = []
+            telegram_send(
+                f"🚨 ATI BOT ERROR\n\n"
+                f"⚡ VERSION: {VERSION}\n"
+                f"❌ TABDEAL MARKET LIST FAILED\n"
+                f"📡 API: NO MARKET DATA\n"
+                f"💓 BOT RUN DETECTED\n"
+                f"🕐 {utc_text()}"
+            )
 
-    market_cache = {}
+            return
 
-    for index, symbol in enumerate(markets, start=1):
-
-        trades = get_trades(symbol)
-
-        if trades:
-            responses += 1
-
-        if not trades:
-            insufficient += 1
-            continue
-
-        candles = build_candles(trades)
-
-        if not candles:
-            insufficient += 1
-            continue
-
-        valid_trades += len(trades)
-        markets_with_data += 1
-        total_candles += len(candles)
-
-        analysis = analyze_symbol(
-            symbol,
-            trades
+        print(
+            "TABDEAL API: OK"
         )
 
-        if analysis is None:
-            insufficient += 1
-            continue
+        print(
+            "USDT MARKETS:",
+            len(markets)
+        )
 
-        market_cache[symbol] = {
-            "price": analysis["price"],
-            "high": candles[-1]["high"],
-            "low": candles[-1]["low"]
-        }
+        # ====================================================
+        # MANDATORY API HEARTBEAT
+        # ====================================================
 
-        if analysis["pressure"] is None:
-            unknown_pressure += 1
+        send_heartbeat(
+            "TABDEAL API OK",
+            (
+                f"📊 USDT MARKETS: "
+                f"{len(markets)}\n"
+                f"🔧 REAL ORDERS: DISABLED"
+            )
+        )
 
-        if analysis["confirmed"]:
-            confirmed.append(analysis)
+        # ====================================================
+        # SCAN
+        # ====================================================
 
-        elif analysis["early"]:
-            early.append(analysis)
+        requested = len(markets)
 
-        elif analysis["watch"]:
-            watch.append(analysis)
+        responses = 0
+        valid_trades = 0
+        markets_with_data = 0
+        insufficient = 0
+        unknown_pressure = 0
+        total_candles = 0
 
-    # --------------------------------------------------------
-    # SORT
-    # --------------------------------------------------------
+        confirmed = []
+        early = []
+        watch = []
 
-    confirmed.sort(
-        key=lambda x: (
-            x["score"],
-            x["pressure"],
-            x["move_5m"]
-        ),
-        reverse=True
-    )
+        market_cache = {}
 
-    early.sort(
-        key=lambda x: (
-            x["score"],
-            x["pressure"],
-            x["move_5m"]
-        ),
-        reverse=True
-    )
+        for index, symbol in enumerate(
+            markets,
+            start=1
+        ):
 
-    watch.sort(
-        key=lambda x: (
-            x["score"],
-            x["pressure"],
-            -x["resistance_distance"]
-        ),
-        reverse=True
-    )
+            trades = get_trades(
+                symbol
+            )
 
-    # --------------------------------------------------------
-    # UPDATE EXISTING OPEN SIGNALS
-    # --------------------------------------------------------
+            if trades:
+                responses += 1
 
-    history_changed = False
+            if not trades:
 
-    if history["signals"]:
-
-        for signal in history["signals"]:
-            if signal.get("status") != "OPEN":
+                insufficient += 1
                 continue
 
-            symbol = signal.get("symbol")
+            candles = build_candles(
+                trades
+            )
 
-            if symbol in market_cache:
+            if not candles:
+
+                insufficient += 1
                 continue
 
-            info = current_market_info(symbol)
+            valid_trades += len(
+                trades
+            )
 
-            if info:
-                market_cache[symbol] = info
+            markets_with_data += 1
 
-        if update_open_signals(
-            history,
-            market_cache
-        ):
-            history_changed = True
+            total_candles += len(
+                candles
+            )
 
-    # --------------------------------------------------------
-    # REGISTER NEW CONFIRMED BUY SIGNALS
-    # --------------------------------------------------------
+            analysis = analyze_symbol(
+                symbol,
+                trades
+            )
 
-    new_confirmed = []
+            if analysis is None:
 
-    for signal in confirmed:
-        if register_buy(
-            history,
-            signal,
-            "CONFIRMED BUY"
-        ):
-            new_confirmed.append(signal)
-            history_changed = True
+                insufficient += 1
+                continue
 
-    # --------------------------------------------------------
-    # REGISTER EARLY BUY SIGNALS
-    # --------------------------------------------------------
+            market_cache[symbol] = {
+                "price": analysis["price"],
+                "high": candles[-1]["high"],
+                "low": candles[-1]["low"]
+            }
 
-    new_early = []
+            if analysis["pressure"] is None:
+                unknown_pressure += 1
 
-    for signal in early:
-        # Early signals are registered too,
-        # but use a separate type.
-        if register_buy(
-            history,
-            signal,
-            "EARLY BUY"
-        ):
-            new_early.append(signal)
-            history_changed = True
+            if analysis["confirmed"]:
 
-    # --------------------------------------------------------
-    # SAVE HISTORY
-    # --------------------------------------------------------
-
-    save_history(history)
-
-    # --------------------------------------------------------
-    # CONSOLE OUTPUT
-    # --------------------------------------------------------
-
-    print()
-    print("TABDEAL API: OK")
-    print("USDT MARKETS:", len(markets))
-    print("REQUESTED:", requested)
-    print("RESPONSES:", responses)
-    print("VALID TRADES:", valid_trades)
-    print("MARKETS WITH DATA:", markets_with_data)
-    print("INSUFFICIENT DATA:", insufficient)
-    print("UNKNOWN PRESSURE:", unknown_pressure)
-    print("TOTAL CANDLES:", total_candles)
-    print("MIN CANDLES:", MIN_CANDLES)
-
-    # --------------------------------------------------------
-    # TELEGRAM MAIN REPORT
-    # --------------------------------------------------------
-
-    message = (
-        f"⚡ ATI CRYPTO BOT {VERSION}\n"
-        f"🧠 OPPORTUNITY ENGINE\n\n"
-        f"📡 TABDEAL API: OK\n"
-        f"📊 USDT MARKETS: {len(markets)}\n"
-        f"📡 REQUESTED: {requested}\n"
-        f"📥 RESPONSES: {responses}\n"
-        f"📊 VALID TRADES: {valid_trades}\n"
-        f"📊 MARKETS WITH DATA: {markets_with_data}\n"
-        f"⚠️ INSUFFICIENT DATA: {insufficient}\n"
-        f"⚠️ UNKNOWN PRESSURE: {unknown_pressure}\n"
-        f"🕯 TOTAL CANDLES: {total_candles}\n"
-        f"🛡 MIN CANDLES: {MIN_CANDLES}\n\n"
-    )
-
-    # --------------------------------------------------------
-    # CONFIRMED
-    # --------------------------------------------------------
-
-    message += "🟢 CONFIRMED BUY\n\n"
-
-    if confirmed:
-        for signal in confirmed[:5]:
-            message += (
-                format_signal(
-                    signal,
-                    "🟢"
+                confirmed.append(
+                    analysis
                 )
-                + "\n\n"
-            )
-    else:
-        message += "NONE\n\n"
 
-    # --------------------------------------------------------
-    # EARLY
-    # --------------------------------------------------------
+            elif analysis["early"]:
 
-    message += "⚡ EARLY BUY\n\n"
-
-    if early:
-        for signal in early[:5]:
-            message += (
-                format_signal(
-                    signal,
-                    "⚡"
+                early.append(
+                    analysis
                 )
-                + "\n\n"
-            )
-    else:
-        message += "NONE\n\n"
 
-    # --------------------------------------------------------
-    # WATCH
-    # --------------------------------------------------------
+            elif analysis["watch"]:
 
-    message += "🟡 WATCH\n\n"
+                watch.append(
+                    analysis
+                )
 
-    if watch:
-        for signal in watch[:SCAN_WATCH_LIMIT]:
+        # ====================================================
+        # SORT
+        # ====================================================
+
+        confirmed.sort(
+            key=lambda x: (
+                x["score"],
+                x["pressure"],
+                x["move_5m"]
+            ),
+            reverse=True
+        )
+
+        early.sort(
+            key=lambda x: (
+                x["score"],
+                x["pressure"],
+                x["move_5m"]
+            ),
+            reverse=True
+        )
+
+        watch.sort(
+            key=lambda x: (
+                x["score"],
+                x["pressure"],
+                -x["resistance_distance"]
+            ),
+            reverse=True
+        )
+
+        # ====================================================
+        # UPDATE EXISTING OPEN SIGNALS
+        # ====================================================
+
+        history_changed = False
+
+        if history["signals"]:
+
+            for signal in history[
+                "signals"
+            ]:
+
+                if (
+                    signal.get("status")
+                    != "OPEN"
+                ):
+                    continue
+
+                symbol = signal.get(
+                    "symbol"
+                )
+
+                if symbol in market_cache:
+                    continue
+
+                info = current_market_info(
+                    symbol
+                )
+
+                if info:
+
+                    market_cache[
+                        symbol
+                    ] = info
+
+            if update_open_signals(
+                history,
+                market_cache
+            ):
+
+                history_changed = True
+
+        # ====================================================
+        # REGISTER CONFIRMED BUY
+        # ====================================================
+
+        new_confirmed = []
+
+        for signal in confirmed:
+
+            if register_buy(
+                history,
+                signal,
+                "CONFIRMED BUY"
+            ):
+
+                new_confirmed.append(
+                    signal
+                )
+
+                history_changed = True
+
+        # ====================================================
+        # REGISTER EARLY BUY
+        # ====================================================
+
+        new_early = []
+
+        for signal in early:
+
+            if register_buy(
+                history,
+                signal,
+                "EARLY BUY"
+            ):
+
+                new_early.append(
+                    signal
+                )
+
+                history_changed = True
+
+        # ====================================================
+        # SAVE HISTORY
+        # ====================================================
+
+        save_history(
+            history
+        )
+
+        # ====================================================
+        # CONSOLE
+        # ====================================================
+
+        print()
+        print(
+            "TABDEAL API: OK"
+        )
+        print(
+            "USDT MARKETS:",
+            len(markets)
+        )
+        print(
+            "REQUESTED:",
+            requested
+        )
+        print(
+            "RESPONSES:",
+            responses
+        )
+        print(
+            "VALID TRADES:",
+            valid_trades
+        )
+        print(
+            "MARKETS WITH DATA:",
+            markets_with_data
+        )
+        print(
+            "INSUFFICIENT DATA:",
+            insufficient
+        )
+        print(
+            "UNKNOWN PRESSURE:",
+            unknown_pressure
+        )
+        print(
+            "TOTAL CANDLES:",
+            total_candles
+        )
+        print(
+            "MIN CANDLES:",
+            MIN_CANDLES
+        )
+
+        # ====================================================
+        # MAIN TELEGRAM REPORT
+        # ====================================================
+
+        message = (
+            f"⚡ ATI CRYPTO BOT {VERSION}\n"
+            f"🧠 OPPORTUNITY ENGINE\n\n"
+            f"📡 TABDEAL API: OK\n"
+            f"📊 USDT MARKETS: {len(markets)}\n"
+            f"📡 REQUESTED: {requested}\n"
+            f"📥 RESPONSES: {responses}\n"
+            f"📊 VALID TRADES: {valid_trades}\n"
+            f"📊 MARKETS WITH DATA: "
+            f"{markets_with_data}\n"
+            f"⚠️ INSUFFICIENT DATA: "
+            f"{insufficient}\n"
+            f"⚠️ UNKNOWN PRESSURE: "
+            f"{unknown_pressure}\n"
+            f"🕯 TOTAL CANDLES: "
+            f"{total_candles}\n"
+            f"🛡 MIN CANDLES: "
+            f"{MIN_CANDLES}\n\n"
+        )
+
+        # ====================================================
+        # CONFIRMED
+        # ====================================================
+
+        message += (
+            "🟢 CONFIRMED BUY\n\n"
+        )
+
+        if confirmed:
+
+            for signal in confirmed[:5]:
+
+                message += (
+                    format_signal(
+                        signal,
+                        "🟢"
+                    )
+                    +
+                    "\n\n"
+                )
+
+        else:
+
             message += (
-                f"🟡 {signal['symbol']}\n"
-                f"💰 PRICE: "
-                f"{format_price(signal['price'])}\n"
-                f"📈 5m: "
-                f"{signal['move_5m']:+.2f}%\n"
-                f"💚 BUY PRESSURE: "
-                f"{signal['pressure']:.1f}%\n"
-                f"📏 RESISTANCE DIST: "
-                f"{signal['resistance_distance']:.2f}%\n"
-                f"🎯 SCORE: "
-                f"{signal['score']}/11\n"
-                f"🚀 BREAKOUT: "
-                f"{'YES' if signal['breakout'] else 'NO'}\n\n"
+                "NONE\n\n"
             )
-    else:
-        message += "NONE\n\n"
 
-    # --------------------------------------------------------
-    # MODE
-    # --------------------------------------------------------
+        # ====================================================
+        # EARLY
+        # ====================================================
 
-    message += (
-        "━━━━━━━━━━━━━━━━━━\n"
-        "📊 PAPER SIGNALS: ON\n"
-        "🔧 REAL ORDERS: DISABLED\n"
-        "💓 HEARTBEAT: ON\n"
-        "🔄 CONTINUOUS MODE: ON\n"
-        f"🕐 {utc_text()}"
-    )
+        message += (
+            "⚡ EARLY BUY\n\n"
+        )
 
-    telegram_send(message)
+        if early:
 
-    # --------------------------------------------------------
-    # NEW SIGNAL NOTICE
-    # --------------------------------------------------------
+            for signal in early[:5]:
 
-    if new_confirmed:
-        for signal in new_confirmed[:5]:
+                message += (
+                    format_signal(
+                        signal,
+                        "⚡"
+                    )
+                    +
+                    "\n\n"
+                )
+
+        else:
+
+            message += (
+                "NONE\n\n"
+            )
+
+        # ====================================================
+        # WATCH
+        # ====================================================
+
+        message += (
+            "🟡 WATCH\n\n"
+        )
+
+        if watch:
+
+            for signal in watch[
+                :SCAN_WATCH_LIMIT
+            ]:
+
+                message += (
+                    f"🟡 {signal['symbol']}\n"
+                    f"💰 PRICE: "
+                    f"{format_price(signal['price'])}\n"
+                    f"📈 5m: "
+                    f"{signal['move_5m']:+.2f}%\n"
+                    f"💚 BUY PRESSURE: "
+                    f"{signal['pressure']:.1f}%\n"
+                    f"📏 RESISTANCE DIST: "
+                    f"{signal['resistance_distance']:.2f}%\n"
+                    f"🎯 SCORE: "
+                    f"{signal['score']}/11\n"
+                    f"🚀 BREAKOUT: "
+                    f"{'YES' if signal['breakout'] else 'NO'}\n\n"
+                )
+
+        else:
+
+            message += (
+                "NONE\n\n"
+            )
+
+        # ====================================================
+        # MODE
+        # ====================================================
+
+        message += (
+            "━━━━━━━━━━━━━━━━━━\n"
+            "📊 PAPER SIGNALS: ON\n"
+            "🔧 REAL ORDERS: DISABLED\n"
+            "💓 HEARTBEAT: ON\n"
+            "🔄 NEXT RUN: 5 MIN APPROX.\n"
+            f"🕐 {utc_text()}"
+        )
+
+        # ====================================================
+        # SEND MAIN REPORT
+        # ====================================================
+
+        telegram_send(
+            message
+        )
+
+        # ====================================================
+        # NEW CONFIRMED BUY
+        # ====================================================
+
+        if new_confirmed:
+
+            for signal in new_confirmed[:5]:
+
+                telegram_send(
+                    "🚨 NEW CONFIRMED BUY\n\n"
+                    +
+                    format_signal(
+                        signal,
+                        "🟢"
+                    )
+                    +
+                    "\n\n📊 TRACKING: ON"
+                )
+
+        # ====================================================
+        # NEW EARLY BUY
+        # ====================================================
+
+        if new_early:
+
+            for signal in new_early[:3]:
+
+                telegram_send(
+                    "⚡ NEW EARLY BUY\n\n"
+                    +
+                    format_signal(
+                        signal,
+                        "⚡"
+                    )
+                    +
+                    "\n\n📊 TRACKING: ON"
+                )
+
+        # ====================================================
+        # RESULT SUMMARY
+        # ====================================================
+
+        summary = format_summary(
+            history
+        )
+
+        telegram_send(
+            summary
+        )
+
+        # ====================================================
+        # FINAL HEARTBEAT
+        # ====================================================
+
+        elapsed = (
+            time.time() -
+            start
+        )
+
+        send_heartbeat(
+            "SCAN COMPLETE",
+            (
+                f"📊 CONFIRMED BUY: "
+                f"{len(confirmed)}\n"
+                f"⚡ EARLY BUY: "
+                f"{len(early)}\n"
+                f"🟡 WATCH: "
+                f"{len(watch)}\n"
+                f"⏱ SCAN TIME: "
+                f"{elapsed:.1f}s\n"
+                f"🔧 REAL ORDERS: DISABLED"
+            )
+        )
+
+        run_completed = True
+
+        print()
+        print("=" * 60)
+        print(
+            "SCAN COMPLETE"
+        )
+        print(
+            f"SCAN TIME: {elapsed:.1f}s"
+        )
+        print(
+            "REAL ORDERS: DISABLED"
+        )
+        print(
+            "HISTORY FILE:",
+            HISTORY_FILE
+        )
+        print("=" * 60)
+
+    except Exception as exc:
+
+        # ====================================================
+        # GLOBAL ERROR REPORT
+        # ====================================================
+
+        error_text = repr(exc)
+
+        print(
+            "FATAL BOT ERROR:",
+            error_text
+        )
+
+        telegram_send(
+            f"🚨 ATI BOT ERROR\n\n"
+            f"⚡ VERSION: {VERSION}\n"
+            f"❌ RUN FAILED\n"
+            f"📍 ERROR:\n"
+            f"{error_text[:2500]}\n\n"
+            f"💓 HEARTBEAT: BOT DETECTED ERROR\n"
+            f"🔧 REAL ORDERS: DISABLED\n"
+            f"🕐 {utc_text()}"
+        )
+
+        raise
+
+    finally:
+
+        # ====================================================
+        # GUARANTEED END HEARTBEAT
+        # ====================================================
+
+        if not run_completed:
+
             telegram_send(
-                "🚨 NEW CONFIRMED BUY\n\n"
-                +
-                format_signal(
-                    signal,
-                    "🟢"
-                )
-                +
-                "\n\n📊 TRACKING: ON"
+                f"⚠️ ATI BOT RUN ENDED\n\n"
+                f"⚡ VERSION: {VERSION}\n"
+                f"💓 HEARTBEAT: FINAL CHECK\n"
+                f"🔧 REAL ORDERS: DISABLED\n"
+                f"🕐 {utc_text()}"
             )
 
-    if new_early:
-        for signal in new_early[:3]:
-            telegram_send(
-                "⚡ NEW EARLY BUY\n\n"
-                +
-                format_signal(
-                    signal,
-                    "⚡"
-                )
-                +
-                "\n\n📊 TRACKING: ON"
-            )
 
-    # --------------------------------------------------------
-    # RESULT SUMMARY
-    # --------------------------------------------------------
-
-    telegram_send(
-        format_summary(history)
-    )
-
-    # --------------------------------------------------------
-    # FINISH
-    # --------------------------------------------------------
-
-    elapsed = time.time() - start
-
-    print()
-    print("=" * 60)
-    print("SCAN COMPLETE")
-    print(f"SCAN TIME: {elapsed:.1f}s")
-    print("REAL ORDERS: DISABLED")
-    print("HISTORY FILE:", HISTORY_FILE)
-    print("=" * 60)
-
+# ============================================================
+# ENTRY POINT
+# ============================================================
 
 if __name__ == "__main__":
     main()
