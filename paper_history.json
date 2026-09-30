@@ -35,6 +35,18 @@
       "signal": "CONFIRMED BUY",
       "status": "OPEN",
       "created_at": "2026-09-30 07:35:38 UTC"
+    },
+    "NEARUSDT_5.0321": {
+      "symbol": "NEARUSDT",
+      "entry": "5.0321000000000000",
+      "sl": "4.9717148000000000000",
+      "tp1": "5.132943284000000000000",
+      "tp2": "5.193328484000000000000",
+      "score": 11,
+      "pressure": 79.12813738441216,
+      "signal": "CONFIRMED BUY",
+      "status": "OPEN",
+      "created_at": "2026-09-30 07:56:30 UTC"
     }
   },
   "real_trades": {}
