@@ -95,6 +95,18 @@
       "signal": "CONFIRMED BUY",
       "status": "OPEN",
       "created_at": "2026-09-30 09:14:06 UTC"
+    },
+    "CUSDT_0.09188": {
+      "symbol": "CUSDT",
+      "entry": "0.0918800000000000",
+      "sl": "0.0907774400000000000",
+      "tp1": "0.093721275200000000000",
+      "tp2": "0.094823835200000000000",
+      "score": 10,
+      "pressure": 72.66514123610678,
+      "signal": "CONFIRMED BUY",
+      "status": "OPEN",
+      "created_at": "2026-09-30 09:58:54 UTC"
     }
   },
   "real_trades": {}
