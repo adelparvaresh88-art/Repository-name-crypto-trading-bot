@@ -383,6 +383,18 @@
       "signal": "CONFIRMED BUY",
       "status": "OPEN",
       "created_at": "2026-09-30 20:10:34 UTC"
+    },
+    "MOVRUSDT_1.776": {
+      "symbol": "MOVRUSDT",
+      "entry": "1.7760000000000000",
+      "sl": "1.7546880000000000000",
+      "tp1": "1.811591040000000000000",
+      "tp2": "1.832903040000000000000",
+      "score": 10,
+      "pressure": 92.45501448023764,
+      "signal": "CONFIRMED BUY",
+      "status": "OPEN",
+      "created_at": "2026-09-30 20:38:47 UTC"
     }
   },
   "real_trades": {}
