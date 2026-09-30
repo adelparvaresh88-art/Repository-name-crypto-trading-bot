@@ -1,25 +1,24 @@
-name: Run ATI Bot
+name: ATI Bot - Single 5 Minute Runner
 
 on:
   workflow_dispatch:
+  schedule:
+    - cron: "*/5 * * * *"
 
 permissions:
-  contents: read
+  contents: write
 
-# فقط یک اجرای ATI Bot در هر لحظه
 concurrency:
   group: ati-bot-single-run
   cancel-in-progress: false
 
 jobs:
   run-bot:
-    name: ATI Crypto Bot
     runs-on: ubuntu-latest
-
-    timeout-minutes: 350
+    timeout-minutes: 4
 
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Setup Python
@@ -38,17 +37,23 @@ jobs:
           TABDEAL_API_SECRET: ${{ secrets.TABDEAL_API_SECRET }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          LIVE_TRADING: "false"
           ORDER_QTY: ${{ secrets.ORDER_QTY }}
-          PYTHONUNBUFFERED: "1"
-        run: |
-          echo "=========================================="
-          echo "       ATI CRYPTO BOT STARTING"
-          echo "=========================================="
-          echo "Telegram Heartbeat: 5 minutes"
-          echo "Continuous Mode: ON"
-          echo "Real Orders: DISABLED"
-          echo "Single Run Lock: ON"
-          echo "=========================================="
 
+          LIVE_TRADING: ${{ secrets.LIVE_TRADING }}
+          REAL_TRADING_CONFIRM: ${{ secrets.REAL_TRADING_CONFIRM }}
+
+          PYTHONUNBUFFERED: "1"
+
+        run: |
           python -u main.py
+
+      - name: Save paper history
+        if: always()
+        run: |
+          if [ -f paper_history.json ]; then
+            git config user.name "ATI-bot"
+            git config user.email "ati-bot@users.noreply.github.com"
+            git add paper_history.json
+            git diff --cached --quiet || git commit -m "ATI bot history update"
+            git push || true
+          fi
