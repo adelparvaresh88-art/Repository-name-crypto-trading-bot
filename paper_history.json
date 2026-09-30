@@ -179,6 +179,18 @@
       "signal": "CONFIRMED BUY",
       "status": "OPEN",
       "created_at": "2026-09-30 12:39:54 UTC"
+    },
+    "GRAMUSDT_1.547": {
+      "symbol": "GRAMUSDT",
+      "entry": "1.5470000000000000",
+      "sl": "1.5284360000000000000",
+      "tp1": "1.578001880000000000000",
+      "tp2": "1.596565880000000000000",
+      "score": 11,
+      "pressure": 67.7435834851681,
+      "signal": "CONFIRMED BUY",
+      "status": "OPEN",
+      "created_at": "2026-09-30 13:05:28 UTC"
     }
   },
   "real_trades": {}
