@@ -143,6 +143,18 @@
       "signal": "CONFIRMED BUY",
       "status": "OPEN",
       "created_at": "2026-09-30 10:57:34 UTC"
+    },
+    "QNTUSDT_304.025": {
+      "symbol": "QNTUSDT",
+      "entry": "304.0250000000000000",
+      "sl": "300.3767000000000000000",
+      "tp1": "310.117661000000000000000",
+      "tp2": "313.765961000000000000000",
+      "score": 10,
+      "pressure": 81.78185585318928,
+      "signal": "CONFIRMED BUY",
+      "status": "OPEN",
+      "created_at": "2026-09-30 11:33:24 UTC"
     }
   },
   "real_trades": {}
