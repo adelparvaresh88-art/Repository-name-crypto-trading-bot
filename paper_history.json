@@ -131,6 +131,18 @@
       "signal": "CONFIRMED BUY",
       "status": "OPEN",
       "created_at": "2026-09-30 10:36:12 UTC"
+    },
+    "ADXUSDT_0.06944": {
+      "symbol": "ADXUSDT",
+      "entry": "0.0694400000000000",
+      "sl": "0.0686067200000000000",
+      "tp1": "0.070831577600000000000",
+      "tp2": "0.071664857600000000000",
+      "score": 10,
+      "pressure": 68.34977578475336,
+      "signal": "CONFIRMED BUY",
+      "status": "OPEN",
+      "created_at": "2026-09-30 10:57:34 UTC"
     }
   },
   "real_trades": {}
