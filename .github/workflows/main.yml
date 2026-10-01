@@ -1,38 +1,26 @@
-name: Run ATI Bot V40.2.15
+name: Run ATI Bot
 
 on:
   workflow_dispatch:
 
   schedule:
+    # Every 5 minutes
     - cron: "*/5 * * * *"
 
+permissions:
+  contents: read
+
 concurrency:
-  group: ati-bot-v40-2-15
-  cancel-in-progress: false
+  group: ati-bot
+  cancel-in-progress: true
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
 
-    timeout-minutes: 10
-
-    env:
-      TABDEAL_API_KEY: ${{ secrets.TABDEAL_API_KEY }}
-      TABDEAL_API_SECRET: ${{ secrets.TABDEAL_API_SECRET }}
-
-      TABDIL_API_KEY: ${{ secrets.TABDIL_API_KEY }}
-      TABDIL_API_SECRET: ${{ secrets.TABDIL_API_SECRET }}
-
-      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-
-      LIVE_TRADING: ${{ secrets.LIVE_TRADING }}
-      ORDER_QTY: ${{ secrets.ORDER_QTY }}
-
-      PYTHONUNBUFFERED: "1"
+    timeout-minutes: 4
 
     steps:
-
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -40,26 +28,27 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: "pip"
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install requests
 
-      - name: Verify Python syntax
+      - name: Python syntax check
         run: |
           python -m py_compile main.py
 
-      - name: Start ATI Bot
-        run: |
-          echo "=========================================="
-          echo "ATI CRYPTO BOT V40.2.15"
-          echo "=========================================="
-          echo "SERVER TIME AUTH: ENABLED"
-          echo "API AUTH CHECK: ENABLED"
-          echo "CAN TRADE CHECK: ENABLED"
-          echo "USDT BALANCE CHECK: ENABLED"
-          echo "REAL BUY MAX PER RUN: 1"
-          echo "=========================================="
+      - name: Run ATI Bot
+        env:
+          TABDEAL_API_KEY: ${{ secrets.TABDEAL_API_KEY }}
+          TABDEAL_API_SECRET: ${{ secrets.TABDEAL_API_SECRET }}
 
-          python -u main.py
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
+          LIVE_TRADING: ${{ secrets.LIVE_TRADING }}
+          ORDER_QTY: ${{ secrets.ORDER_QTY }}
+
+        run: |
+          python main.py
