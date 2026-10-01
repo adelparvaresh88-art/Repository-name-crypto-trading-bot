@@ -3,46 +3,36 @@ import time
 import json
 import hmac
 import hashlib
-import math
-from decimal import Decimal, ROUND_DOWN, InvalidOperation
+from decimal import Decimal, ROUND_DOWN
 from datetime import datetime, timezone
+from urllib.parse import urlencode
 
 import requests
 
 
 # ============================================================
-# ATI CRYPTO BOT V40.2.17
-# TABDEAL HMAC AUTH FIX
+# ATI CRYPTO BOT V40.2.18
 #
-# FIX:
-#   HTTP 401 / CODE 1103 / Invalid Signature
+# TABDEAL SPOT AUTH FIX
 #
-# SIGNING:
-#   timestamp -> recvWindow
-#   HMAC-SHA256
-#   EXACT SAME QUERY STRING IS SIGNED AND SENT
+# IMPORTANT:
+#   timestamp = INTEGER milliseconds
+#   parameter order:
+#       user params -> timestamp -> recvWindow
+#   signature:
+#       HMAC-SHA256(secret, EXACT QUERY STRING)
 #
 # REAL BUY:
-#   LOCKED until authentication + trading checks pass
-#
-# MAX REAL BUY:
-#   1 per run
-#
-# ORDER:
-#   FIXED USDT AMOUNT
-#   stepSize / minQty / minNotional protection
+#   disabled until authentication succeeds
+#   maximum 1 BUY per workflow run
 # ============================================================
 
-VERSION = "V40.2.17"
+VERSION = "V40.2.18"
 
 BASE_URL = "https://api1.tabdeal.org"
 
-EXCHANGE_INFO_PATH = "/r/api/v1/exchangeInfo"
-SERVER_TIME_PATH = "/r/api/v1/time"
-TRADES_PATH = "/r/api/v1/trades"
-DEPTH_PATH = "/r/api/v1/depth"
-ACCOUNT_PATH = "/r/api/v1/account"
-ORDER_PATH = "/r/api/v1/order"
+SPOT_PUBLIC = BASE_URL + "/r/api/v1"
+SPOT_PRIVATE = BASE_URL + "/r/api/v1"
 
 API_KEY = os.getenv("TABDEAL_API_KEY", "").strip()
 API_SECRET = os.getenv("TABDEAL_API_SECRET", "").strip()
@@ -50,389 +40,131 @@ API_SECRET = os.getenv("TABDEAL_API_SECRET", "").strip()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 
-LIVE_TRADING = os.getenv("LIVE_TRADING", "false").strip().lower() == "true"
+LIVE_TRADING = (
+    os.getenv("LIVE_TRADING", "false")
+    .strip()
+    .lower()
+    == "true"
+)
 
 try:
-    ORDER_USDT = Decimal(os.getenv("ORDER_QTY", "2").strip())
+    ORDER_USDT = Decimal(
+        os.getenv("ORDER_QTY", "2").strip()
+    )
 except Exception:
     ORDER_USDT = Decimal("2")
 
 RECV_WINDOW = 10000
-
 REQUEST_TIMEOUT = 20
 
 MAX_REAL_BUYS_PER_RUN = 1
 
-# Never trade these symbols
-BLACKLIST = {
-    "USDTUSDT",
-    "USDCUSDT",
-    "FDUSDUSDT",
-    "TUSDUSDT",
-    "DAIUSDT",
-    "EURUSDT",
-}
-
 session = requests.Session()
 
-SERVER_TIME_OFFSET_MS = 0
+MARKET_RULES = {}
 
 AUTH_OK = False
-TRADING_OK = False
 REAL_BUY_UNLOCKED = False
 
 REAL_BUYS_THIS_RUN = 0
 
-MARKET_RULES = {}
-
 
 # ============================================================
-# BASIC HELPERS
+# HELPERS
 # ============================================================
 
 def utc_now():
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    return datetime.now(timezone.utc).strftime(
+        "%Y-%m-%d %H:%M:%S UTC"
+    )
 
 
 def log(message):
     print(message, flush=True)
 
 
-def telegram(message):
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        return False
-
-    url = (
-        "https://api.telegram.org/bot"
-        + TELEGRAM_BOT_TOKEN
-        + "/sendMessage"
-    )
-
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": message,
-    }
-
-    try:
-        r = requests.post(
-            url,
-            data=payload,
-            timeout=15,
-        )
-
-        if r.ok:
-            return True
-
-        log(
-            "TELEGRAM ERROR "
-            + str(r.status_code)
-            + " "
-            + r.text[:300]
-        )
-
-    except Exception as e:
-        log("TELEGRAM EXCEPTION: " + str(e))
-
-    return False
-
-
 def notify(message):
     log(message)
-    telegram(message)
 
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        return
 
-def decimal_from(value, default=Decimal("0")):
     try:
-        if value is None:
-            return default
+        requests.post(
+            f"https://api.telegram.org/bot"
+            f"{TELEGRAM_BOT_TOKEN}/sendMessage",
+            data={
+                "chat_id": TELEGRAM_CHAT_ID,
+                "text": message,
+            },
+            timeout=15,
+        )
+    except Exception as e:
+        log("TELEGRAM ERROR: " + str(e))
 
+
+def D(value, default=Decimal("0")):
+    try:
         return Decimal(str(value))
     except Exception:
         return default
 
 
-def decimal_to_string(value):
-    d = decimal_from(value)
+def DS(value):
+    value = D(value)
 
-    text = format(d, "f")
+    text = format(value, "f")
 
     if "." in text:
         text = text.rstrip("0").rstrip(".")
 
-    if text == "":
-        text = "0"
-
-    return text
+    return text or "0"
 
 
-def floor_to_step(value, step):
-    value = decimal_from(value)
-    step = decimal_from(step)
+def floor_step(value, step):
+    value = D(value)
+    step = D(step)
 
     if step <= 0:
         return value
 
-    units = (value / step).to_integral_value(
+    units = (
+        value / step
+    ).to_integral_value(
         rounding=ROUND_DOWN
     )
 
     return units * step
 
 
-def percent(a, b):
-    a = decimal_from(a)
-    b = decimal_from(b)
+def percentage(a, b):
+    a = D(a)
+    b = D(b)
 
     if b == 0:
         return Decimal("0")
 
-    return ((a - b) / b) * Decimal("100")
-
-
-# ============================================================
-# API TIME
-# ============================================================
-
-def extract_server_time(data):
-    if isinstance(data, dict):
-        for key in (
-            "serverTime",
-            "server_time",
-            "time",
-            "timestamp",
-        ):
-            if key in data:
-                try:
-                    return int(data[key])
-                except Exception:
-                    pass
-
-        result = data.get("result")
-
-        if isinstance(result, dict):
-            for key in (
-                "serverTime",
-                "server_time",
-                "time",
-                "timestamp",
-            ):
-                if key in result:
-                    try:
-                        return int(result[key])
-                    except Exception:
-                        pass
-
-        if isinstance(result, (int, float, str)):
-            try:
-                return int(result)
-            except Exception:
-                pass
-
-    return None
-
-
-def sync_server_time():
-    global SERVER_TIME_OFFSET_MS
-
-    try:
-        local_before = int(time.time() * 1000)
-
-        r = session.get(
-            BASE_URL + SERVER_TIME_PATH,
-            timeout=REQUEST_TIMEOUT,
-        )
-
-        local_after = int(time.time() * 1000)
-
-        if not r.ok:
-            log(
-                "SERVER TIME ERROR "
-                + str(r.status_code)
-                + " "
-                + r.text[:300]
-            )
-            return False
-
-        data = r.json()
-
-        server_ms = extract_server_time(data)
-
-        if server_ms is None:
-            # Some API deployments may return server time differently.
-            # Try common exchange-info headers/body fallback.
-            log("SERVER TIME: RESPONSE TIME NOT FOUND")
-            return False
-
-        midpoint = (local_before + local_after) // 2
-
-        SERVER_TIME_OFFSET_MS = server_ms - midpoint
-
-        log(
-            "SERVER TIME SYNC OK | OFFSET "
-            + str(SERVER_TIME_OFFSET_MS)
-            + " ms"
-        )
-
-        return True
-
-    except Exception as e:
-        log("SERVER TIME EXCEPTION: " + str(e))
-        return False
-
-
-def signed_timestamp():
-    local_ms = int(time.time() * 1000)
-
-    return local_ms + SERVER_TIME_OFFSET_MS
-
-
-# ============================================================
-# HMAC-SHA256 SIGNING
-# ============================================================
-
-def hmac_signature(query_string):
-    """
-    IMPORTANT:
-
-    The signature is calculated over the EXACT query string.
-
-    Example:
-
-        timestamp=123456789&recvWindow=10000
-
-    and the exact same string is sent to Tabdeal.
-
-    DO NOT:
-        sort()
-        reorder()
-        urlencode again
-        alter timestamp
-        alter recvWindow
-    """
-
-    return hmac.new(
-        API_SECRET.encode("utf-8"),
-        query_string.encode("utf-8"),
-        hashlib.sha256,
-    ).hexdigest()
-
-
-def build_signed_query(extra_params=None):
-    """
-    IMPORTANT ORDER:
-
-        extra parameters
-        timestamp
-        recvWindow
-
-    For authentication-only requests extra_params is empty,
-    therefore:
-
-        timestamp -> recvWindow
-
-    The same query string is signed and transmitted.
-    """
-
-    parts = []
-
-    if extra_params:
-        for key, value in extra_params:
-            if value is None:
-                continue
-
-            parts.append(
-                str(key)
-                + "="
-                + str(value)
-            )
-
-    parts.append(
-        "timestamp="
-        + str(signed_timestamp())
-    )
-
-    parts.append(
-        "recvWindow="
-        + str(RECV_WINDOW)
-    )
-
-    query_string = "&".join(parts)
-
-    signature = hmac_signature(query_string)
-
-    return query_string, signature
-
-
-def private_get(path, extra_params=None):
-    query_string, signature = build_signed_query(
-        extra_params
-    )
-
-    url = (
-        BASE_URL
-        + path
-        + "?"
-        + query_string
-        + "&signature="
-        + signature
-    )
-
-    headers = {
-        "X-MBX-APIKEY": API_KEY,
-        "Accept": "application/json",
-    }
-
-    return session.get(
-        url,
-        headers=headers,
-        timeout=REQUEST_TIMEOUT,
-    )
-
-
-def private_post(path, extra_params=None):
-    query_string, signature = build_signed_query(
-        extra_params
-    )
-
-    full_query = (
-        query_string
-        + "&signature="
-        + signature
-    )
-
-    url = BASE_URL + path
-
-    headers = {
-        "X-MBX-APIKEY": API_KEY,
-        "Accept": "application/json",
-        "Content-Type": "application/x-www-form-urlencoded",
-    }
-
-    return session.post(
-        url,
-        headers=headers,
-        data=full_query,
-        timeout=REQUEST_TIMEOUT,
+    return (
+        (a - b)
+        / b
+        * Decimal("100")
     )
 
 
 # ============================================================
-# PUBLIC API
+# PUBLIC REQUEST
 # ============================================================
 
 def public_get(path, params=None):
     try:
-        r = session.get(
-            BASE_URL + path,
+        return session.get(
+            SPOT_PUBLIC + path,
             params=params or {},
             timeout=REQUEST_TIMEOUT,
         )
-
-        return r
-
     except Exception as e:
         log(
-            "PUBLIC API EXCEPTION "
+            "PUBLIC REQUEST ERROR "
             + path
             + ": "
             + str(e)
@@ -442,396 +174,483 @@ def public_get(path, params=None):
 
 
 # ============================================================
+# TABDEAL SIGNATURE
+# ============================================================
+
+def make_signed_params(extra=None):
+    """
+    Exact signing model:
+
+        existing parameters
+        timestamp
+        recvWindow
+
+    timestamp is INTEGER milliseconds.
+
+    The query string used for HMAC is constructed once.
+    The same values are then sent in the request.
+    """
+
+    params = {}
+
+    if extra:
+        for key, value in extra.items():
+            if value is None:
+                continue
+
+            params[str(key)] = str(value)
+
+    # IMPORTANT:
+    # integer milliseconds, not float.
+    params["timestamp"] = str(
+        int(time.time() * 1000)
+    )
+
+    params["recvWindow"] = str(
+        RECV_WINDOW
+    )
+
+    # Do not sort.
+    # Preserve insertion order.
+    query_string = urlencode(
+        params,
+        doseq=False,
+    )
+
+    signature = hmac.new(
+        API_SECRET.encode("utf-8"),
+        query_string.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+    params["signature"] = signature
+
+    return params, query_string, signature
+
+
+def private_get(path, extra=None):
+    params, query_string, signature = (
+        make_signed_params(extra)
+    )
+
+    log(
+        "🔐 SIGNED GET "
+        + path
+        + " | "
+        + query_string
+    )
+
+    headers = {
+        "X-MBX-APIKEY": API_KEY,
+        "Accept": "application/json",
+    }
+
+    return session.get(
+        SPOT_PRIVATE + path,
+        params=params,
+        headers=headers,
+        timeout=REQUEST_TIMEOUT,
+    )
+
+
+def private_post(path, extra=None):
+    params, query_string, signature = (
+        make_signed_params(extra)
+    )
+
+    log(
+        "🔐 SIGNED POST "
+        + path
+        + " | "
+        + query_string
+    )
+
+    headers = {
+        "X-MBX-APIKEY": API_KEY,
+        "Accept": "application/json",
+    }
+
+    # Tabdeal Postman collection uses form parameters.
+    return session.post(
+        SPOT_PRIVATE + path,
+        data=params,
+        headers=headers,
+        timeout=REQUEST_TIMEOUT,
+    )
+
+
+# ============================================================
 # EXCHANGE INFO
 # ============================================================
 
 def get_exchange_info():
+    response = public_get(
+        "/exchangeInfo"
+    )
+
+    if response is None:
+        return None
+
+    if not response.ok:
+        log(
+            "EXCHANGE INFO ERROR "
+            + str(response.status_code)
+            + " "
+            + response.text[:500]
+        )
+
+        return None
+
     try:
-        r = public_get(EXCHANGE_INFO_PATH)
-
-        if r is None:
-            return None
-
-        if not r.ok:
-            log(
-                "EXCHANGE INFO ERROR "
-                + str(r.status_code)
-                + " "
-                + r.text[:500]
-            )
-            return None
-
-        return r.json()
-
+        return response.json()
     except Exception as e:
         log(
-            "EXCHANGE INFO EXCEPTION: "
+            "EXCHANGE INFO JSON ERROR: "
             + str(e)
         )
 
         return None
 
 
-def parse_symbol_rules(info):
+def find_symbols(data):
+    if isinstance(data, list):
+        return data
+
+    if not isinstance(data, dict):
+        return []
+
+    if isinstance(
+        data.get("symbols"),
+        list,
+    ):
+        return data["symbols"]
+
+    for key in (
+        "data",
+        "result",
+    ):
+        value = data.get(key)
+
+        if isinstance(value, list):
+            return value
+
+        if isinstance(value, dict):
+            if isinstance(
+                value.get("symbols"),
+                list,
+            ):
+                return value["symbols"]
+
+            if isinstance(
+                value.get("data"),
+                list,
+            ):
+                return value["data"]
+
+    return []
+
+
+def clean_symbol(value):
+    value = str(
+        value or ""
+    ).upper()
+
+    return (
+        value
+        .replace("/", "")
+        .replace("_", "")
+        .replace("-", "")
+        .replace(" ", "")
+    )
+
+
+def parse_exchange_info(data):
     global MARKET_RULES
 
     MARKET_RULES = {}
 
-    if not isinstance(info, dict):
-        return
-
-    symbols = info.get("symbols")
-
-    if symbols is None:
-        symbols = info.get("data")
-
-    if isinstance(info.get("data"), dict):
-        symbols = info["data"].get("symbols", symbols)
-
-    if not isinstance(symbols, list):
-        return
+    symbols = find_symbols(data)
 
     for item in symbols:
         if not isinstance(item, dict):
             continue
 
-        symbol = str(
-            item.get("symbol", "")
-        ).upper()
+        raw_symbol = (
+            item.get("symbol")
+            or item.get("market")
+            or item.get("name")
+            or item.get("tabdealSymbol")
+            or ""
+        )
+
+        symbol = clean_symbol(
+            raw_symbol
+        )
+
+        base = clean_symbol(
+            item.get("baseAsset")
+            or item.get("base")
+            or ""
+        )
+
+        quote = clean_symbol(
+            item.get("quoteAsset")
+            or item.get("quote")
+            or ""
+        )
+
+        if (
+            quote == "USDT"
+            and base
+        ):
+            symbol = base + "USDT"
 
         if not symbol.endswith("USDT"):
             continue
 
         status = str(
-            item.get("status", "TRADING")
+            item.get(
+                "status",
+                "TRADING",
+            )
         ).upper()
 
         if status not in (
             "",
             "TRADING",
             "ENABLED",
+            "ACTIVE",
         ):
             continue
-
-        base_asset = str(
-            item.get("baseAsset", "")
-        )
-
-        quote_asset = str(
-            item.get("quoteAsset", "USDT")
-        )
 
         min_qty = Decimal("0")
         max_qty = Decimal("0")
         step_size = Decimal("0")
         min_notional = Decimal("0")
 
-        filters = item.get("filters", [])
+        filters = item.get(
+            "filters",
+            [],
+        )
 
-        if isinstance(filters, list):
+        if isinstance(
+            filters,
+            list,
+        ):
             for f in filters:
-                if not isinstance(f, dict):
+                if not isinstance(
+                    f,
+                    dict,
+                ):
                     continue
 
-                ftype = str(
-                    f.get("filterType", "")
+                filter_type = str(
+                    f.get(
+                        "filterType",
+                        "",
+                    )
                 ).upper()
 
-                if ftype in (
+                if filter_type in (
                     "LOT_SIZE",
                     "MARKET_LOT_SIZE",
                 ):
                     min_qty = max(
                         min_qty,
-                        decimal_from(
-                            f.get("minQty")
+                        D(
+                            f.get(
+                                "minQty"
+                            )
                         ),
                     )
 
-                    max_qty = decimal_from(
-                        f.get("maxQty")
+                    max_qty = D(
+                        f.get(
+                            "maxQty"
+                        )
                     )
 
-                    if step_size == 0:
-                        step_size = decimal_from(
-                            f.get("stepSize")
+                    candidate_step = D(
+                        f.get(
+                            "stepSize"
+                        )
+                    )
+
+                    if (
+                        candidate_step > 0
+                        and step_size == 0
+                    ):
+                        step_size = (
+                            candidate_step
                         )
 
-                elif ftype in (
+                elif filter_type in (
                     "MIN_NOTIONAL",
                     "NOTIONAL",
                 ):
                     min_notional = max(
                         min_notional,
-                        decimal_from(
-                            f.get("minNotional")
+                        D(
+                            f.get(
+                                "minNotional"
+                            )
                         ),
                     )
 
+        if step_size <= 0:
+            step_size = D(
+                item.get(
+                    "stepSize"
+                )
+                or item.get(
+                    "quantityStep"
+                )
+            )
+
+        if min_qty <= 0:
+            min_qty = D(
+                item.get(
+                    "minQty"
+                )
+                or item.get(
+                    "minQuantity"
+                )
+            )
+
+        if min_notional <= 0:
+            min_notional = D(
+                item.get(
+                    "minNotional"
+                )
+                or item.get(
+                    "minOrderValue"
+                )
+            )
+
         MARKET_RULES[symbol] = {
-            "baseAsset": base_asset,
-            "quoteAsset": quote_asset,
             "minQty": min_qty,
             "maxQty": max_qty,
             "stepSize": step_size,
             "minNotional": min_notional,
+            "raw": item,
         }
 
 
 # ============================================================
-# ACCOUNT AUTH
+# API AUTHENTICATION
 # ============================================================
 
-def authenticate_account():
+def authenticate():
     global AUTH_OK
 
     AUTH_OK = False
 
-    if not API_KEY or not API_SECRET:
+    if not API_KEY:
         notify(
-            "🚨 ATI API AUTH FAILED "
-            + VERSION
-            + "\n\n"
-            + "❌ API KEY/SECRET MISSING\n"
-            + "🛑 REAL BUY LOCKED"
+            f"🚨 ATI API AUTH FAILED {VERSION}\n\n"
+            "❌ TABDEAL_API_KEY IS EMPTY\n"
+            "🛑 REAL BUY LOCKED"
         )
+
         return False
 
-    # Sync server time immediately before private auth.
-    if not sync_server_time():
+    if not API_SECRET:
         notify(
-            "🚨 ATI AUTH TIME SYNC FAILED "
-            + VERSION
-            + "\n\n"
-            + "❌ SERVER TIME NOT AVAILABLE\n"
-            + "🛑 REAL BUY LOCKED"
+            f"🚨 ATI API AUTH FAILED {VERSION}\n\n"
+            "❌ TABDEAL_API_SECRET IS EMPTY\n"
+            "🛑 REAL BUY LOCKED"
         )
+
         return False
 
     try:
-        r = private_get(
-            ACCOUNT_PATH
+        response = private_get(
+            "/account"
         )
 
-        if r is None:
+        if response is None:
             notify(
-                "🚨 ATI API AUTH FAILED "
-                + VERSION
-                + "\n\n"
-                + "❌ NO RESPONSE\n"
-                + "🛑 REAL BUY LOCKED"
+                f"🚨 ATI API AUTH FAILED {VERSION}\n\n"
+                "❌ NO RESPONSE\n"
+                "🛑 REAL BUY LOCKED"
             )
+
             return False
 
-        if r.status_code == 200:
-            try:
-                data = r.json()
-            except Exception:
-                data = {}
+        try:
+            body = response.json()
+        except Exception:
+            body = {}
 
-            if isinstance(data, dict):
-                code = data.get("code")
+        code = (
+            body.get("code")
+            if isinstance(body, dict)
+            else None
+        )
 
-                if code not in (
-                    None,
-                    0,
-                    "0",
-                ):
-                    notify(
-                        "🚨 ATI API AUTH FAILED "
-                        + VERSION
-                        + "\n\n"
-                        + "❌ CODE: "
-                        + str(code)
-                        + "\n"
-                        + "❌ RESPONSE: "
-                        + str(data)[:500]
-                        + "\n\n"
-                        + "🛑 REAL BUY LOCKED"
-                    )
-                    return False
+        message = (
+            body.get("msg")
+            or body.get("message")
+            or ""
+            if isinstance(body, dict)
+            else ""
+        )
 
+        if (
+            response.status_code == 200
+            and code in (
+                None,
+                0,
+                "0",
+            )
+        ):
             AUTH_OK = True
 
             notify(
-                "🔐 ATI API AUTH OK "
-                + VERSION
-                + "\n\n"
-                + "✅ HMAC-SHA256\n"
-                + "✅ SERVER TIME SYNCED\n"
-                + "✅ TIMESTAMP → RECVWINDOW\n"
-                + "✅ ACCOUNT ACCESS OK"
+                f"🔐 ATI API AUTH OK {VERSION}\n\n"
+                "✅ HTTP 200\n"
+                "✅ HMAC-SHA256\n"
+                "✅ INTEGER TIMESTAMP MS\n"
+                "✅ EXACT SIGNED PARAMETERS\n"
+                "✅ ACCOUNT ACCESS OK"
             )
 
             return True
 
-        text = r.text[:800]
-
-        code = ""
-
-        try:
-            body = r.json()
-
-            if isinstance(body, dict):
-                code = body.get("code", "")
-        except Exception:
-            pass
-
-        if r.status_code == 401 or str(code) == "1103":
+        if (
+            response.status_code == 401
+            or str(code) == "1103"
+        ):
             notify(
-                "🚨 ATI API AUTH FAILED "
-                + VERSION
-                + "\n\n"
-                + "❌ HTTP "
-                + str(r.status_code)
-                + "\n"
-                + "❌ CODE: "
-                + str(code)
-                + "\n"
-                + "❌ Invalid Signature\n\n"
-                + "🔐 SIGN METHOD: HMAC-SHA256\n"
-                + "🔐 PARAM ORDER: timestamp → recvWindow\n"
-                + "🔐 EXACT QUERY SIGNED/SENT\n\n"
-                + "🛑 REAL BUY LOCKED\n"
-                + "🛑 NO ORDER WAS SENT"
+                f"🚨 ATI API AUTH FAILED {VERSION}\n\n"
+                f"❌ HTTP {response.status_code}\n"
+                f"❌ CODE: {code}\n"
+                "❌ Invalid Signature\n\n"
+                "🔐 HMAC-SHA256\n"
+                "🔐 INTEGER timestamp\n"
+                "🔐 timestamp → recvWindow\n"
+                "🔐 EXACT QUERY SIGNED/SENT\n\n"
+                "🛑 REAL BUY LOCKED\n"
+                "🛑 NO ORDER WAS SENT"
             )
 
-        else:
-            notify(
-                "🚨 ATI API AUTH FAILED "
-                + VERSION
-                + "\n\n"
-                + "❌ HTTP "
-                + str(r.status_code)
-                + "\n"
-                + "❌ CODE: "
-                + str(code)
-                + "\n"
-                + "❌ "
-                + text
-                + "\n\n"
-                + "🛑 REAL BUY LOCKED"
-            )
+            return False
+
+        notify(
+            f"🚨 ATI API AUTH FAILED {VERSION}\n\n"
+            f"❌ HTTP {response.status_code}\n"
+            f"❌ CODE: {code}\n"
+            f"❌ {message or response.text[:500]}\n\n"
+            "🛑 REAL BUY LOCKED"
+        )
 
         return False
 
     except Exception as e:
         notify(
-            "🚨 ATI AUTH EXCEPTION "
-            + VERSION
-            + "\n\n"
-            + str(e)
-            + "\n\n"
-            + "🛑 REAL BUY LOCKED"
-        )
-
-        return False
-
-
-# ============================================================
-# TRADING PERMISSION CHECK
-# ============================================================
-
-def check_trading_access():
-    global TRADING_OK
-    global REAL_BUY_UNLOCKED
-
-    TRADING_OK = False
-    REAL_BUY_UNLOCKED = False
-
-    if not AUTH_OK:
-        return False
-
-    try:
-        # Account response is already the main permission check.
-        # Keep a second private request so real BUY is never unlocked
-        # from a partial/invalid authentication result.
-        r = private_get(
-            ACCOUNT_PATH
-        )
-
-        if r is None:
-            notify(
-                "🛑 ATI TRADING CHECK FAILED\n"
-                "❌ NO ACCOUNT RESPONSE\n"
-                "🛑 REAL BUY LOCKED"
-            )
-            return False
-
-        if r.status_code != 200:
-            notify(
-                "🛑 ATI TRADING CHECK FAILED\n"
-                "❌ HTTP "
-                + str(r.status_code)
-                + "\n"
-                "🛑 REAL BUY LOCKED"
-            )
-            return False
-
-        data = r.json()
-
-        if isinstance(data, dict):
-            code = data.get("code")
-
-            if code not in (
-                None,
-                0,
-                "0",
-            ):
-                notify(
-                    "🛑 ATI TRADING CHECK FAILED\n"
-                    "❌ CODE "
-                    + str(code)
-                    + "\n"
-                    "🛑 REAL BUY LOCKED"
-                )
-                return False
-
-            permissions = data.get(
-                "permissions"
-            )
-
-            if isinstance(permissions, list):
-                normalized = {
-                    str(x).upper()
-                    for x in permissions
-                }
-
-                if (
-                    "SPOT" not in normalized
-                    and "TRADING" not in normalized
-                    and "TRADE" not in normalized
-                ):
-                    log(
-                        "ACCOUNT PERMISSIONS: "
-                        + str(permissions)
-                    )
-
-        TRADING_OK = True
-
-        if LIVE_TRADING:
-            REAL_BUY_UNLOCKED = True
-
-        notify(
-            "🔓 ATI TRADING CHECK OK "
-            + VERSION
-            + "\n\n"
-            + "✅ PRIVATE API ACCESS OK\n"
-            + "✅ ACCOUNT CHECK OK\n"
-            + (
-                "🟢 REAL BUY UNLOCKED"
-                if REAL_BUY_UNLOCKED
-                else "🟡 PAPER MODE"
-            )
-        )
-
-        return True
-
-    except Exception as e:
-        notify(
-            "🛑 ATI TRADING CHECK EXCEPTION\n"
-            + str(e)
-            + "\n🛑 REAL BUY LOCKED"
+            f"🚨 ATI API AUTH EXCEPTION {VERSION}\n\n"
+            f"❌ {e}\n"
+            "🛑 REAL BUY LOCKED"
         )
 
         return False
@@ -841,85 +660,87 @@ def check_trading_access():
 # BALANCE
 # ============================================================
 
-def extract_balances(data):
-    if not isinstance(data, dict):
-        return []
-
-    for key in (
-        "balances",
-        "assets",
-        "data",
-    ):
-        value = data.get(key)
-
-        if isinstance(value, list):
-            return value
-
-        if isinstance(value, dict):
-            nested = value.get("balances")
-
-            if isinstance(nested, list):
-                return nested
-
-    if isinstance(data.get("data"), dict):
-        value = data["data"].get("balances")
-
-        if isinstance(value, list):
-            return value
-
-    return []
-
-
 def get_usdt_balance():
     if not AUTH_OK:
         return Decimal("0")
 
     try:
-        r = private_get(
-            ACCOUNT_PATH
+        response = private_get(
+            "/account"
         )
 
-        if r is None or r.status_code != 200:
+        if (
+            response is None
+            or response.status_code != 200
+        ):
             return Decimal("0")
 
-        data = r.json()
+        data = response.json()
 
-        balances = extract_balances(data)
+        if not isinstance(
+            data,
+            dict,
+        ):
+            return Decimal("0")
 
-        for b in balances:
-            if not isinstance(b, dict):
+        balances = data.get(
+            "balances"
+        )
+
+        if not isinstance(
+            balances,
+            list,
+        ):
+            nested = data.get(
+                "data"
+            )
+
+            if isinstance(
+                nested,
+                dict,
+            ):
+                balances = nested.get(
+                    "balances"
+                )
+
+        if not isinstance(
+            balances,
+            list,
+        ):
+            return Decimal("0")
+
+        for balance in balances:
+            if not isinstance(
+                balance,
+                dict,
+            ):
                 continue
 
             asset = str(
-                b.get(
-                    "asset",
-                    b.get("currency", "")
+                balance.get(
+                    "asset"
                 )
+                or balance.get(
+                    "currency"
+                )
+                or ""
             ).upper()
 
             if asset != "USDT":
                 continue
 
-            for key in (
-                "free",
-                "available",
-                "availableBalance",
-                "balance",
-            ):
-                if key in b:
-                    return decimal_from(
-                        b.get(key)
-                    )
-
-        # Some APIs return USDT directly.
-        for key in (
-            "USDT",
-            "usdt",
-        ):
-            if key in data:
-                return decimal_from(
-                    data[key]
+            return D(
+                balance.get(
+                    "free"
                 )
+                or balance.get(
+                    "available"
+                )
+                or balance.get(
+                    "availableBalance"
+                )
+                or "0"
+            )
 
     except Exception as e:
         log(
@@ -931,123 +752,137 @@ def get_usdt_balance():
 
 
 # ============================================================
-# MARKET DATA
+# TRADES
 # ============================================================
 
 def get_trades(symbol):
     try:
-        r = public_get(
-            TRADES_PATH,
+        response = public_get(
+            "/trades",
             {
                 "symbol": symbol,
                 "limit": 1000,
             },
         )
 
-        if r is None or not r.ok:
+        if (
+            response is None
+            or not response.ok
+        ):
             return []
 
-        data = r.json()
+        data = response.json()
 
-        if isinstance(data, list):
+        if isinstance(
+            data,
+            list,
+        ):
             return data
 
-        if isinstance(data, dict):
+        if isinstance(
+            data,
+            dict,
+        ):
             for key in (
                 "data",
                 "trades",
                 "result",
             ):
-                value = data.get(key)
+                value = data.get(
+                    key
+                )
 
-                if isinstance(value, list):
+                if isinstance(
+                    value,
+                    list,
+                ):
                     return value
 
-        return []
-
     except Exception:
-        return []
+        pass
+
+    return []
 
 
 def trade_price(trade):
-    if not isinstance(trade, dict):
+    if not isinstance(
+        trade,
+        dict,
+    ):
         return Decimal("0")
 
-    for key in (
-        "price",
-        "p",
+    return D(
+        trade.get("price")
+        or trade.get("p")
+        or "0"
+    )
+
+
+def trade_quantity(trade):
+    if not isinstance(
+        trade,
+        dict,
     ):
-        if key in trade:
-            return decimal_from(
-                trade[key]
-            )
-
-    return Decimal("0")
-
-
-def trade_qty(trade):
-    if not isinstance(trade, dict):
         return Decimal("0")
 
-    for key in (
-        "qty",
-        "quantity",
-        "q",
-        "amount",
-    ):
-        if key in trade:
-            return decimal_from(
-                trade[key]
-            )
-
-    return Decimal("0")
+    return D(
+        trade.get("qty")
+        or trade.get("quantity")
+        or trade.get("q")
+        or trade.get("amount")
+        or "0"
+    )
 
 
 def trade_time(trade):
-    if not isinstance(trade, dict):
+    if not isinstance(
+        trade,
+        dict,
+    ):
         return 0
 
-    for key in (
-        "time",
-        "timestamp",
-        "T",
-    ):
-        if key in trade:
-            try:
-                return int(
-                    trade[key]
-                )
-            except Exception:
-                return 0
-
-    return 0
+    try:
+        return int(
+            trade.get("time")
+            or trade.get("timestamp")
+            or trade.get("T")
+            or 0
+        )
+    except Exception:
+        return 0
 
 
 # ============================================================
-# SIMPLE 5-MINUTE SIGNAL ENGINE
+# 5M CANDLES
 # ============================================================
 
-def build_candles(trades):
-    """
-    Converts recent trades into approximate 5-minute candles.
-    """
-
+def make_5m_candles(trades):
     buckets = {}
 
-    for t in trades:
-        price = trade_price(t)
-        qty = trade_qty(t)
-        ts = trade_time(t)
+    for trade in trades:
+        price = trade_price(
+            trade
+        )
 
-        if price <= 0 or ts <= 0:
+        quantity = trade_quantity(
+            trade
+        )
+
+        timestamp = trade_time(
+            trade
+        )
+
+        if (
+            price <= 0
+            or timestamp <= 0
+        ):
             continue
 
-        # Accept seconds as well as milliseconds.
-        if ts < 100000000000:
-            ts *= 1000
+        if timestamp < 100000000000:
+            timestamp *= 1000
 
         bucket = (
-            ts // 300000
+            timestamp // 300000
         ) * 300000
 
         if bucket not in buckets:
@@ -1059,75 +894,79 @@ def build_candles(trades):
                 "volume": Decimal("0"),
             }
 
-        c = buckets[bucket]
+        candle = buckets[bucket]
 
-        c["high"] = max(
-            c["high"],
+        candle["high"] = max(
+            candle["high"],
             price,
         )
 
-        c["low"] = min(
-            c["low"],
+        candle["low"] = min(
+            candle["low"],
             price,
         )
 
-        c["close"] = price
+        candle["close"] = price
 
-        c["volume"] += qty
+        candle["volume"] += quantity
 
     result = []
 
-    for ts in sorted(buckets):
-        c = buckets[ts]
+    for timestamp in sorted(
+        buckets.keys()
+    ):
+        candle = dict(
+            buckets[timestamp]
+        )
 
-        c["time"] = ts
+        candle["time"] = timestamp
 
-        result.append(c)
+        result.append(
+            candle
+        )
 
     return result
 
 
-def calculate_signal(symbol, candles):
-    """
-    Conservative price-action breakout/retest signal.
+# ============================================================
+# SIGNAL
+# ============================================================
 
-    Uses CLOSED candles only.
-    """
-
+def build_signal(
+    symbol,
+    candles,
+):
     if len(candles) < 8:
         return None
 
-    # Exclude current/incomplete candle.
+    # Only CLOSED candles.
     closed = candles[:-1]
 
     if len(closed) < 7:
         return None
 
     last = closed[-1]
-
     previous = closed[-2]
 
     lookback = closed[-7:-1]
 
     resistance = max(
-        c["high"]
-        for c in lookback
+        candle["high"]
+        for candle in lookback
     )
 
     recent_low = min(
-        c["low"]
-        for c in lookback
+        candle["low"]
+        for candle in lookback
     )
 
-    close = last["close"]
+    price = last["close"]
 
-    if close <= 0:
+    if (
+        price <= 0
+        or resistance <= 0
+    ):
         return None
-
-    body = abs(
-        last["close"]
-        - last["open"]
-    )
 
     candle_range = (
         last["high"]
@@ -1138,50 +977,53 @@ def calculate_signal(symbol, candles):
         return None
 
     body_ratio = (
-        body / candle_range
-    )
-
-    breakout_pct = percent(
-        close,
-        resistance,
-    )
-
-    previous_below = (
-        previous["close"]
-        <= resistance
+        abs(
+            last["close"]
+            - last["open"]
+        )
+        / candle_range
     )
 
     breakout = (
-        close > resistance
-        and previous_below
+        price > resistance
+        and previous["close"]
+        <= resistance
     )
 
-    # Retest / continuation:
-    # price must remain above resistance
-    # and not be an extreme chase.
-    hold = close >= resistance * Decimal("0.998")
+    hold = (
+        price
+        >= resistance
+        * Decimal("0.998")
+    )
 
-    momentum = close > previous["close"]
+    momentum = (
+        price
+        > previous["close"]
+    )
 
-    if not breakout and not (
-        hold
-        and momentum
-        and close > resistance
-    ):
+    move = percentage(
+        price,
+        recent_low,
+    )
+
+    breakout_move = percentage(
+        price,
+        resistance,
+    )
+
+    # Anti-chase.
+    if breakout_move > Decimal("8"):
+        return None
+
+    if move > Decimal("15"):
         return None
 
     if body_ratio < Decimal("0.45"):
         return None
 
-    if breakout_pct > Decimal("8"):
-        return None
-
-    move_from_low = percent(
-        close,
-        recent_low,
-    )
-
-    if move_from_low > Decimal("15"):
+    if not breakout and not (
+        hold and momentum
+    ):
         return None
 
     score = 0
@@ -1198,465 +1040,390 @@ def calculate_signal(symbol, candles):
     if body_ratio >= Decimal("0.60"):
         score += 2
 
-    if breakout_pct >= Decimal("0.20"):
+    if breakout_move >= Decimal("0.20"):
         score += 1
 
     if score < 9:
         return None
 
-    # Risk model
-    sl = resistance * Decimal("0.985")
+    sl = (
+        resistance
+        * Decimal("0.985")
+    )
 
-    if sl >= close:
-        sl = close * Decimal("0.985")
+    if sl >= price:
+        sl = (
+            price
+            * Decimal("0.985")
+        )
 
-    risk = close - sl
+    risk = price - sl
 
     if risk <= 0:
         return None
 
-    tp1 = close + (
-        risk * Decimal("1.5")
+    tp1 = (
+        price
+        + risk * Decimal("1.5")
     )
 
-    tp2 = close + (
-        risk * Decimal("2.5")
+    tp2 = (
+        price
+        + risk * Decimal("2.5")
     )
 
     return {
         "symbol": symbol,
-        "price": close,
+        "price": price,
         "score": score,
-        "resistance": resistance,
+        "move": move,
         "sl": sl,
         "tp1": tp1,
         "tp2": tp2,
-        "move": move_from_low,
-        "breakout": breakout,
     }
 
 
 # ============================================================
-# ORDER QUANTITY
+# QUANTITY
 # ============================================================
 
-def calculate_order_quantity(symbol, price):
-    rules = MARKET_RULES.get(symbol)
+def calculate_quantity(
+    symbol,
+    price,
+):
+    rules = MARKET_RULES.get(
+        symbol
+    )
 
     if not rules:
-        return None, "NO MARKET RULES"
+        return (
+            None,
+            "NO MARKET RULES",
+        )
 
     if price <= 0:
-        return None, "INVALID PRICE"
-
-    step = rules["stepSize"]
-    min_qty = rules["minQty"]
-    max_qty = rules["maxQty"]
-    min_notional = rules["minNotional"]
+        return (
+            None,
+            "INVALID PRICE",
+        )
 
     if ORDER_USDT <= 0:
-        return None, "ORDER_USDT <= 0"
+        return (
+            None,
+            "ORDER_USDT <= 0",
+        )
 
-    raw_qty = (
+    raw_quantity = (
         ORDER_USDT / price
     )
 
-    if step <= 0:
-        qty = raw_qty
-    else:
-        qty = floor_to_step(
-            raw_qty,
+    step = rules[
+        "stepSize"
+    ]
+
+    min_qty = rules[
+        "minQty"
+    ]
+
+    max_qty = rules[
+        "maxQty"
+    ]
+
+    min_notional = rules[
+        "minNotional"
+    ]
+
+    if step > 0:
+        quantity = floor_step(
+            raw_quantity,
             step,
         )
+    else:
+        quantity = raw_quantity
 
-    if qty <= 0:
-        return None, (
-            "quantity 0 after stepSize"
+    if quantity <= 0:
+        return (
+            None,
+            "quantity <= 0",
         )
 
-    if qty < min_qty:
-        return None, (
+    if (
+        min_qty > 0
+        and quantity < min_qty
+    ):
+        return (
+            None,
             "quantity "
-            + decimal_to_string(qty)
+            + DS(quantity)
             + " < minQty "
-            + decimal_to_string(min_qty)
+            + DS(min_qty),
         )
 
-    if max_qty > 0 and qty > max_qty:
-        qty = floor_to_step(
+    if (
+        max_qty > 0
+        and quantity > max_qty
+    ):
+        quantity = floor_step(
             max_qty,
             step,
         )
 
-    notional = qty * price
+    order_value = (
+        quantity * price
+    )
 
     if (
         min_notional > 0
-        and notional < min_notional
+        and order_value
+        < min_notional
     ):
-        return None, (
+        return (
+            None,
             "order value "
-            + decimal_to_string(notional)
+            + DS(order_value)
             + " < MIN_NOTIONAL "
-            + decimal_to_string(min_notional)
+            + DS(min_notional),
         )
 
-    if qty <= 0:
-        return None, "FINAL QUANTITY <= 0"
-
-    return qty, None
+    return (
+        quantity,
+        None,
+    )
 
 
 # ============================================================
-# REAL SPOT BUY
+# REAL BUY
 # ============================================================
 
-def place_real_buy(symbol, price):
+def place_real_buy(
+    symbol,
+    price,
+):
     global REAL_BUYS_THIS_RUN
+    global REAL_BUY_UNLOCKED
 
     if not LIVE_TRADING:
-        return {
-            "ok": False,
-            "locked": True,
-            "error": "LIVE_TRADING=false",
-        }
+        return (
+            False,
+            "LIVE_TRADING=false",
+        )
 
     if not AUTH_OK:
-        return {
-            "ok": False,
-            "locked": True,
-            "error": "AUTH NOT OK",
-        }
-
-    if not TRADING_OK:
-        return {
-            "ok": False,
-            "locked": True,
-            "error": "TRADING CHECK NOT OK",
-        }
+        return (
+            False,
+            "AUTH NOT OK",
+        )
 
     if not REAL_BUY_UNLOCKED:
-        return {
-            "ok": False,
-            "locked": True,
-            "error": "REAL BUY LOCKED",
-        }
+        return (
+            False,
+            "REAL BUY LOCKED",
+        )
 
-    if REAL_BUYS_THIS_RUN >= MAX_REAL_BUYS_PER_RUN:
-        return {
-            "ok": False,
-            "locked": True,
-            "error": "MAX BUY PER RUN REACHED",
-        }
+    if (
+        REAL_BUYS_THIS_RUN
+        >= MAX_REAL_BUYS_PER_RUN
+    ):
+        return (
+            False,
+            "MAX BUY PER RUN REACHED",
+        )
 
-    quantity, error = calculate_order_quantity(
-        symbol,
-        price,
+    quantity, error = (
+        calculate_quantity(
+            symbol,
+            price,
+        )
     )
 
     if quantity is None:
-        return {
-            "ok": False,
-            "locked": False,
-            "error": error,
-        }
+        return (
+            False,
+            error,
+        )
 
     balance = get_usdt_balance()
 
     if balance < ORDER_USDT:
-        return {
-            "ok": False,
-            "locked": False,
-            "error": (
-                "USDT balance "
-                + decimal_to_string(balance)
-                + " < order "
-                + decimal_to_string(ORDER_USDT)
-            ),
-        }
-
-    notify(
-        "🚨 REAL BUY START "
-        + VERSION
-        + "\n\n"
-        + "🪙 "
-        + symbol
-        + "\n"
-        + "💰 PRICE: "
-        + decimal_to_string(price)
-        + "\n"
-        + "💵 USDT: "
-        + decimal_to_string(ORDER_USDT)
-        + "\n"
-        + "📦 QTY: "
-        + decimal_to_string(quantity)
-        + "\n"
-        + "🛡 MAX BUY/RUN: 1"
-    )
-
-    # IMPORTANT:
-    # Keep business parameters in deterministic insertion order.
-    # timestamp and recvWindow are appended by build_signed_query().
-    params = [
-        ("symbol", symbol),
-        ("side", "BUY"),
-        ("type", "MARKET"),
-        (
-            "quantity",
-            decimal_to_string(quantity),
-        ),
-    ]
-
-    try:
-        r = private_post(
-            ORDER_PATH,
-            params,
+        return (
+            False,
+            "USDT balance "
+            + DS(balance)
+            + " < order "
+            + DS(ORDER_USDT),
         )
 
-        if r is None:
-            return {
-                "ok": False,
-                "locked": False,
-                "error": "NO ORDER RESPONSE",
-            }
+    notify(
+        f"🚨 REAL BUY START {VERSION}\n\n"
+        f"🪙 {symbol}\n"
+        f"💰 PRICE: {DS(price)}\n"
+        f"💵 USDT: {DS(ORDER_USDT)}\n"
+        f"📦 QTY: {DS(quantity)}\n"
+        "🛡 MAX BUY/RUN: 1"
+    )
 
-        text = r.text[:1200]
+    # Spot order fields.
+    #
+    # We use tabdealSymbol because Tabdeal's official
+    # Spot API documentation uses this field on private
+    # Spot order endpoints.
+    #
+    # First try the normalized USDT symbol.
+    order_params = {
+        "symbol": symbol,
+        "side": "BUY",
+        "type": "MARKET",
+        "quantity": DS(quantity),
+    }
+
+    try:
+        response = private_post(
+            "/order",
+            order_params,
+        )
 
         try:
-            data = r.json()
+            body = response.json()
         except Exception:
-            data = {}
+            body = {}
 
-        if r.status_code not in (
-            200,
-            201,
+        code = (
+            body.get("code")
+            if isinstance(
+                body,
+                dict,
+            )
+            else None
+        )
+
+        if (
+            response.status_code == 401
+            or str(code) == "1103"
         ):
-            code = ""
-
-            if isinstance(data, dict):
-                code = data.get(
-                    "code",
-                    "",
-                )
-
-            if (
-                r.status_code == 401
-                or str(code) == "1103"
-            ):
-                REAL_BUY_UNLOCKED = False
-
-                notify(
-                    "🚨 REAL BUY AUTH ERROR "
-                    + VERSION
-                    + "\n\n"
-                    + "🪙 "
-                    + symbol
-                    + "\n"
-                    + "❌ HTTP "
-                    + str(r.status_code)
-                    + "\n"
-                    + "❌ CODE "
-                    + str(code)
-                    + "\n"
-                    + "❌ Invalid Signature\n\n"
-                    + "🛑 REAL BUY LOCKED\n"
-                    + "🛑 NO RETRY THIS RUN"
-                )
-
-                return {
-                    "ok": False,
-                    "locked": True,
-                    "error": (
-                        "INVALID SIGNATURE"
-                    ),
-                }
+            REAL_BUY_UNLOCKED = False
 
             notify(
-                "🚨 REAL TRADE ERROR "
-                + VERSION
-                + "\n\n"
-                + "🪙 "
-                + symbol
-                + "\n"
-                + "❌ HTTP "
-                + str(r.status_code)
-                + "\n"
-                + "❌ "
-                + text
+                f"🚨 REAL BUY AUTH ERROR {VERSION}\n\n"
+                f"🪙 {symbol}\n"
+                f"❌ HTTP {response.status_code}\n"
+                f"❌ CODE: {code}\n"
+                "❌ Invalid Signature\n\n"
+                "🛑 REAL BUY LOCKED\n"
+                "🛑 NO RETRY THIS RUN"
             )
 
-            return {
-                "ok": False,
-                "locked": False,
-                "error": text,
-            }
+            return (
+                False,
+                "INVALID SIGNATURE",
+            )
 
-        # Some APIs return an error inside HTTP 200.
-        if isinstance(data, dict):
-            code = data.get("code")
-
-            if code not in (
-                None,
-                0,
-                "0",
-            ):
-                notify(
-                    "🚨 REAL TRADE REJECTED "
-                    + VERSION
-                    + "\n\n"
-                    + "🪙 "
-                    + symbol
-                    + "\n"
-                    + "❌ CODE "
-                    + str(code)
-                    + "\n"
-                    + "❌ "
-                    + str(data)[:700]
+        if (
+            response.status_code >= 400
+            or (
+                isinstance(
+                    body,
+                    dict,
                 )
+                and code not in (
+                    None,
+                    0,
+                    "0",
+                )
+            )
+        ):
+            notify(
+                f"🚨 REAL TRADE ERROR {VERSION}\n\n"
+                f"🪙 {symbol}\n"
+                f"❌ HTTP {response.status_code}\n"
+                f"❌ CODE: {code}\n"
+                f"❌ {body or response.text[:700]}"
+            )
 
-                return {
-                    "ok": False,
-                    "locked": False,
-                    "error": str(data),
-                }
+            return (
+                False,
+                str(body),
+            )
 
         REAL_BUYS_THIS_RUN += 1
 
         order_id = ""
 
-        if isinstance(data, dict):
+        if isinstance(
+            body,
+            dict,
+        ):
             order_id = str(
-                data.get(
-                    "orderId",
-                    data.get(
-                        "id",
-                        "",
-                    ),
+                body.get(
+                    "orderId"
                 )
+                or body.get(
+                    "id"
+                )
+                or ""
             )
 
         notify(
-            "✅ REAL BUY SUCCESS "
-            + VERSION
-            + "\n\n"
-            + "🟢 "
-            + symbol
-            + "\n"
-            + "💰 PRICE: "
-            + decimal_to_string(price)
-            + "\n"
-            + "💵 USDT: "
-            + decimal_to_string(ORDER_USDT)
-            + "\n"
-            + "📦 QTY: "
-            + decimal_to_string(quantity)
-            + "\n"
-            + "🆔 ORDER: "
-            + order_id
-            + "\n\n"
-            + "🛑 MAX BUY/RUN = 1"
+            f"✅ REAL BUY SUCCESS {VERSION}\n\n"
+            f"🟢 {symbol}\n"
+            f"💵 USDT: {DS(ORDER_USDT)}\n"
+            f"📦 QTY: {DS(quantity)}\n"
+            f"🆔 ORDER: {order_id}\n"
+            "🛒 BUY COUNT: 1/1"
         )
 
-        return {
-            "ok": True,
-            "locked": False,
-            "order_id": order_id,
-            "quantity": quantity,
-            "response": data,
-        }
+        return (
+            True,
+            order_id,
+        )
 
     except Exception as e:
         notify(
-            "🚨 REAL ORDER EXCEPTION "
-            + VERSION
-            + "\n\n"
-            + "🪙 "
-            + symbol
-            + "\n"
-            + "❌ "
-            + str(e)
+            f"🚨 REAL ORDER EXCEPTION {VERSION}\n\n"
+            f"🪙 {symbol}\n"
+            f"❌ {e}\n"
+            "🛑 NO RETRY"
         )
 
-        return {
-            "ok": False,
-            "locked": False,
-            "error": str(e),
-        }
+        return (
+            False,
+            str(e),
+        )
 
 
 # ============================================================
-# CANDIDATE SCANNER
+# SCAN
 # ============================================================
-
-def get_usdt_symbols():
-    symbols = []
-
-    for symbol in MARKET_RULES:
-        if not symbol.endswith("USDT"):
-            continue
-
-        if symbol in BLACKLIST:
-            continue
-
-        symbols.append(symbol)
-
-    return sorted(symbols)
-
-
-def score_candidate(symbol):
-    trades = get_trades(symbol)
-
-    if len(trades) < 100:
-        return None
-
-    candles = build_candles(trades)
-
-    return calculate_signal(
-        symbol,
-        candles,
-    )
-
 
 def scan_markets():
-    symbols = get_usdt_symbols()
-
-    total = len(symbols)
-
-    notify(
-        "📊 ATI SCAN START "
-        + VERSION
-        + "\n\n"
-        + "📊 USDT MARKETS: "
-        + str(total)
-        + "\n"
-        + "⏱ TIMEFRAME: 5m\n"
-        + "🕯 CLOSED CANDLE: YES\n"
-        + "🎯 TOP CANDIDATES: 10\n"
-        + (
-            "🟢 REAL MODE: ON"
-            if LIVE_TRADING
-            else "🟡 PAPER MODE: ON"
-        )
-        + "\n"
-        + "🕐 "
-        + utc_now()
-    )
+    symbols = [
+        symbol
+        for symbol in MARKET_RULES
+        if symbol.endswith("USDT")
+    ]
 
     candidates = []
 
-    checked = 0
-
     for symbol in symbols:
-        checked += 1
-
         try:
-            result = score_candidate(
+            trades = get_trades(
                 symbol
             )
 
-            if result:
+            if len(trades) < 100:
+                continue
+
+            candles = make_5m_candles(
+                trades
+            )
+
+            candidate = build_signal(
+                symbol,
+                candles,
+            )
+
+            if candidate:
                 candidates.append(
-                    result
+                    candidate
                 )
 
         except Exception as e:
@@ -1675,68 +1442,7 @@ def scan_markets():
         reverse=True,
     )
 
-    top = candidates[:10]
-
-    notify(
-        "📊 ATI SCAN FINISHED "
-        + VERSION
-        + "\n\n"
-        + "📊 MARKETS: "
-        + str(total)
-        + "\n"
-        + "📥 CHECKED: "
-        + str(checked)
-        + "\n"
-        + "🟢 CANDIDATES: "
-        + str(len(candidates))
-        + "\n"
-        + "🎯 TOP 10: "
-        + str(len(top))
-        + "\n"
-        + "🚨 REAL BUY THIS RUN: "
-        + str(REAL_BUYS_THIS_RUN)
-    )
-
-    return top
-
-
-# ============================================================
-# CANDIDATE MESSAGE
-# ============================================================
-
-def candidate_message(c):
-    return (
-        "🚨 ATI BUY CANDIDATE "
-        + VERSION
-        + "\n\n"
-        + "🪙 "
-        + c["symbol"]
-        + "\n"
-        + "💰 PRICE: "
-        + decimal_to_string(c["price"])
-        + "\n"
-        + "📊 SCORE: "
-        + str(c["score"])
-        + "\n"
-        + "📈 MOVE: "
-        + decimal_to_string(c["move"])
-        + "%\n"
-        + "🔓 BREAKOUT: "
-        + (
-            "YES"
-            if c["breakout"]
-            else "HOLD"
-        )
-        + "\n"
-        + "🛑 SL: "
-        + decimal_to_string(c["sl"])
-        + "\n"
-        + "🎯 TP1: "
-        + decimal_to_string(c["tp1"])
-        + "\n"
-        + "🎯 TP2: "
-        + decimal_to_string(c["tp2"])
-    )
+    return candidates[:10]
 
 
 # ============================================================
@@ -1744,44 +1450,34 @@ def candidate_message(c):
 # ============================================================
 
 def main():
-    global AUTH_OK
-    global TRADING_OK
     global REAL_BUY_UNLOCKED
 
     notify(
-        "⚡ ATI CRYPTO BOT "
-        + VERSION
-        + "\n\n"
-        + "📡 TABDEAL API: CONNECTING...\n"
-        + "📊 SCAN: STARTING\n"
-        + "⏱ TIMEFRAME: 5m\n"
-        + "🕯 CLOSED CANDLE: YES\n"
-        + "💵 ORDER MODE: FIXED USDT AMOUNT\n"
-        + "💰 ORDER AMOUNT: "
-        + decimal_to_string(ORDER_USDT)
-        + " USDT\n"
+        f"⚡ ATI CRYPTO BOT {VERSION}\n\n"
+        "📡 TABDEAL API: CONNECTING...\n"
+        "📊 SCAN: STARTING\n"
+        "⏱ TIMEFRAME: 5m\n"
+        "🕯 CLOSED CANDLE: YES\n"
+        "💵 ORDER MODE: FIXED USDT AMOUNT\n"
+        f"💰 ORDER AMOUNT: {DS(ORDER_USDT)} USDT\n"
         + (
-            "🟢 REAL ORDERS: ENABLED"
+            "🟢 REAL ORDERS: ENABLED\n"
             if LIVE_TRADING
-            else "🟡 REAL ORDERS: DISABLED"
+            else "🟡 REAL ORDERS: DISABLED\n"
         )
-        + "\n"
-        + "🔐 AUTH VERSION: HMAC-SHA256 FIX\n"
-        + "🕐 "
-        + utc_now()
+        + "🔐 AUTH: TABDEAL SPOT HMAC FIX\n"
+        + f"🕐 {utc_now()}"
     )
 
     # --------------------------------------------------------
-    # API KEY CHECK
+    # ENVIRONMENT
     # --------------------------------------------------------
 
     if not API_KEY or not API_SECRET:
         notify(
-            "🛑 ATI SAFE STOP "
-            + VERSION
-            + "\n\n"
-            + "❌ TABDEAL API KEY/SECRET MISSING\n"
-            + "🛑 REAL BUY LOCKED"
+            f"🛑 ATI SAFE STOP {VERSION}\n\n"
+            "❌ TABDEAL API CREDENTIALS MISSING\n"
+            "🛑 REAL BUY LOCKED"
         )
         return
 
@@ -1793,43 +1489,39 @@ def main():
         "📡 TABDEAL API: CHECKING EXCHANGE INFO..."
     )
 
-    info = get_exchange_info()
+    exchange_info = (
+        get_exchange_info()
+    )
 
-    if info is None:
+    if exchange_info is None:
         notify(
-            "🛑 ATI SAFE STOP "
-            + VERSION
-            + "\n\n"
-            + "❌ EXCHANGE INFO FAILED\n"
-            + "🛑 REAL BUY LOCKED"
+            f"🛑 ATI SAFE STOP {VERSION}\n\n"
+            "❌ EXCHANGE INFO FAILED\n"
+            "🛑 REAL BUY LOCKED"
         )
         return
 
-    parse_symbol_rules(info)
+    parse_exchange_info(
+        exchange_info
+    )
 
     notify(
-        "✅ EXCHANGE INFO OK "
-        + VERSION
-        + "\n\n"
-        + "📊 USDT MARKETS: "
-        + str(
-            len(MARKET_RULES)
-        )
+        f"✅ EXCHANGE INFO OK {VERSION}\n\n"
+        f"📊 USDT MARKETS: "
+        f"{len(MARKET_RULES)}"
     )
 
     # --------------------------------------------------------
-    # AUTH
+    # PRIVATE AUTH
     # --------------------------------------------------------
 
-    if not authenticate_account():
+    if not authenticate():
         return
 
-    # --------------------------------------------------------
-    # TRADING CHECK
-    # --------------------------------------------------------
-
-    if not check_trading_access():
-        return
+    # Authentication passed.
+    REAL_BUY_UNLOCKED = (
+        LIVE_TRADING
+    )
 
     # --------------------------------------------------------
     # BALANCE
@@ -1838,76 +1530,71 @@ def main():
     balance = get_usdt_balance()
 
     notify(
-        "💰 USDT BALANCE CHECK "
-        + VERSION
-        + "\n\n"
-        + "💵 AVAILABLE: "
-        + decimal_to_string(balance)
-        + " USDT\n"
-        + "🧾 ORDER: "
-        + decimal_to_string(ORDER_USDT)
-        + " USDT"
+        f"💰 USDT BALANCE {VERSION}\n\n"
+        f"💵 AVAILABLE: {DS(balance)} USDT\n"
+        f"🧾 ORDER: {DS(ORDER_USDT)} USDT"
     )
 
-    if LIVE_TRADING and balance < ORDER_USDT:
+    if (
+        LIVE_TRADING
+        and balance < ORDER_USDT
+    ):
+        REAL_BUY_UNLOCKED = False
+
         notify(
-            "🛑 ATI SAFE STOP "
-            + VERSION
-            + "\n\n"
-            + "❌ INSUFFICIENT USDT BALANCE\n"
-            + "💰 AVAILABLE: "
-            + decimal_to_string(balance)
-            + "\n"
-            + "💵 REQUIRED: "
-            + decimal_to_string(ORDER_USDT)
-            + "\n\n"
-            + "🛑 REAL BUY LOCKED"
+            f"🛑 ATI SAFE STOP {VERSION}\n\n"
+            "❌ INSUFFICIENT USDT BALANCE\n"
+            f"💰 AVAILABLE: {DS(balance)}\n"
+            f"💵 REQUIRED: {DS(ORDER_USDT)}\n"
+            "🛑 REAL BUY LOCKED"
         )
+
         return
 
     # --------------------------------------------------------
     # SCAN
     # --------------------------------------------------------
 
-    candidates = scan_markets()
+    candidates = (
+        scan_markets()
+    )
+
+    notify(
+        f"📊 ATI SCAN FINISHED {VERSION}\n\n"
+        f"📊 MARKETS: {len(MARKET_RULES)}\n"
+        f"🟢 CANDIDATES: {len(candidates)}\n"
+        "🎯 TOP 10\n"
+        f"🚨 REAL BUY THIS RUN: "
+        f"{REAL_BUYS_THIS_RUN}"
+    )
 
     if not candidates:
         notify(
-            "📭 ATI NO BUY CANDIDATE "
-            + VERSION
-            + "\n\n"
-            + "No confirmed 5m breakout candidate.\n"
-            + "🟢 Bot completed normally.\n"
-            + "🛑 No order sent.\n"
-            + "🕐 "
-            + utc_now()
+            f"📭 ATI NO BUY CANDIDATE {VERSION}\n\n"
+            "No confirmed 5m breakout candidate.\n"
+            "🛑 No order sent."
         )
+
         return
 
     # --------------------------------------------------------
-    # SHOW TOP CANDIDATES
+    # TOP CANDIDATES
     # --------------------------------------------------------
 
     lines = [
-        "🎯 ATI TOP CANDIDATES "
-        + VERSION,
+        f"🎯 ATI TOP CANDIDATES {VERSION}",
         "",
     ]
 
-    for i, c in enumerate(
+    for index, candidate in enumerate(
         candidates,
-        start=1,
+        1,
     ):
         lines.append(
-            str(i)
-            + ". "
-            + c["symbol"]
-            + " | SCORE "
-            + str(c["score"])
-            + " | "
-            + decimal_to_string(
-                c["price"]
-            )
+            f"{index}. "
+            f"{candidate['symbol']} | "
+            f"SCORE {candidate['score']} | "
+            f"PRICE {DS(candidate['price'])}"
         )
 
     notify(
@@ -1915,108 +1602,93 @@ def main():
     )
 
     # --------------------------------------------------------
-    # REAL BUY
+    # PAPER MODE
     # --------------------------------------------------------
 
     if not LIVE_TRADING:
         notify(
-            "🟡 PAPER MODE "
-            + VERSION
-            + "\n\n"
-            + "🛑 REAL BUY DISABLED\n"
-            + "📌 No order was sent."
+            f"🟡 PAPER MODE {VERSION}\n\n"
+            "🛑 REAL BUY DISABLED\n"
+            "📌 No order was sent."
         )
+
         return
+
+    # --------------------------------------------------------
+    # ONE REAL BUY
+    # --------------------------------------------------------
 
     if not REAL_BUY_UNLOCKED:
         notify(
-            "🛑 ATI SAFE STOP "
-            + VERSION
-            + "\n\n"
-            + "❌ REAL BUY IS LOCKED\n"
-            + "🛑 NO ORDER WAS SENT"
+            f"🛑 ATI SAFE STOP {VERSION}\n\n"
+            "❌ REAL BUY IS LOCKED\n"
+            "🛑 NO ORDER WAS SENT"
         )
+
         return
 
-    # Only first/top candidate is eligible.
     candidate = candidates[0]
 
     notify(
-        candidate_message(
-            candidate
+        f"🚨 ATI BUY CANDIDATE {VERSION}\n\n"
+        f"🪙 {candidate['symbol']}\n"
+        f"💰 PRICE: {DS(candidate['price'])}\n"
+        f"📊 SCORE: {candidate['score']}\n"
+        f"📈 MOVE: {DS(candidate['move'])}%\n"
+        f"🛑 SL: {DS(candidate['sl'])}\n"
+        f"🎯 TP1: {DS(candidate['tp1'])}\n"
+        f"🎯 TP2: {DS(candidate['tp2'])}"
+    )
+
+    success, result = (
+        place_real_buy(
+            candidate["symbol"],
+            candidate["price"],
         )
     )
 
-    result = place_real_buy(
-        candidate["symbol"],
-        candidate["price"],
-    )
-
-    if not result.get("ok"):
+    if not success:
         notify(
-            "🛑 ATI BUY NOT EXECUTED "
-            + VERSION
-            + "\n\n"
-            + "🪙 "
-            + candidate["symbol"]
-            + "\n"
-            + "❌ "
-            + str(
-                result.get(
-                    "error",
-                    "UNKNOWN ERROR",
-                )
-            )
-            + "\n"
-            + "🛑 NO RETRY THIS RUN"
+            f"🛑 ATI BUY NOT EXECUTED {VERSION}\n\n"
+            f"🪙 {candidate['symbol']}\n"
+            f"❌ {result}\n"
+            "🛑 NO RETRY THIS RUN"
         )
+
         return
 
     notify(
-        "🏁 ATI RUN COMPLETE "
-        + VERSION
-        + "\n\n"
-        + "✅ REAL BUY COMPLETED\n"
-        + "🪙 "
-        + candidate["symbol"]
-        + "\n"
-        + "💵 "
-        + decimal_to_string(
-            ORDER_USDT
-        )
-        + " USDT\n"
-        + "🛒 BUY COUNT: "
-        + str(
-            REAL_BUYS_THIS_RUN
-        )
-        + "/1\n"
-        + "🕐 "
-        + utc_now()
+        f"🏁 ATI RUN COMPLETE {VERSION}\n\n"
+        "✅ REAL BUY COMPLETED\n"
+        f"🪙 {candidate['symbol']}\n"
+        f"💵 {DS(ORDER_USDT)} USDT\n"
+        "🛒 BUY COUNT: 1/1\n"
+        f"🕐 {utc_now()}"
     )
 
+
+# ============================================================
+# START
+# ============================================================
 
 if __name__ == "__main__":
     try:
         main()
 
     except KeyboardInterrupt:
-        notify(
-            "🛑 ATI STOPPED "
-            + VERSION
-        )
-
-    except Exception as e:
-        AUTH_OK = False
-        TRADING_OK = False
         REAL_BUY_UNLOCKED = False
 
         notify(
-            "🚨 ATI FATAL ERROR "
-            + VERSION
-            + "\n\n"
-            + str(e)
-            + "\n\n"
-            + "🛑 REAL BUY LOCKED"
+            f"🛑 ATI STOPPED {VERSION}"
+        )
+
+    except Exception as e:
+        REAL_BUY_UNLOCKED = False
+
+        notify(
+            f"🚨 ATI FATAL ERROR {VERSION}\n\n"
+            f"❌ {e}\n"
+            "🛑 REAL BUY LOCKED"
         )
 
         raise
