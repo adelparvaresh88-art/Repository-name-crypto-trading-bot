@@ -10,33 +10,42 @@ import requests
 
 
 # ============================================================
-# ATI CRYPTO BOT V40.2.13
+# ATI CRYPTO BOT V40.2.14
 # REAL SPOT BUY
 # FIXED USDT AMOUNT
 # MIN_NOTIONAL + MIN_QTY + STEP_SIZE PROTECTION
 # 5m CLOSED CANDLE SCAN
 # TOP 10 CANDIDATES
 # TELEGRAM HEARTBEAT
+#
+# NEW V40.2.14:
+# API AUTHENTICATION TEST BEFORE REAL BUY
+# canTrade TEST BEFORE REAL BUY
+# SPOT PERMISSION TEST
+# REAL BUY LOCK IF AUTH/CANTRADE FAILS
 # ============================================================
 
-VERSION = "V40.2.13"
+VERSION = "V40.2.14"
 
 BASE_URL = "https://api1.tabdeal.org"
 
 EXCHANGE_INFO_PATH = "/r/api/v1/exchangeInfo"
 TRADES_PATH = "/r/api/v1/trades"
 ORDER_PATH = "/r/api/v1/order"
+ACCOUNT_PATH = "/r/api/v1/account"
+TIME_PATH = "/r/api/v1/time"
 
 TIMEOUT = 12
 MAX_WORKERS = 12
 
-# User requested fixed amount: 0.50 USDT
+# Minimum fixed order amount.
+# GitHub ORDER_QTY=2 will be used.
 ORDER_USDT_MIN = Decimal("0.50")
 
-# Show maximum 10 candidates
+# Show maximum 10 candidates.
 TOP_N = 10
 
-# Maximum one real/paper buy action per GitHub run
+# Maximum one real/paper buy action per GitHub run.
 MAX_BUYS_PER_RUN = 1
 
 
@@ -44,13 +53,30 @@ MAX_BUYS_PER_RUN = 1
 # ENV
 # ============================================================
 
-API_KEY = os.getenv("TABDEAL_API_KEY", "").strip()
-API_SECRET = os.getenv("TABDEAL_API_SECRET", "").strip()
+API_KEY = os.getenv(
+    "TABDEAL_API_KEY",
+    ""
+).strip()
 
-TG_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-TG_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+API_SECRET = os.getenv(
+    "TABDEAL_API_SECRET",
+    ""
+).strip()
 
-LIVE_RAW = os.getenv("LIVE_TRADING", "false").strip().lower()
+TG_TOKEN = os.getenv(
+    "TELEGRAM_BOT_TOKEN",
+    ""
+).strip()
+
+TG_CHAT_ID = os.getenv(
+    "TELEGRAM_CHAT_ID",
+    ""
+).strip()
+
+LIVE_RAW = os.getenv(
+    "LIVE_TRADING",
+    "false"
+).strip().lower()
 
 LIVE_TRADING = LIVE_RAW in (
     "1",
@@ -65,17 +91,34 @@ LIVE_TRADING = LIVE_RAW in (
 # ============================================================
 
 try:
-    CONFIGURED_AMOUNT = Decimal(
-        os.getenv("ORDER_QTY", "0.50").strip()
-    )
-except InvalidOperation:
-    CONFIGURED_AMOUNT = Decimal("0.50")
 
-# Prevent old 0.001 setting from creating tiny orders.
+    CONFIGURED_AMOUNT = Decimal(
+        os.getenv(
+            "ORDER_QTY",
+            "0.50"
+        ).strip()
+    )
+
+except InvalidOperation:
+
+    CONFIGURED_AMOUNT = Decimal(
+        "0.50"
+    )
+
 ORDER_USDT = max(
     CONFIGURED_AMOUNT,
     ORDER_USDT_MIN
 )
+
+
+# ============================================================
+# API AUTH STATE
+# ============================================================
+
+API_AUTH_OK = False
+CAN_TRADE = False
+SPOT_PERMISSION = False
+REAL_BUY_UNLOCKED = False
 
 
 # ============================================================
@@ -86,7 +129,8 @@ session = requests.Session()
 
 session.headers.update(
     {
-        "User-Agent": f"ATI-Crypto-Bot/{VERSION}"
+        "User-Agent":
+        f"ATI-Crypto-Bot/{VERSION}"
     }
 )
 
@@ -95,22 +139,39 @@ session.headers.update(
 # DECIMAL
 # ============================================================
 
-def D(value, default=Decimal("0")):
+def D(
+    value,
+    default=Decimal("0")
+):
+
     try:
-        return Decimal(str(value))
+
+        return Decimal(
+            str(value)
+        )
+
     except (
         InvalidOperation,
         TypeError,
         ValueError
     ):
+
         return default
 
 
 def decimal_string(value):
-    s = format(value, "f")
+
+    s = format(
+        value,
+        "f"
+    )
 
     if "." in s:
-        s = s.rstrip("0").rstrip(".")
+
+        s = (
+            s.rstrip("0")
+            .rstrip(".")
+        )
 
     return s or "0"
 
@@ -120,6 +181,7 @@ def decimal_string(value):
 # ============================================================
 
 def now_utc():
+
     return datetime.now(
         timezone.utc
     ).strftime(
@@ -134,10 +196,11 @@ def now_utc():
 def tg(message):
 
     if not TG_TOKEN or not TG_CHAT_ID:
+
         return False
 
     url = (
-        f"https://api.telegram.org/"
+        "https://api.telegram.org/"
         f"bot{TG_TOKEN}/sendMessage"
     )
 
@@ -163,7 +226,10 @@ def tg(message):
 # PUBLIC API
 # ============================================================
 
-def public_get(path, params=None):
+def public_get(
+    path,
+    params=None
+):
 
     response = session.get(
         BASE_URL + path,
@@ -183,15 +249,24 @@ def public_get(path, params=None):
 def signed_request(
     method,
     path,
-    params=None,
+    params=None
 ):
 
-    if not API_KEY or not API_SECRET:
+    if not API_KEY:
+
         raise RuntimeError(
-            "TABDEAL_API_KEY / TABDEAL_API_SECRET missing"
+            "TABDEAL_API_KEY missing"
         )
 
-    p = dict(params or {})
+    if not API_SECRET:
+
+        raise RuntimeError(
+            "TABDEAL_API_SECRET missing"
+        )
+
+    p = dict(
+        params or {}
+    )
 
     p["timestamp"] = int(
         time.time() * 1000
@@ -251,6 +326,236 @@ def signed_request(
 
 
 # ============================================================
+# API AUTH + CAN TRADE CHECK
+# ============================================================
+
+def check_api_auth_and_trading():
+
+    global API_AUTH_OK
+    global CAN_TRADE
+    global SPOT_PERMISSION
+    global REAL_BUY_UNLOCKED
+
+    API_AUTH_OK = False
+    CAN_TRADE = False
+    SPOT_PERMISSION = False
+    REAL_BUY_UNLOCKED = False
+
+    # --------------------------------------------------------
+    # BASIC KEY CHECK
+    # --------------------------------------------------------
+
+    if not API_KEY:
+
+        return {
+            "ok": False,
+            "reason": "TABDEAL_API_KEY is missing",
+        }
+
+    if not API_SECRET:
+
+        return {
+            "ok": False,
+            "reason": "TABDEAL_API_SECRET is missing",
+        }
+
+    # --------------------------------------------------------
+    # AUTH TEST
+    # GET /r/api/v1/account
+    # --------------------------------------------------------
+
+    try:
+
+        account = signed_request(
+            "GET",
+            ACCOUNT_PATH,
+            {}
+        )
+
+    except Exception as error:
+
+        error_text = str(
+            error
+        )
+
+        tg(
+            f"🚫 REAL BUY BLOCKED\n\n"
+            f"🔐 API AUTH CHECK: FAILED\n"
+            f"❌ {error_text[:700]}\n\n"
+            f"🛑 NO REAL ORDER WILL BE SENT\n"
+            f"🕐 {now_utc()}"
+        )
+
+        return {
+            "ok": False,
+            "reason": error_text,
+        }
+
+    # --------------------------------------------------------
+    # RESPONSE MUST BE A DICT
+    # --------------------------------------------------------
+
+    if not isinstance(
+        account,
+        dict
+    ):
+
+        reason = (
+            "Invalid account response"
+        )
+
+        tg(
+            f"🚫 REAL BUY BLOCKED\n\n"
+            f"🔐 API AUTH CHECK: FAILED\n"
+            f"❌ {reason}\n\n"
+            f"🛑 NO REAL ORDER WILL BE SENT\n"
+            f"🕐 {now_utc()}"
+        )
+
+        return {
+            "ok": False,
+            "reason": reason,
+        }
+
+    # --------------------------------------------------------
+    # AUTH SUCCESS
+    # --------------------------------------------------------
+
+    API_AUTH_OK = True
+
+    can_trade_value = account.get(
+        "canTrade",
+        False
+    )
+
+    CAN_TRADE = (
+        can_trade_value is True
+        or str(
+            can_trade_value
+        ).lower() == "true"
+    )
+
+    permissions = account.get(
+        "permissions",
+        []
+    )
+
+    if isinstance(
+        permissions,
+        list
+    ):
+
+        permission_strings = [
+            str(x).upper()
+            for x in permissions
+        ]
+
+        SPOT_PERMISSION = (
+            "SPOT"
+            in permission_strings
+        )
+
+    else:
+
+        SPOT_PERMISSION = False
+
+    account_type = str(
+        account.get(
+            "accountType",
+            ""
+        )
+    ).upper()
+
+    # Some responses may identify SPOT
+    # through accountType even if permissions
+    # are formatted differently.
+    if account_type == "SPOT":
+
+        if isinstance(
+            permissions,
+            list
+        ):
+
+            SPOT_PERMISSION = (
+                SPOT_PERMISSION
+                or True
+            )
+
+    # --------------------------------------------------------
+    # SUCCESS: AUTH + CAN TRADE + SPOT
+    # --------------------------------------------------------
+
+    if (
+        API_AUTH_OK
+        and CAN_TRADE
+        and SPOT_PERMISSION
+    ):
+
+        REAL_BUY_UNLOCKED = True
+
+        tg(
+            f"🔐 API AUTH CHECK\n\n"
+            f"✅ API KEY: OK\n"
+            f"✅ SIGNATURE: OK\n"
+            f"🟢 CAN TRADE: YES\n"
+            f"🟢 SPOT PERMISSION: YES\n"
+            f"✅ REAL BUY: UNLOCKED\n"
+            f"🕐 {now_utc()}"
+        )
+
+        return {
+            "ok": True,
+            "canTrade": True,
+            "spot": True,
+            "account": account,
+        }
+
+    # --------------------------------------------------------
+    # AUTH OK BUT TRADING NOT ALLOWED
+    # --------------------------------------------------------
+
+    reasons = []
+
+    if not CAN_TRADE:
+
+        reasons.append(
+            "canTrade=false"
+        )
+
+    if not SPOT_PERMISSION:
+
+        reasons.append(
+            "SPOT permission missing"
+        )
+
+    reason = ", ".join(
+        reasons
+    ) or "Trading permission failed"
+
+    REAL_BUY_UNLOCKED = False
+
+    tg(
+        f"🚫 REAL BUY BLOCKED\n\n"
+        f"🔐 API AUTH: OK\n"
+        f"❌ CAN TRADE: "
+        f"{'YES' if CAN_TRADE else 'NO'}\n"
+        f"❌ SPOT PERMISSION: "
+        f"{'YES' if SPOT_PERMISSION else 'NO'}\n"
+        f"❌ REASON: {reason}\n\n"
+        f"🛑 NO REAL ORDER WILL BE SENT\n"
+        f"🕐 {now_utc()}"
+    )
+
+    return {
+        "ok": False,
+        "canTrade": CAN_TRADE,
+        "spot": SPOT_PERMISSION,
+        "reason": reason,
+        "account": account,
+    }
+
+
+# ============================================================
 # EXCHANGE INFO
 # ============================================================
 
@@ -284,9 +589,11 @@ def normalize_filters(item):
             ).upper()
 
             if filter_type:
-                filters[filter_type] = f
 
-    # Direct LOT SIZE fallback
+                filters[
+                    filter_type
+                ] = f
+
     if "LOT_SIZE" not in filters:
 
         if (
@@ -295,17 +602,18 @@ def normalize_filters(item):
         ):
 
             filters["LOT_SIZE"] = {
-                "minQty": item.get(
-                    "minQty",
-                    "0"
-                ),
-                "stepSize": item.get(
-                    "stepSize",
-                    "0"
-                ),
+                "minQty":
+                    item.get(
+                        "minQty",
+                        "0"
+                    ),
+                "stepSize":
+                    item.get(
+                        "stepSize",
+                        "0"
+                    ),
             }
 
-    # Direct MIN NOTIONAL fallback
     if "MIN_NOTIONAL" not in filters:
 
         if (
@@ -314,13 +622,14 @@ def normalize_filters(item):
         ):
 
             filters["MIN_NOTIONAL"] = {
-                "minNotional": item.get(
-                    "minNotional",
+                "minNotional":
                     item.get(
-                        "notional",
-                        "0"
+                        "minNotional",
+                        item.get(
+                            "notional",
+                            "0"
+                        )
                     )
-                )
             }
 
     return filters
@@ -365,7 +674,9 @@ def load_markets():
             or ""
         ).upper()
 
-        if not symbol.endswith("USDT"):
+        if not symbol.endswith(
+            "USDT"
+        ):
             continue
 
         status = str(
@@ -386,9 +697,10 @@ def load_markets():
         markets.append(
             {
                 "symbol": symbol,
-                "filters": normalize_filters(
-                    item
-                ),
+                "filters":
+                    normalize_filters(
+                        item
+                    ),
                 "raw": item,
             }
         )
@@ -435,6 +747,7 @@ def extract_trades(data):
         data,
         list
     ):
+
         return data
 
     return []
@@ -446,7 +759,12 @@ def trade_fields(trade):
         trade,
         dict
     ):
-        return None, None, None
+
+        return (
+            None,
+            None,
+            None
+        )
 
     price = D(
         trade.get("price")
@@ -481,7 +799,6 @@ def trade_fields(trade):
 
         timestamp = 0
 
-    # Convert seconds to milliseconds
     if (
         0 < timestamp
         < 10_000_000_000
@@ -519,7 +836,8 @@ def build_closed_candles(
             continue
 
         bucket = (
-            timestamp // 300_000
+            timestamp
+            // 300_000
         )
 
         if bucket not in buckets:
@@ -532,7 +850,9 @@ def build_closed_candles(
                 "volume": D("0"),
             }
 
-        candle = buckets[bucket]
+        candle = buckets[
+            bucket
+        ]
 
         candle["high"] = max(
             candle["high"],
@@ -549,6 +869,7 @@ def build_closed_candles(
         candle["volume"] += quantity
 
     if not buckets:
+
         return []
 
     current_bucket = (
@@ -562,7 +883,6 @@ def build_closed_candles(
         buckets
     ):
 
-        # Current candle is excluded.
         if bucket < current_bucket:
 
             closed.append(
@@ -580,7 +900,9 @@ def analyze_symbol(
     market
 ):
 
-    symbol = market["symbol"]
+    symbol = market[
+        "symbol"
+    ]
 
     try:
 
@@ -596,11 +918,14 @@ def analyze_symbol(
             raw
         )
 
-        candles = build_closed_candles(
-            trades
+        candles = (
+            build_closed_candles(
+                trades
+            )
         )
 
         if len(candles) < 5:
+
             return None
 
         closes = [
@@ -613,6 +938,7 @@ def analyze_symbol(
         def percent_from(old):
 
             if old <= 0:
+
                 return Decimal("0")
 
             return (
@@ -620,8 +946,15 @@ def analyze_symbol(
                 - Decimal("1")
             ) * Decimal("100")
 
-        move_5m = percent_from(
-            closes[-1]
+        # Keep existing strategy logic.
+        # 5m is currently the latest closed
+        # candle relative to the previous one.
+        move_5m = (
+            percent_from(
+                closes[-2]
+            )
+            if len(closes) >= 2
+            else Decimal("0")
         )
 
         move_15m = (
@@ -642,9 +975,12 @@ def analyze_symbol(
             )
         )
 
-        previous_candles = candles[-6:-1]
+        previous_candles = (
+            candles[-6:-1]
+        )
 
         if not previous_candles:
+
             return None
 
         recent_high = max(
@@ -677,28 +1013,24 @@ def analyze_symbol(
 
         score = 0
 
-        # 5m momentum
         if move_5m > Decimal("0.30"):
             score += 3
 
         if move_5m > Decimal("0.80"):
             score += 2
 
-        # 15m momentum
         if move_15m > Decimal("0.50"):
             score += 3
 
         if move_15m > Decimal("1.50"):
             score += 2
 
-        # 1h momentum
         if move_1h > Decimal("1.00"):
             score += 2
 
         if move_1h > Decimal("3.00"):
             score += 2
 
-        # Breakout
         if breakout:
 
             score += 4
@@ -707,32 +1039,52 @@ def analyze_symbol(
 
             score += 2
 
-        # Structure
         if higher_lows:
+
             score += 2
 
-        # Anti-chase / negative momentum
         if move_5m < Decimal("-1.0"):
+
             score -= 4
 
         if move_15m < Decimal("-2.0"):
+
             score -= 3
 
-        # Minimum opportunity score
         if score < 7:
+
             return None
 
         return {
-            "symbol": symbol,
-            "price": last,
-            "score": score,
-            "move5": move_5m,
-            "move15": move_15m,
-            "move1h": move_1h,
-            "breakout": breakout,
-            "near_breakout": near_breakout,
-            "higher_lows": higher_lows,
-            "filters": market["filters"],
+            "symbol":
+                symbol,
+
+            "price":
+                last,
+
+            "score":
+                score,
+
+            "move5":
+                move_5m,
+
+            "move15":
+                move_15m,
+
+            "move1h":
+                move_1h,
+
+            "breakout":
+                breakout,
+
+            "near_breakout":
+                near_breakout,
+
+            "higher_lows":
+                higher_lows,
+
+            "filters":
+                market["filters"],
         }
 
     except Exception:
@@ -750,6 +1102,7 @@ def floor_step(
 ):
 
     if step <= 0:
+
         return value
 
     return (
@@ -763,7 +1116,9 @@ def order_quantity(
     signal
 ):
 
-    filters = signal["filters"]
+    filters = signal[
+        "filters"
+    ]
 
     lot = filters.get(
         "LOT_SIZE",
@@ -806,7 +1161,9 @@ def order_quantity(
         or "0"
     )
 
-    price = signal["price"]
+    price = signal[
+        "price"
+    ]
 
     if price <= 0:
 
@@ -815,19 +1172,16 @@ def order_quantity(
             "invalid price"
         )
 
-    # Fixed USDT -> quantity
     raw_quantity = (
         ORDER_USDT
         / price
     )
 
-    # Floor to exchange step size
     quantity = floor_step(
         raw_quantity,
         step_size
     )
 
-    # Never send zero
     if quantity <= 0:
 
         return (
@@ -837,7 +1191,6 @@ def order_quantity(
             f"<= 0"
         )
 
-    # Minimum quantity
     if (
         min_qty > 0
         and quantity < min_qty
@@ -851,12 +1204,10 @@ def order_quantity(
             f"{decimal_string(min_qty)}"
         )
 
-    # Actual order value after step-size rounding
     actual_notional = (
         quantity * price
     )
 
-    # Minimum notional
     if (
         min_notional > 0
         and actual_notional
@@ -885,10 +1236,14 @@ def buy_market(
     signal
 ):
 
-    symbol = signal["symbol"]
+    symbol = signal[
+        "symbol"
+    ]
 
     quantity, reason = (
-        order_quantity(signal)
+        order_quantity(
+            signal
+        )
     )
 
     if quantity is None:
@@ -900,7 +1255,10 @@ def buy_market(
             "symbol": symbol,
         }
 
-    # Paper mode
+    # --------------------------------------------------------
+    # PAPER MODE
+    # --------------------------------------------------------
+
     if not LIVE_TRADING:
 
         return {
@@ -911,17 +1269,42 @@ def buy_market(
             "price": signal["price"],
         }
 
-    # Real order
+    # --------------------------------------------------------
+    # HARD REAL-BUY LOCK
+    # --------------------------------------------------------
+
+    if not REAL_BUY_UNLOCKED:
+
+        return {
+            "ok": False,
+            "blocked": True,
+            "reason":
+                "REAL BUY LOCKED: "
+                "API auth/canTrade check failed",
+            "symbol": symbol,
+        }
+
+    # --------------------------------------------------------
+    # REAL ORDER
+    # --------------------------------------------------------
+
     result = signed_request(
         "POST",
         ORDER_PATH,
         {
-            "symbol": symbol,
-            "side": "BUY",
-            "type": "MARKET",
-            "quantity": decimal_string(
-                quantity
-            ),
+            "symbol":
+                symbol,
+
+            "side":
+                "BUY",
+
+            "type":
+                "MARKET",
+
+            "quantity":
+                decimal_string(
+                    quantity
+                ),
         }
     )
 
@@ -946,14 +1329,17 @@ def format_candidate(
 
     mode = (
         "BREAKOUT"
-        if candidate["breakout"]
+        if candidate[
+            "breakout"
+        ]
         else "WATCH"
     )
 
     return (
         f"{rank}. "
         f"{candidate['symbol']} | "
-        f"SCORE {candidate['score']} | "
+        f"SCORE "
+        f"{candidate['score']} | "
         f"{mode}\n"
         f"   5m "
         f"{candidate['move5']:.2f}% | "
@@ -973,7 +1359,7 @@ def format_candidate(
 def main():
 
     # --------------------------------------------------------
-    # STARTUP MESSAGE
+    # STARTUP
     # --------------------------------------------------------
 
     tg(
@@ -1024,6 +1410,56 @@ def main():
     )
 
     # --------------------------------------------------------
+    # AUTH / CAN TRADE TEST
+    # --------------------------------------------------------
+
+    if LIVE_TRADING:
+
+        tg(
+            f"🔐 ATI API SECURITY CHECK\n\n"
+            f"⏳ TESTING API AUTH...\n"
+            f"⏳ TESTING CAN TRADE...\n"
+            f"⏳ TESTING SPOT PERMISSION...\n"
+            f"🕐 {now_utc()}"
+        )
+
+        auth_result = (
+            check_api_auth_and_trading()
+        )
+
+        if not auth_result.get(
+            "ok",
+            False
+        ):
+
+            # ------------------------------------------------
+            # CRITICAL:
+            # NO SCAN BUY / NO REAL ORDER
+            # ------------------------------------------------
+
+            tg(
+                f"🛑 ATI SAFE STOP {VERSION}\n\n"
+                f"🚫 REAL BUY IS LOCKED\n"
+                f"❌ API AUTH / TRADING CHECK FAILED\n"
+                f"🛑 NO ORDER WAS SENT\n\n"
+                f"💰 FIXED ORDER: "
+                f"{ORDER_USDT} USDT\n"
+                f"🔧 REAL MODE: ON\n"
+                f"🕐 {now_utc()}"
+            )
+
+            return
+
+    else:
+
+        tg(
+            f"📝 PAPER MODE\n\n"
+            f"🔐 API AUTH CHECK: NOT REQUIRED\n"
+            f"📝 REAL BUY: LOCKED\n"
+            f"🕐 {now_utc()}"
+        )
+
+    # --------------------------------------------------------
     # SCAN ALL MARKETS
     # --------------------------------------------------------
 
@@ -1050,6 +1486,7 @@ def main():
                 result = future.result()
 
                 if result:
+
                     candidates.append(
                         result
                     )
@@ -1071,7 +1508,9 @@ def main():
         reverse=True,
     )
 
-    top = candidates[:TOP_N]
+    top = candidates[
+        :TOP_N
+    ]
 
     # --------------------------------------------------------
     # NO CANDIDATES
@@ -1128,16 +1567,21 @@ def main():
 
     for signal in top:
 
-        if buy_actions >= MAX_BUYS_PER_RUN:
+        if (
+            buy_actions
+            >= MAX_BUYS_PER_RUN
+        ):
+
             break
 
         try:
 
             quantity, reason = (
-                order_quantity(signal)
+                order_quantity(
+                    signal
+                )
             )
 
-            # MIN_NOTIONAL / MIN_QTY / STEP SIZE failed
             if quantity is None:
 
                 tg(
@@ -1152,7 +1596,10 @@ def main():
 
                 continue
 
-            # Candidate message
+            # ------------------------------------------------
+            # CANDIDATE
+            # ------------------------------------------------
+
             tg(
                 f"🚨 ATI BUY CANDIDATE\n\n"
                 f"🟢 "
@@ -1175,20 +1622,51 @@ def main():
                 f"{'ON' if LIVE_TRADING else 'OFF'}"
             )
 
+            # ------------------------------------------------
+            # BUY
+            # ------------------------------------------------
+
             result = buy_market(
                 signal
             )
 
+            # ------------------------------------------------
+            # REAL BUY BLOCKED
+            # ------------------------------------------------
+
+            if result.get(
+                "blocked"
+            ):
+
+                tg(
+                    f"🛑 REAL BUY BLOCKED\n\n"
+                    f"🪙 "
+                    f"{signal['symbol']}\n"
+                    f"❌ "
+                    f"{result.get('reason', 'Unknown')}\n\n"
+                    f"🛑 NO ORDER WAS SENT\n"
+                    f"🕐 {now_utc()}"
+                )
+
+                break
+
+            # ------------------------------------------------
+            # SKIPPED
+            # ------------------------------------------------
+
             if result.get(
                 "skipped"
             ):
+
                 continue
 
             # ------------------------------------------------
             # PAPER
             # ------------------------------------------------
 
-            if result.get("paper"):
+            if result.get(
+                "paper"
+            ):
 
                 tg(
                     f"📝 PAPER BUY\n\n"
@@ -1215,9 +1693,15 @@ def main():
                 )
 
                 order_id = (
-                    response.get("orderId")
-                    or response.get("id")
-                    or response.get("order_id")
+                    response.get(
+                        "orderId"
+                    )
+                    or response.get(
+                        "id"
+                    )
+                    or response.get(
+                        "order_id"
+                    )
                     or "N/A"
                 )
 
@@ -1240,12 +1724,49 @@ def main():
 
         except Exception as error:
 
+            error_text = str(
+                error
+            )
+
+            # ------------------------------------------------
+            # If API authentication suddenly
+            # fails during order, immediately lock
+            # further real orders for this run.
+            # ------------------------------------------------
+
+            if (
+                "HTTP 401"
+                in error_text
+                or "code\":1100"
+                in error_text
+                or "1100"
+                in error_text
+                or "1101"
+                in error_text
+                or "1103"
+                in error_text
+            ):
+
+                REAL_BUY_UNLOCKED = False
+
+                tg(
+                    f"🚨 REAL TRADE BLOCKED\n\n"
+                    f"🪙 "
+                    f"{signal['symbol']}\n"
+                    f"❌ API AUTHENTICATION ERROR\n"
+                    f"{error_text[:700]}\n\n"
+                    f"🛑 FURTHER REAL ORDERS BLOCKED\n"
+                    f"🕐 {now_utc()}"
+                )
+
+                break
+
             tg(
                 f"🚨 REAL TRADE ERROR\n\n"
                 f"🪙 "
                 f"{signal['symbol']}\n"
                 f"❌ "
-                f"{str(error)[:900]}\n"
+                f"{error_text[:900]}\n"
                 f"🕐 {now_utc()}"
             )
 
@@ -1266,6 +1787,12 @@ def main():
         f"{ORDER_USDT} USDT\n"
         f"🔧 REAL MODE: "
         f"{'ON' if LIVE_TRADING else 'OFF'}\n"
+        f"🔐 API AUTH: "
+        f"{'OK' if API_AUTH_OK else 'FAILED'}\n"
+        f"🟢 CAN TRADE: "
+        f"{'YES' if CAN_TRADE else 'NO'}\n"
+        f"🟢 REAL BUY UNLOCKED: "
+        f"{'YES' if REAL_BUY_UNLOCKED else 'NO'}\n"
         f"🕐 {now_utc()}"
     )
 
@@ -1275,4 +1802,5 @@ def main():
 # ============================================================
 
 if __name__ == "__main__":
+
     main()
