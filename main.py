@@ -2,24 +2,24 @@ import os
 import time
 import hmac
 import hashlib
+from urllib.parse import urlencode
 from datetime import datetime, timezone
 
 import requests
 
 
 # ============================================================
-# ATI CRYPTO BOT V40.2.25
-# TABDEAL SPOT - AUTH DIAGNOSTIC
+# ATI CRYPTO BOT V40.2.26
+# TABDEAL SPOT - OFFICIAL SDK SIGNING METHOD
 # ============================================================
 # IMPORTANT:
-# - REAL ORDERS ARE LOCKED
-# - NO BUY ORDER IS SENT
-# - Tests TABDEAL and TABDIL credential pairs
-# - Uses HMAC-SHA256
-# - Uses integer millisecond timestamp
+# - REAL ORDERS ARE DISABLED
+# - NO BUY ORDER WILL BE SENT
+# - AUTH TEST ONLY
+# - SIGNING MATCHES OFFICIAL TABDEAL PYTHON SDK
 # ============================================================
 
-VERSION = "V40.2.25"
+VERSION = "V40.2.26"
 
 BASE_URL = "https://api1.tabdeal.org"
 
@@ -28,16 +28,17 @@ TIME_ENDPOINT = "/r/api/v1/time"
 
 RECV_WINDOW = int(os.getenv("RECV_WINDOW", "5000"))
 
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
-
-LIVE_TRADING = False
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 
 REQUEST_TIMEOUT = 20
 
+# HARD SAFETY LOCK
+LIVE_TRADING = False
+
 
 # ============================================================
-# TIME
+# UTC TIME
 # ============================================================
 
 def utc_now():
@@ -52,6 +53,7 @@ def utc_now():
 
 def send_telegram(message):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        print("TELEGRAM CONFIG MISSING")
         print(message)
         return False
 
@@ -78,27 +80,23 @@ def send_telegram(message):
         print(
             "Telegram error:",
             response.status_code,
-            response.text,
+            response.text[:500],
         )
 
-    except Exception as e:
-        print("Telegram exception:", repr(e))
+    except Exception as exc:
+        print(
+            "Telegram exception:",
+            repr(exc),
+        )
 
     return False
 
 
 # ============================================================
-# HTTP TIME
+# SERVER TIME
 # ============================================================
 
 def get_server_time():
-    """
-    Try to read Tabdeal server time.
-
-    This is diagnostic only.
-    Failure here does NOT stop authentication testing.
-    """
-
     try:
         response = requests.get(
             BASE_URL + TIME_ENDPOINT,
@@ -117,28 +115,27 @@ def get_server_time():
                 "timestamp",
                 "time",
             ):
-                value = data.get(key)
-
-                if value is not None:
-                    return int(value)
+                if data.get(key) is not None:
+                    return int(data[key])
 
         if isinstance(data, int):
             return int(data)
 
-    except Exception:
-        pass
+    except Exception as exc:
+        print(
+            "Server time check failed:",
+            repr(exc),
+        )
 
     return None
 
 
 # ============================================================
-# CREDENTIAL PAIRS
+# CREDENTIALS
 # ============================================================
 
 def get_credential_pairs():
-    pairs = []
-
-    credentials = [
+    candidates = [
         (
             "TABDEAL",
             os.getenv("TABDEAL_API_KEY", "").strip(),
@@ -151,19 +148,23 @@ def get_credential_pairs():
         ),
     ]
 
+    pairs = []
     seen = set()
 
-    for name, api_key, api_secret in credentials:
+    for name, api_key, api_secret in candidates:
 
         if not api_key or not api_secret:
             continue
 
-        pair_id = (api_key, api_secret)
+        identity = (
+            api_key,
+            api_secret,
+        )
 
-        if pair_id in seen:
+        if identity in seen:
             continue
 
-        seen.add(pair_id)
+        seen.add(identity)
 
         pairs.append(
             {
@@ -177,58 +178,70 @@ def get_credential_pairs():
 
 
 # ============================================================
-# SIGNED ACCOUNT REQUEST
+# OFFICIAL TABDEAL SDK STYLE SIGNING
 # ============================================================
 
-def make_signed_request(api_key, api_secret):
+def make_signed_account_request(
+    api_key,
+    api_secret,
+):
     """
-    Tabdeal Spot private account request.
+    This follows the official Tabdeal Python SDK pattern:
 
-    Signature:
-        HMAC-SHA256(secret, query_string)
+        timestamp = time.time() * 1000
 
-    Query order:
-        timestamp
-        recvWindow
-        signature
+        data.update({
+            "timestamp": timestamp
+        })
+
+        data.update({
+            "recvWindow": receive_window
+        })
+
+        data_query = urlencode(data)
+
+        signature = HMAC-SHA256(
+            secret,
+            data_query
+        )
+
+        data["signature"] = signature
+
+    The GET request then sends the data as query parameters.
     """
 
-    timestamp = int(
-        time.time() * 1000
-    )
+    # IMPORTANT:
+    # Do NOT convert this to int().
+    # Official SDK uses time.time() * 1000.
+    timestamp = time.time() * 1000
 
-    query_string = (
-        f"timestamp={timestamp}"
-        f"&recvWindow={RECV_WINDOW}"
-    )
+    data = {
+        "timestamp": timestamp,
+        "recvWindow": RECV_WINDOW,
+    }
 
+    # EXACT SDK-STYLE ENCODING
+    data_query = urlencode(data)
+
+    # EXACT SDK-STYLE HMAC
     signature = hmac.new(
         api_secret.encode("utf-8"),
-        query_string.encode("utf-8"),
+        data_query.encode("utf-8"),
         hashlib.sha256,
     ).hexdigest()
 
-    # IMPORTANT:
-    # The '+' below fixes the previous SyntaxError.
-    final_query = (
-        query_string
-        + f"&signature={signature}"
-    )
-
-    url = (
-        BASE_URL
-        + AUTH_ENDPOINT
-        + "?"
-        + final_query
-    )
+    # Add signature AFTER signing
+    data["signature"] = signature
 
     headers = {
         "X-MBX-APIKEY": api_key,
         "Accept": "application/json",
     }
 
+    # Use requests params exactly like SDK's _get(..., params=data)
     response = requests.get(
-        url,
+        BASE_URL + AUTH_ENDPOINT,
+        params=data,
         headers=headers,
         timeout=REQUEST_TIMEOUT,
     )
@@ -236,8 +249,8 @@ def make_signed_request(api_key, api_secret):
     return {
         "response": response,
         "timestamp": timestamp,
+        "data_query": data_query,
         "signature": signature,
-        "query_string": query_string,
     }
 
 
@@ -250,13 +263,13 @@ def test_credentials(credential):
     api_key = credential["api_key"]
     api_secret = credential["api_secret"]
 
-    print(
-        f"Testing credential pair: {name}"
-    )
+    print("=" * 60)
+    print(f"TESTING PAIR: {name}")
+    print("=" * 60)
 
     try:
 
-        result = make_signed_request(
+        result = make_signed_account_request(
             api_key,
             api_secret,
         )
@@ -273,56 +286,47 @@ def test_credentials(credential):
             response.text[:1000],
         )
 
-        if response.status_code == 200:
-
-            return {
-                "success": True,
-                "name": name,
-                "http": response.status_code,
-                "text": response.text,
-                "timestamp": result["timestamp"],
-            }
-
         return {
-            "success": False,
+            "success": response.status_code == 200,
             "name": name,
             "http": response.status_code,
             "text": response.text,
             "timestamp": result["timestamp"],
         }
 
-    except Exception as e:
+    except Exception as exc:
 
         print(
             f"{name} EXCEPTION:",
-            repr(e),
+            repr(exc),
         )
 
         return {
             "success": False,
             "name": name,
             "http": 0,
-            "text": repr(e),
-            "timestamp": int(time.time() * 1000),
+            "text": repr(exc),
+            "timestamp": time.time() * 1000,
         }
 
 
 # ============================================================
-# PARSE ERROR
+# ERROR EXTRACTION
 # ============================================================
 
 def extract_error(text):
     if not text:
-        return "UNKNOWN"
+        return "EMPTY RESPONSE"
 
     try:
         data = requests.models.complexjson.loads(text)
 
         if isinstance(data, dict):
+
             code = data.get("code")
             msg = data.get("msg")
 
-            if code is not None or msg:
+            if code is not None or msg is not None:
                 return (
                     f"CODE: {code}\n"
                     f"MSG: {msg}"
@@ -344,22 +348,22 @@ def main():
     print(f"ATI CRYPTO BOT {VERSION}")
     print("=" * 60)
 
-    startup_message = (
+    startup = (
         f"⚡ ATI CRYPTO BOT {VERSION}\n\n"
         f"📡 TABDEAL API: CONNECTING...\n"
-        f"📊 AUTH DIAGNOSTIC: STARTING\n\n"
+        f"📊 AUTH TEST: STARTING\n\n"
         f"🔐 HMAC-SHA256\n"
-        f"🔢 INTEGER TIMESTAMP\n"
+        f"🔢 OFFICIAL SDK TIMESTAMP\n"
         f"🔧 REAL ORDERS: DISABLED\n"
         f"🔒 BUY LOCK: ACTIVE\n\n"
         f"🕐 {utc_now()}"
     )
 
-    print(startup_message)
-    send_telegram(startup_message)
+    print(startup)
+    send_telegram(startup)
 
     # --------------------------------------------------------
-    # Server time diagnostic
+    # LOCAL / SERVER TIME CHECK
     # --------------------------------------------------------
 
     local_timestamp = int(
@@ -393,11 +397,11 @@ def main():
         clock_diff = None
 
         print(
-            "⚠️ SERVER TIME: UNKNOWN"
+            "⚠️ TABDEAL SERVER TIME: UNKNOWN"
         )
 
     # --------------------------------------------------------
-    # Credentials
+    # GET CREDENTIAL PAIRS
     # --------------------------------------------------------
 
     credentials = get_credential_pairs()
@@ -406,9 +410,10 @@ def main():
 
         message = (
             f"🚨 ATI API AUTH FAILED {VERSION}\n\n"
-            f"❌ NO API CREDENTIAL PAIR FOUND\n\n"
-            f"Expected one of:\n"
+            f"❌ NO API CREDENTIALS FOUND\n\n"
+            f"Expected:\n"
             f"• TABDEAL_API_KEY + TABDEAL_API_SECRET\n"
+            f"or\n"
             f"• TABDIL_API_KEY + TABDIL_API_SECRET\n\n"
             f"🔒 REAL BUY LOCKED\n"
             f"🛑 NO ORDER WAS SENT\n\n"
@@ -417,14 +422,14 @@ def main():
 
         print(message)
         send_telegram(message)
-
         return
 
     # --------------------------------------------------------
-    # Test every credential pair
+    # TEST CREDENTIALS
     # --------------------------------------------------------
 
     results = []
+
     working = None
 
     for credential in credentials:
@@ -447,13 +452,16 @@ def main():
 
         success_message = (
             f"✅ ATI API AUTH SUCCESS {VERSION}\n\n"
-            f"🟢 WORKING SECRET PAIR:\n"
+            f"🟢 WORKING PAIR:\n"
             f"{working['name']}\n\n"
             f"📡 ENDPOINT:\n"
             f"{AUTH_ENDPOINT}\n\n"
-            f"🔐 METHOD: HMAC-SHA256\n"
-            f"🔢 TIMESTAMP: INTEGER\n"
-            f"🧾 HTTP: {working['http']}\n\n"
+            f"🔐 SIGN METHOD:\n"
+            f"HMAC-SHA256\n\n"
+            f"🔢 TIMESTAMP:\n"
+            f"OFFICIAL SDK STYLE\n\n"
+            f"🧾 HTTP:\n"
+            f"{working['http']}\n\n"
             f"🔒 REAL BUY: DISABLED\n"
             f"🛑 NO ORDER WAS SENT\n\n"
             f"🕐 {utc_now()}"
@@ -486,9 +494,7 @@ def main():
         )
 
         lines.append(
-            extract_error(
-                result["text"]
-            )
+            extract_error(result["text"])
         )
 
         lines.append("")
@@ -502,6 +508,7 @@ def main():
                 "",
             ]
         )
+
     else:
 
         lines.extend(
@@ -514,11 +521,11 @@ def main():
 
     lines.extend(
         [
-            f"📡 ENDPOINT:",
+            "📡 ENDPOINT:",
             AUTH_ENDPOINT,
             "",
             "🔐 METHOD: HMAC-SHA256",
-            "🔢 TIMESTAMP: INTEGER",
+            "🔢 TIMESTAMP: OFFICIAL SDK STYLE",
             "🔒 REAL BUY LOCKED",
             "🛑 NO ORDER WAS SENT",
             "",
