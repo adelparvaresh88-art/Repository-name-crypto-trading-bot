@@ -33,9 +33,14 @@ jobs:
         env:
           TABDEAL_API_KEY: ${{ secrets.TABDEAL_API_KEY }}
           TABDEAL_API_SECRET: ${{ secrets.TABDEAL_API_SECRET }}
+
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          LIVE_TRADING: ${{ secrets.LIVE_TRADING }}
-          ORDER_QTY: ${{ secrets.ORDER_QTY }}
+
+          LIVE_TRADING: "false"
+
+          ORDER_USDT: "2"
+          RECV_WINDOW: "5000"
+
         run: |
           python main.py
