@@ -3,7 +3,6 @@ import time
 import json
 import hmac
 import hashlib
-import math
 from decimal import Decimal, ROUND_DOWN, InvalidOperation
 from datetime import datetime, timezone
 from urllib.parse import urlencode
@@ -12,22 +11,23 @@ import requests
 
 
 # ============================================================
-# ATI CRYPTO BOT V40.2.21
+# ATI CRYPTO BOT V40.2.22
 # TABDEAL SPOT
 #
-# AUTHENTICATION FIX:
-# EXACTLY MIRRORS OFFICIAL TABDEAL PYTHON SDK
+# AUTH FIX:
+# - Official Tabdeal SDK signing structure
+# - PRIVATE GET endpoint: /r/api/v1/account
+# - HMAC-SHA256
+# - timestamp = time.time() * 1000
+# - urlencode(data)
+# - X-MBX-APIKEY
 #
-# timestamp = time.time() * 1000
-# recvWindow = optional
-# query = urlencode(data)
-# signature = HMAC-SHA256(query, API_SECRET)
-#
-# IMPORTANT:
-# REAL BUY IS LOCKED UNTIL AUTHENTICATION PASSES
+# SAFETY:
+# - REAL BUY LOCKED
+# - NO REAL ORDER WILL BE SENT
 # ============================================================
 
-VERSION = "V40.2.21"
+VERSION = "V40.2.22"
 
 BASE_URL = "https://api1.tabdeal.org"
 
@@ -56,9 +56,12 @@ LIVE_TRADING = (
     == "true"
 )
 
-ORDER_USDT = Decimal(
-    os.getenv("ORDER_USDT", "2")
-)
+try:
+    ORDER_USDT = Decimal(
+        os.getenv("ORDER_USDT", "2").strip()
+    )
+except Exception:
+    ORDER_USDT = Decimal("2")
 
 RECV_WINDOW = os.getenv(
     "RECV_WINDOW", ""
@@ -68,7 +71,22 @@ TIMEOUT = 20
 
 MAX_SCAN_MARKETS = 15
 
-AUTH_ENDPOINT = "/api/v1/account"
+# ============================================================
+# IMPORTANT FIX
+#
+# Official Tabdeal private GET account endpoint:
+#
+# /r/api/v1/account
+#
+# NOT:
+# /api/v1/account
+# ============================================================
+
+AUTH_ENDPOINT = "/r/api/v1/account"
+
+# ============================================================
+# SAFETY LOCK
+# ============================================================
 
 REAL_BUY_LOCKED = True
 
@@ -152,22 +170,6 @@ def public_get(path, params=None):
 
 # ============================================================
 # OFFICIAL TABDEAL AUTHENTICATION
-#
-# This is intentionally copied in structure from the official
-# Tabdeal Python SDK.
-#
-# Official SDK:
-#
-# timestamp = time.time() * 1000
-# data.update({"timestamp": timestamp})
-# data_query = urlencode(data)
-# signature = hmac.new(
-#     secret,
-#     data_query,
-#     hashlib.sha256
-# ).hexdigest()
-# data.update({"signature": signature})
-#
 # ============================================================
 
 def build_signed_data(params=None):
@@ -187,14 +189,12 @@ def build_signed_data(params=None):
     if params:
         data.update(params)
 
-    # Never reuse authentication fields
+    # Never reuse old authentication fields
     data.pop("signature", None)
     data.pop("timestamp", None)
     data.pop("recvWindow", None)
 
-    # IMPORTANT:
-    # Do NOT convert to int.
-    # Official SDK uses time.time() * 1000.
+    # Official SDK structure
     timestamp = time.time() * 1000
 
     data.update(
@@ -204,7 +204,9 @@ def build_signed_data(params=None):
     )
 
     if RECV_WINDOW:
+
         try:
+
             data.update(
                 {
                     "recvWindow": int(
@@ -212,14 +214,17 @@ def build_signed_data(params=None):
                     )
                 }
             )
+
         except ValueError:
+
             data.update(
                 {
                     "recvWindow": RECV_WINDOW
                 }
             )
 
-    # EXACT OFFICIAL METHOD
+    # IMPORTANT:
+    # Sign exactly the encoded data
     data_query = urlencode(data)
 
     signature = hmac.new(
@@ -330,19 +335,18 @@ def get_api_error(response):
 
 # ============================================================
 # AUTHENTICATION TEST
-#
-# Uses the SAME private account endpoint that the official
-# Tabdeal Spot SDK exposes.
 # ============================================================
 
 def authenticate():
 
     telegram(
         f"🔐 ATI API AUTH TEST {VERSION}\n\n"
-        f"📡 PRIVATE ENDPOINT: account\n"
+        f"📡 PRIVATE ENDPOINT:\n"
+        f"/r/api/v1/account\n"
         f"🔐 HMAC-SHA256\n"
         f"🔢 TIMESTAMP: time.time()*1000\n"
-        f"🔐 urlencode(data)\n"
+        f"🔐 QUERY: urlencode(data)\n"
+        f"🔑 HEADER: X-MBX-APIKEY\n"
         f"🕐 {utc_now()}"
     )
 
@@ -366,9 +370,9 @@ def authenticate():
 
         return False
 
-    # --------------------------------------------------------
+    # ========================================================
     # SUCCESS
-    # --------------------------------------------------------
+    # ========================================================
 
     if response.status_code < 400:
 
@@ -387,9 +391,9 @@ def authenticate():
 
         return True
 
-    # --------------------------------------------------------
-    # 401 / 1103
-    # --------------------------------------------------------
+    # ========================================================
+    # AUTH ERROR
+    # ========================================================
 
     error = get_api_error(
         response
@@ -408,7 +412,9 @@ def authenticate():
             f"🔐 METHOD: HMAC-SHA256\n"
             f"🔢 TIMESTAMP: time.time()*1000\n"
             f"🔐 QUERY: urlencode(data)\n"
-            f"🔑 HEADER: X-MBX-APIKEY\n\n"
+            f"🔑 HEADER: X-MBX-APIKEY\n"
+            f"📡 ENDPOINT:\n"
+            f"/r/api/v1/account\n\n"
             f"🛑 REAL BUY LOCKED\n"
             f"🛑 NO ORDER WAS SENT\n"
             f"🕐 {utc_now()}"
@@ -416,9 +422,9 @@ def authenticate():
 
         return False
 
-    # --------------------------------------------------------
+    # ========================================================
     # OTHER PRIVATE API ERROR
-    # --------------------------------------------------------
+    # ========================================================
 
     telegram(
         f"🚨 ATI PRIVATE API ERROR "
@@ -1008,7 +1014,6 @@ def scan_markets():
 
     results = []
 
-    # Keep GitHub Actions runtime controlled.
     selected = markets[
         :MAX_SCAN_MARKETS
     ]
@@ -1146,8 +1151,7 @@ def prepare_quantity(
 # ============================================================
 # REAL BUY
 #
-# STILL LOCKED IN THIS VERSION.
-# Authentication must first be confirmed.
+# LOCKED
 # ============================================================
 
 def real_buy(
@@ -1183,10 +1187,6 @@ def real_buy(
 
         return False
 
-    # --------------------------------------------------------
-    # SAFETY LOCK
-    # --------------------------------------------------------
-
     if REAL_BUY_LOCKED:
 
         telegram(
@@ -1219,18 +1219,6 @@ def real_buy(
         )
 
         return False
-
-    # --------------------------------------------------------
-    # OFFICIAL SDK ORDER DATA STRUCTURE
-    #
-    # side
-    # type
-    # quantity
-    # price
-    # stopPrice
-    # symbol
-    #
-    # --------------------------------------------------------
 
     order_data = {
         "side": "BUY",
@@ -1317,23 +1305,21 @@ def real_buy(
 
 def main():
 
-    # --------------------------------------------------------
-    # STARTUP
-    # --------------------------------------------------------
-
     telegram(
         f"🚀 ATI CRYPTO BOT {VERSION}\n\n"
         f"📡 TABDEAL API: CONNECTING...\n"
         f"🔐 AUTHENTICATION: STARTING\n"
+        f"📡 AUTH ENDPOINT:\n"
+        f"/r/api/v1/account\n"
         f"🛡 REAL BUY LOCK: ON\n"
         f"💰 ORDER AMOUNT: "
         f"{ORDER_USDT} USDT\n"
         f"🕐 {utc_now()}"
     )
 
-    # --------------------------------------------------------
+    # ========================================================
     # CREDENTIAL CHECK
-    # --------------------------------------------------------
+    # ========================================================
 
     if not API_KEY:
 
@@ -1361,9 +1347,9 @@ def main():
 
         return
 
-    # --------------------------------------------------------
+    # ========================================================
     # AUTHENTICATION FIRST
-    # --------------------------------------------------------
+    # ========================================================
 
     authenticated = authenticate()
 
@@ -1379,13 +1365,10 @@ def main():
 
         return
 
-    # --------------------------------------------------------
-    # IMPORTANT:
-    # Keep real BUY locked even after auth.
-    # This version is for authentication verification.
-    # --------------------------------------------------------
-
-    REAL_BUY_LOCKED = True
+    # ========================================================
+    # AUTH PASSED
+    # REAL BUY STILL LOCKED
+    # ========================================================
 
     telegram(
         f"🟢 ATI AUTHENTICATION PASSED "
@@ -1397,9 +1380,9 @@ def main():
         f"🕐 {utc_now()}"
     )
 
-    # --------------------------------------------------------
+    # ========================================================
     # SCAN
-    # --------------------------------------------------------
+    # ========================================================
 
     results = scan_markets()
 
@@ -1415,9 +1398,9 @@ def main():
 
         return
 
-    # --------------------------------------------------------
+    # ========================================================
     # TOP 10
-    # --------------------------------------------------------
+    # ========================================================
 
     top = results[:10]
 
@@ -1458,9 +1441,9 @@ def main():
         "\n".join(lines)
     )
 
-    # --------------------------------------------------------
-    # BEST SIGNAL INFORMATION
-    # --------------------------------------------------------
+    # ========================================================
+    # BEST SIGNAL
+    # ========================================================
 
     best = results[0]
 
