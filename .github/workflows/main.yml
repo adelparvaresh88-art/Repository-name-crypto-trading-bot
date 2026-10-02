@@ -2,17 +2,13 @@ name: Run ATI Bot
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "*/5 * * * *"
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
 
-    timeout-minutes: 5
-
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Setup Python
@@ -20,12 +16,12 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install requests
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install requests
 
-      - name: Compile check
+      - name: Python syntax check
         run: |
           python -m py_compile main.py
 
@@ -33,14 +29,11 @@ jobs:
         env:
           TABDEAL_API_KEY: ${{ secrets.TABDEAL_API_KEY }}
           TABDEAL_API_SECRET: ${{ secrets.TABDEAL_API_SECRET }}
-
+          TABDIL_API_KEY: ${{ secrets.TABDIL_API_KEY }}
+          TABDIL_API_SECRET: ${{ secrets.TABDIL_API_SECRET }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-
-          LIVE_TRADING: "false"
-
-          ORDER_USDT: "2"
           RECV_WINDOW: "5000"
-
+          REQUEST_TIMEOUT: "20"
         run: |
           python main.py
