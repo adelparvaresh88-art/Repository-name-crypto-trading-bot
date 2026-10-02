@@ -1,6 +1,5 @@
 import os
 import time
-import json
 import hmac
 import hashlib
 from datetime import datetime, timezone
@@ -10,58 +9,32 @@ import requests
 
 
 # ============================================================
-# ATI CRYPTO BOT V40.2.31
+# ATI CRYPTO BOT V40.2.32
 # TABDEAL SPOT
-# 5M CLOSED-CANDLE MARKET SCANNER
-# TOP 10 MOMENTUM / BREAKOUT
-# ============================================================
-#
-# IMPORTANT:
-# - REAL ORDERS ARE COMPLETELY DISABLED
-# - NO ORDER ENDPOINT IS CALLED
-# - CLOSED 5M CANDLES ONLY
-# - DIRECT REST API
-# - HMAC-SHA256
-# - TABDIL/TABDEAL API KEY COMPATIBILITY
-#
+# AUTH FIX + 5M CLOSED-CANDLE SCANNER
 # ============================================================
 
-VERSION = "V40.2.31"
+VERSION = "V40.2.32"
 
 BASE_URL = "https://api1.tabdeal.org"
 
 RECV_WINDOW = int(os.getenv("RECV_WINDOW", "5000"))
 REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", "20"))
 
-# ------------------------------------------------------------
-# SCANNER SETTINGS
-# ------------------------------------------------------------
-
 TRADE_LIMIT = 1000
-
-# Number of markets actually inspected.
 SCAN_UNIVERSE = 20
-
-# Number displayed in Telegram.
 TOP_RESULTS = 10
 
 TIMEFRAME_MINUTES = 5
-
-# Resistance lookback.
 BREAKOUT_LOOKBACK = 12
-
-# Minimum candles required.
 MIN_CANDLES = 30
 
-# Maximum acceptable chase above breakout.
 MAX_CHASE_PCT = 1.50
-
-# Minimum volume expansion.
 MIN_VOLUME_RATIO = 1.10
 
-# ------------------------------------------------------------
-# HARD SAFETY LOCK
-# ------------------------------------------------------------
+# ============================================================
+# HARD SAFETY
+# ============================================================
 
 LIVE_TRADING = False
 REAL_ORDERS = False
@@ -72,29 +45,35 @@ BUY_LOCK = True
 # TELEGRAM
 # ============================================================
 
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+TELEGRAM_TOKEN = os.getenv(
+    "TELEGRAM_BOT_TOKEN",
+    ""
+).strip()
+
+TELEGRAM_CHAT_ID = os.getenv(
+    "TELEGRAM_CHAT_ID",
+    ""
+).strip()
 
 
 def telegram(message):
+
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         print(message)
         return
 
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": message,
-        "disable_web_page_preview": True,
-    }
-
     try:
+
         requests.post(
-            url,
-            json=payload,
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+            json={
+                "chat_id": TELEGRAM_CHAT_ID,
+                "text": message,
+                "disable_web_page_preview": True,
+            },
             timeout=REQUEST_TIMEOUT,
         )
+
     except Exception as exc:
         print("TELEGRAM ERROR:", exc)
 
@@ -102,40 +81,68 @@ def telegram(message):
 
 
 # ============================================================
-# HTTP SESSION
+# HTTP
 # ============================================================
 
 SESSION = requests.Session()
 
 SESSION.headers.update(
     {
-        "User-Agent": "ATI-Crypto-Bot-V40.2.31",
+        "User-Agent": "ATI-Crypto-Bot-V40.2.32",
         "Accept": "application/json",
     }
 )
 
 
 # ============================================================
-# CREDENTIALS
+# API CREDENTIALS
+#
+# IMPORTANT:
+# TABDIL IS FIRST BECAUSE THIS WAS THE LAST VERIFIED
+# WORKING AUTH PAIR.
 # ============================================================
 
 def get_credentials():
-    pairs = [
+
+    credentials = [
         (
-            os.getenv("TABDEAL_API_KEY", "").strip(),
-            os.getenv("TABDEAL_API_SECRET", "").strip(),
-            "TABDEAL",
-        ),
-        (
-            os.getenv("TABDIL_API_KEY", "").strip(),
-            os.getenv("TABDIL_API_SECRET", "").strip(),
+            os.getenv(
+                "TABDIL_API_KEY",
+                ""
+            ).strip(),
+
+            os.getenv(
+                "TABDIL_API_SECRET",
+                ""
+            ).strip(),
+
             "TABDIL",
+        ),
+
+        (
+            os.getenv(
+                "TABDEAL_API_KEY",
+                ""
+            ).strip(),
+
+            os.getenv(
+                "TABDEAL_API_SECRET",
+                ""
+            ).strip(),
+
+            "TABDEAL",
         ),
     ]
 
-    for api_key, api_secret, name in pairs:
+    for api_key, api_secret, name in credentials:
+
         if api_key and api_secret:
-            return api_key, api_secret, name
+
+            return (
+                api_key,
+                api_secret,
+                name,
+            )
 
     return "", "", "NONE"
 
@@ -148,10 +155,9 @@ API_KEY, API_SECRET, WORKING_PAIR = get_credentials()
 # ============================================================
 
 def get_server_time():
-    url = f"{BASE_URL}/r/api/v1/time"
 
     response = SESSION.get(
-        url,
+        f"{BASE_URL}/r/api/v1/time",
         timeout=REQUEST_TIMEOUT,
     )
 
@@ -160,52 +166,88 @@ def get_server_time():
     data = response.json()
 
     if isinstance(data, dict):
+
         value = data.get("serverTime")
 
         if value is not None:
             return int(value)
 
-    raise RuntimeError(f"Invalid server time response: {data}")
-
-
-# ============================================================
-# SIGNED REQUEST
-# ============================================================
-
-def signed_get(path, params=None):
-    if params is None:
-        params = {}
-
-    server_time = get_server_time()
-
-    params = dict(params)
-
-    params["timestamp"] = server_time
-    params["recvWindow"] = RECV_WINDOW
-
-    query_string = "&".join(
-        f"{key}={params[key]}"
-        for key in params
+    raise RuntimeError(
+        f"Invalid server time response: {data}"
     )
 
-    signature = hmac.new(
+
+# ============================================================
+# HMAC SIGNATURE
+# ============================================================
+
+def make_signature(query_string):
+
+    return hmac.new(
         API_SECRET.encode("utf-8"),
         query_string.encode("utf-8"),
         hashlib.sha256,
     ).hexdigest()
 
-    params["signature"] = signature
 
-    url = f"{BASE_URL}{path}"
+# ============================================================
+# SIGNED GET
+# ============================================================
 
-    headers = {
-        "X-MBX-APIKEY": API_KEY,
-    }
+def signed_get(path, extra_params=None):
+
+    if extra_params is None:
+        extra_params = {}
+
+    # --------------------------------------------------------
+    # Use server timestamp.
+    # This was already verified successfully in V40.2.30.
+    # --------------------------------------------------------
+
+    timestamp = get_server_time()
+
+    # --------------------------------------------------------
+    # FIXED PARAMETER ORDER
+    # --------------------------------------------------------
+
+    params = {}
+
+    for key, value in extra_params.items():
+
+        if value is None:
+            continue
+
+        params[key] = value
+
+    params["timestamp"] = timestamp
+    params["recvWindow"] = RECV_WINDOW
+
+    query_parts = []
+
+    for key, value in params.items():
+
+        query_parts.append(
+            f"{key}={value}"
+        )
+
+    query_string = "&".join(
+        query_parts
+    )
+
+    signature = make_signature(
+        query_string
+    )
+
+    request_params = dict(params)
+
+    request_params["signature"] = signature
 
     response = SESSION.get(
-        url,
-        params=params,
-        headers=headers,
+        f"{BASE_URL}{path}",
+        params=request_params,
+        headers={
+            "X-MBX-APIKEY": API_KEY,
+        },
         timeout=REQUEST_TIMEOUT,
     )
 
@@ -219,22 +261,37 @@ def signed_get(path, params=None):
 def auth_test():
 
     if not API_KEY or not API_SECRET:
-        raise RuntimeError("API KEY / SECRET NOT FOUND")
 
-    local_ms = int(time.time() * 1000)
+        raise RuntimeError(
+            "API KEY / SECRET NOT FOUND"
+        )
 
-    server_ms = get_server_time()
+    local_before = int(
+        time.time() * 1000
+    )
 
-    diff = local_ms - server_ms
+    server = get_server_time()
+
+    local_after = int(
+        time.time() * 1000
+    )
+
+    local_average = (
+        local_before + local_after
+    ) // 2
+
+    diff = local_average - server
 
     telegram(
         "\n".join(
             [
                 f"🕐 TABDEAL TIME CHECK {VERSION}",
                 "",
-                f"LOCAL: {local_ms}",
-                f"SERVER: {server_ms}",
+                f"LOCAL: {local_average}",
+                f"SERVER: {server}",
                 f"DIFF: {diff} ms",
+                "",
+                f"🔑 AUTH PAIR: {WORKING_PAIR}",
                 "",
             ]
         )
@@ -250,14 +307,21 @@ def auth_test():
         data = response.text
 
     if response.status_code != 200:
+
         raise RuntimeError(
             f"AUTH FAILED HTTP {response.status_code}: {data}"
         )
 
     if isinstance(data, dict):
+
         code = data.get("code")
 
-        if code not in (None, 0, "0"):
+        if code not in (
+            None,
+            0,
+            "0",
+        ):
+
             raise RuntimeError(
                 f"AUTH FAILED CODE {code}: {data}"
             )
@@ -269,6 +333,9 @@ def auth_test():
                 "",
                 f"🟢 WORKING PAIR: {WORKING_PAIR}",
                 "🔐 HMAC-SHA256",
+                "🔢 SERVER TIMESTAMP",
+                "🔢 RECVWINDOW: 5000",
+                "",
                 "📡 /r/api/v1/account",
                 "",
                 "🔒 REAL BUY: DISABLED",
@@ -286,10 +353,8 @@ def auth_test():
 
 def get_exchange_info():
 
-    url = f"{BASE_URL}/r/api/v1/exchangeInfo"
-
     response = SESSION.get(
-        url,
+        f"{BASE_URL}/r/api/v1/exchangeInfo",
         timeout=REQUEST_TIMEOUT,
     )
 
@@ -299,7 +364,7 @@ def get_exchange_info():
 
 
 # ============================================================
-# EXCHANGE INFO PARSER
+# EXCHANGE PARSER
 # ============================================================
 
 def extract_symbols(raw):
@@ -309,7 +374,10 @@ def extract_symbols(raw):
 
     if isinstance(raw, dict):
 
-        if isinstance(raw.get("symbols"), list):
+        if isinstance(
+            raw.get("symbols"),
+            list,
+        ):
             return raw["symbols"]
 
         data = raw.get("data")
@@ -319,7 +387,10 @@ def extract_symbols(raw):
 
         if isinstance(data, dict):
 
-            if isinstance(data.get("symbols"), list):
+            if isinstance(
+                data.get("symbols"),
+                list,
+            ):
                 return data["symbols"]
 
     return []
@@ -376,7 +447,10 @@ def get_usdt_markets(raw):
             continue
 
         status = str(
-            item.get("status", "TRADING")
+            item.get(
+                "status",
+                "TRADING",
+            )
         ).upper()
 
         if status not in (
@@ -390,10 +464,9 @@ def get_usdt_markets(raw):
 
         markets.append(symbol)
 
-    # remove duplicates
-    markets = list(dict.fromkeys(markets))
-
-    return markets
+    return list(
+        dict.fromkeys(markets)
+    )
 
 
 # ============================================================
@@ -402,16 +475,12 @@ def get_usdt_markets(raw):
 
 def get_recent_trades(symbol):
 
-    url = f"{BASE_URL}/r/api/v1/trades"
-
-    params = {
-        "tabdealSymbol": symbol,
-        "limit": TRADE_LIMIT,
-    }
-
     response = SESSION.get(
-        url,
-        params=params,
+        f"{BASE_URL}/r/api/v1/trades",
+        params={
+            "tabdealSymbol": symbol,
+            "limit": TRADE_LIMIT,
+        },
         timeout=REQUEST_TIMEOUT,
     )
 
@@ -445,59 +514,62 @@ def extract_trade_list(raw):
     return []
 
 
-def trade_value(trade, *keys):
+def parse_trade(trade):
 
     if not isinstance(trade, dict):
         return None
 
-    for key in keys:
-
-        if key in trade:
-            return trade[key]
-
-    return None
-
-
-def parse_trade(trade):
-
-    price = trade_value(
-        trade,
-        "price",
-        "p",
+    price = (
+        trade.get("price")
+        if trade.get("price") is not None
+        else trade.get("p")
     )
 
-    qty = trade_value(
-        trade,
-        "qty",
-        "quantity",
-        "q",
+    quantity = (
+        trade.get("qty")
+        if trade.get("qty") is not None
+        else trade.get("quantity")
     )
 
-    timestamp = trade_value(
-        trade,
-        "time",
-        "timestamp",
-        "T",
+    if quantity is None:
+        quantity = trade.get("q")
+
+    timestamp = (
+        trade.get("time")
+        if trade.get("time") is not None
+        else trade.get("timestamp")
     )
 
-    if price is None or qty is None or timestamp is None:
+    if timestamp is None:
+        timestamp = trade.get("T")
+
+    if (
+        price is None
+        or quantity is None
+        or timestamp is None
+    ):
         return None
 
     try:
 
         price = float(price)
-        qty = float(qty)
-        timestamp = int(float(timestamp))
+        quantity = float(quantity)
+        timestamp = int(
+            float(timestamp)
+        )
 
         if timestamp < 10_000_000_000:
             timestamp *= 1000
 
-        if price <= 0 or qty <= 0:
+        if (
+            price <= 0
+            or quantity <= 0
+        ):
             return None
 
         return {
             "price": price,
-            "qty": qty,
+            "qty": quantity,
             "time": timestamp,
         }
 
@@ -511,32 +583,39 @@ def parse_trade(trade):
 
 def build_5m_candles(raw):
 
-    trades = extract_trade_list(raw)
+    raw_trades = extract_trade_list(
+        raw
+    )
 
-    parsed = []
+    trades = []
 
-    for trade in trades:
+    for item in raw_trades:
 
-        item = parse_trade(trade)
+        parsed = parse_trade(item)
 
-        if item:
-            parsed.append(item)
+        if parsed:
+            trades.append(parsed)
 
-    if not parsed:
+    if not trades:
         return []
 
-    parsed.sort(
+    trades.sort(
         key=lambda x: x["time"]
+    )
+
+    bucket_ms = (
+        TIMEFRAME_MINUTES
+        * 60
+        * 1000
     )
 
     buckets = {}
 
-    bucket_ms = TIMEFRAME_MINUTES * 60 * 1000
-
-    for trade in parsed:
+    for trade in trades:
 
         bucket = (
-            trade["time"] // bucket_ms
+            trade["time"]
+            // bucket_ms
         ) * bucket_ms
 
         if bucket not in buckets:
@@ -577,26 +656,27 @@ def build_5m_candles(raw):
     ]
 
     # --------------------------------------------------------
-    # REMOVE CURRENT OPEN CANDLE
+    # REMOVE OPEN 5M CANDLE
     # --------------------------------------------------------
 
-    now_ms = int(time.time() * 1000)
+    now_ms = int(
+        time.time() * 1000
+    )
 
     current_bucket = (
-        now_ms // bucket_ms
+        now_ms
+        // bucket_ms
     ) * bucket_ms
 
-    closed = [
+    return [
         candle
         for candle in candles
         if candle["time"] < current_bucket
     ]
 
-    return closed
-
 
 # ============================================================
-# INDICATOR HELPERS
+# HELPERS
 # ============================================================
 
 def average(values):
@@ -607,27 +687,20 @@ def average(values):
     return sum(values) / len(values)
 
 
-def candle_body(candle):
+def body_ratio(candle):
 
-    return abs(
-        candle["close"] - candle["open"]
-    )
-
-
-def candle_range(candle):
-
-    return max(
-        candle["high"] - candle["low"],
+    candle_range = max(
+        candle["high"]
+        - candle["low"],
         1e-12,
     )
 
-
-def body_ratio(candle):
-
-    return (
-        candle_body(candle)
-        / candle_range(candle)
+    body = abs(
+        candle["close"]
+        - candle["open"]
     )
+
+    return body / candle_range
 
 
 # ============================================================
@@ -638,9 +711,13 @@ def analyze_market(symbol):
 
     try:
 
-        raw = get_recent_trades(symbol)
+        raw = get_recent_trades(
+            symbol
+        )
 
-        candles = build_5m_candles(raw)
+        candles = build_5m_candles(
+            raw
+        )
 
         if len(candles) < MIN_CANDLES:
 
@@ -678,7 +755,10 @@ def analyze_market(symbol):
 
         volume_ratio = (
             last["volume"]
-            / max(average_volume, 1e-12)
+            / max(
+                average_volume,
+                1e-12,
+            )
         )
 
         close = last["close"]
@@ -689,83 +769,80 @@ def analyze_market(symbol):
             * 100
         )
 
-        body_pct = body_ratio(last)
+        body = body_ratio(
+            last
+        )
 
         bullish = (
             last["close"]
             > last["open"]
         )
 
-        # ----------------------------------------------------
-        # SHORT MOMENTUM
-        # ----------------------------------------------------
-
-        close_3 = candles[-4]["close"]
+        # 15 MIN
+        close_15m = candles[-4]["close"]
 
         momentum_15m = (
-            (close - close_3)
-            / close_3
+            (close - close_15m)
+            / close_15m
             * 100
         )
 
-        close_12 = candles[-13]["close"]
+        # 1 HOUR
+        close_1h = candles[-13]["close"]
 
         momentum_1h = (
-            (close - close_12)
-            / close_12
+            (close - close_1h)
+            / close_1h
             * 100
         )
-
-        # ----------------------------------------------------
-        # CHASE PROTECTION
-        # ----------------------------------------------------
 
         chase_pct = max(
             0.0,
             breakout_pct,
         )
 
-        # ----------------------------------------------------
-        # SCORE
-        # ----------------------------------------------------
-
         score = 0
 
         reasons = []
 
-        # Breakout
         if breakout_pct > 0:
             score += 5
-            reasons.append("BREAKOUT")
+            reasons.append(
+                "BREAKOUT"
+            )
 
-        # Strong candle
-        if bullish and body_pct >= 0.55:
+        if (
+            bullish
+            and body >= 0.55
+        ):
             score += 3
-            reasons.append("STRONG_CANDLE")
+            reasons.append(
+                "STRONG_CANDLE"
+            )
 
-        # Volume
         if volume_ratio >= MIN_VOLUME_RATIO:
             score += 4
-            reasons.append("VOLUME")
+            reasons.append(
+                "VOLUME"
+            )
 
-        # 15m momentum
         if momentum_15m > 0.20:
             score += 2
-            reasons.append("15M_UP")
+            reasons.append(
+                "15M_UP"
+            )
 
-        # 1h momentum
         if momentum_1h > 0.30:
             score += 3
-            reasons.append("1H_UP")
+            reasons.append(
+                "1H_UP"
+            )
 
-        # Close above resistance
         if close > resistance:
             score += 2
-            reasons.append("CLOSE_ABOVE_RESISTANCE")
-
-        # ----------------------------------------------------
-        # HARD FILTERS
-        # ----------------------------------------------------
+            reasons.append(
+                "CLOSE_ABOVE_RESISTANCE"
+            )
 
         valid = True
 
@@ -778,7 +855,7 @@ def analyze_market(symbol):
         if volume_ratio < MIN_VOLUME_RATIO:
             valid = False
 
-        if body_pct < 0.40:
+        if body < 0.40:
             valid = False
 
         if momentum_15m <= 0:
@@ -798,7 +875,7 @@ def analyze_market(symbol):
             "resistance": resistance,
             "breakout_pct": breakout_pct,
             "volume_ratio": volume_ratio,
-            "body_ratio": body_pct,
+            "body_ratio": body,
             "momentum_15m": momentum_15m,
             "momentum_1h": momentum_1h,
             "candles": len(candles),
@@ -815,19 +892,14 @@ def analyze_market(symbol):
 
 
 # ============================================================
-# SCAN
+# SCANNER
 # ============================================================
 
 def scan_markets(markets):
 
-    # --------------------------------------------------------
-    # First pass:
-    # inspect a limited universe to keep GitHub fast.
-    # --------------------------------------------------------
-
-    candidates = markets[:SCAN_UNIVERSE]
-
-    results = []
+    candidates = markets[
+        :SCAN_UNIVERSE
+    ]
 
     telegram(
         "\n".join(
@@ -836,7 +908,6 @@ def scan_markets(markets):
                 "",
                 f"🟢 USDT MARKETS: {len(markets)}",
                 f"🔎 SCAN UNIVERSE: {len(candidates)}",
-                f"🎯 TOP RESULTS: {TOP_RESULTS}",
                 "",
                 "🕯 CLOSED 5M CANDLE: YES",
                 "📈 BREAKOUT: ON",
@@ -850,6 +921,8 @@ def scan_markets(markets):
     )
 
     start = time.time()
+
+    results = []
 
     with ThreadPoolExecutor(
         max_workers=6
@@ -871,9 +944,9 @@ def scan_markets(markets):
 
             try:
 
-                result = future.result()
-
-                results.append(result)
+                results.append(
+                    future.result()
+                )
 
             except Exception as exc:
 
@@ -885,7 +958,9 @@ def scan_markets(markets):
                     }
                 )
 
-    elapsed = time.time() - start
+    elapsed = (
+        time.time() - start
+    )
 
     valid = [
         r
@@ -902,14 +977,22 @@ def scan_markets(markets):
         reverse=True,
     )
 
-    return valid[:TOP_RESULTS], elapsed, results
+    return (
+        valid[:TOP_RESULTS],
+        elapsed,
+        results,
+    )
 
 
 # ============================================================
-# TELEGRAM RESULT
+# TELEGRAM RESULTS
 # ============================================================
 
-def send_scan_result(top, elapsed, total_results):
+def send_scan_result(
+    top,
+    elapsed,
+    total_results,
+):
 
     now = datetime.now(
         timezone.utc
@@ -938,9 +1021,9 @@ def send_scan_result(top, elapsed, total_results):
             [
                 "⚪ NO QUALIFIED BREAKOUT",
                 "",
-                "فقط کندل بسته‌شده بررسی شد.",
-                "سیگنال ضعیف حذف شد.",
-                "فعلاً خرید انجام نمی‌شود.",
+                "🕯 CLOSED CANDLE ONLY",
+                "🚫 WEAK SIGNALS FILTERED",
+                "🚫 NO REAL BUY",
             ]
         )
 
@@ -950,10 +1033,12 @@ def send_scan_result(top, elapsed, total_results):
 
         return
 
-    lines.append(
-        "🏆 TOP 10 CANDIDATES"
+    lines.extend(
+        [
+            "🏆 TOP 10 CANDIDATES",
+            "",
+        ]
     )
-    lines.append("")
 
     for index, item in enumerate(
         top,
@@ -961,7 +1046,10 @@ def send_scan_result(top, elapsed, total_results):
     ):
 
         reasons = ",".join(
-            item.get("reasons", [])
+            item.get(
+                "reasons",
+                [],
+            )
         )
 
         lines.extend(
@@ -990,58 +1078,45 @@ def send_scan_result(top, elapsed, total_results):
 
 def main():
 
-    startup = "\n".join(
-        [
-            f"⚡ ATI CRYPTO BOT {VERSION}",
-            "",
-            "📡 TABDEAL API: CONNECTING...",
-            "📊 AUTH + 5M SCANNER",
-            "",
-            "🔐 DIRECT REST API",
-            "🔐 HMAC-SHA256",
-            "🕯 CLOSED CANDLE: YES",
-            "📊 5M SCANNER: ENABLED",
-            "🎯 TOP 10: ENABLED",
-            "",
-            "🔒 REAL ORDERS: DISABLED",
-            "🛑 BUY LOCK: ACTIVE",
-            "",
-            datetime.now(
-                timezone.utc
-            ).strftime(
-                "🕐 %Y-%m-%d %H:%M:%S UTC"
-            ),
-        ]
+    telegram(
+        "\n".join(
+            [
+                f"⚡ ATI CRYPTO BOT {VERSION}",
+                "",
+                "📡 TABDEAL API: CONNECTING...",
+                "📊 AUTH + 5M SCANNER",
+                "",
+                "🔐 DIRECT REST API",
+                "🔐 HMAC-SHA256",
+                "🔢 SERVER TIMESTAMP",
+                "🔢 RECVWINDOW: 5000",
+                "",
+                "🕯 CLOSED CANDLE: YES",
+                "📊 5M SCANNER: ENABLED",
+                "🎯 TOP 10: ENABLED",
+                "",
+                "🔒 REAL ORDERS: DISABLED",
+                "🛑 BUY LOCK: ACTIVE",
+                "",
+                datetime.now(
+                    timezone.utc
+                ).strftime(
+                    "🕐 %Y-%m-%d %H:%M:%S UTC"
+                ),
+            ]
+        )
     )
-
-    telegram(startup)
-
-    # --------------------------------------------------------
-    # Credentials
-    # --------------------------------------------------------
 
     if not API_KEY or not API_SECRET:
 
         telegram(
-            "\n".join(
-                [
-                    "🚨 ATI CONFIG ERROR",
-                    "",
-                    "❌ API KEY / SECRET NOT FOUND",
-                    "",
-                    "Checked:",
-                    "TABDEAL_API_KEY",
-                    "TABDEAL_API_SECRET",
-                    "TABDIL_API_KEY",
-                    "TABDIL_API_SECRET",
-                ]
-            )
+            "🚨 API KEY / SECRET NOT FOUND"
         )
 
         return
 
     # --------------------------------------------------------
-    # Authentication
+    # AUTH
     # --------------------------------------------------------
 
     try:
@@ -1057,6 +1132,8 @@ def main():
                     "",
                     f"❌ {exc}",
                     "",
+                    f"🔑 SELECTED PAIR: {WORKING_PAIR}",
+                    "",
                     "🛑 SCANNER STOPPED",
                     "🛑 NO ORDER WAS SENT",
                 ]
@@ -1066,15 +1143,15 @@ def main():
         return
 
     # --------------------------------------------------------
-    # Exchange info
+    # EXCHANGE INFO
     # --------------------------------------------------------
 
     try:
 
-        raw_exchange = get_exchange_info()
+        raw = get_exchange_info()
 
         markets = get_usdt_markets(
-            raw_exchange
+            raw
         )
 
     except Exception as exc:
@@ -1086,7 +1163,6 @@ def main():
                     "",
                     f"❌ {exc}",
                     "",
-                    "🛑 SCANNER STOPPED",
                     "🛑 NO ORDER WAS SENT",
                 ]
             )
@@ -1097,15 +1173,7 @@ def main():
     if not markets:
 
         telegram(
-            "\n".join(
-                [
-                    "🚨 NO USDT MARKETS",
-                    "",
-                    "❌ exchangeInfo parser returned 0 markets",
-                    "",
-                    "🛑 NO ORDER WAS SENT",
-                ]
-            )
+            "🚨 NO USDT MARKETS FOUND"
         )
 
         return
@@ -1123,7 +1191,7 @@ def main():
     )
 
     # --------------------------------------------------------
-    # Scanner
+    # SCAN
     # --------------------------------------------------------
 
     top, elapsed, all_results = scan_markets(
@@ -1131,7 +1199,7 @@ def main():
     )
 
     # --------------------------------------------------------
-    # Final result
+    # RESULT
     # --------------------------------------------------------
 
     send_scan_result(
