@@ -7,17 +7,21 @@ from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # ============================================================
-# ATI CRYPTO BOT V40.2.33
-# DIAGNOSTIC SCANNER - NO REAL ORDERS
+# ATI CRYPTO BOT V40.2.34
+# TRADE API DIAGNOSTIC + 5M SCANNER
+# REAL ORDERS DISABLED
 # ============================================================
 
-VERSION = "V40.2.33"
+VERSION = "V40.2.34"
 BASE_URL = "https://api1.tabdeal.org"
-TIMEOUT = 20
+
 RECV_WINDOW = 5000
+REQUEST_TIMEOUT = 20
+TRADE_LIMIT = 1000
+
 SCAN_UNIVERSE = 20
 TOP_RESULTS = 10
-TRADE_LIMIT = 1000
+
 LOOKBACK = 12
 MIN_CANDLES = 30
 MAX_CHASE_PCT = 1.50
@@ -28,11 +32,17 @@ REAL_ORDERS = False
 BUY_LOCK = True
 
 session = requests.Session()
-session.headers.update({"User-Agent": "ATI-Crypto-Bot/40.2.33"})
+session.headers.update({
+    "User-Agent": "ATI-Crypto-Bot/40.2.34"
+})
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 
+
+# ============================================================
+# TELEGRAM
+# ============================================================
 
 def log_time():
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
@@ -42,11 +52,11 @@ def notify(message):
     print(message, flush=True)
 
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        print("TELEGRAM CONFIG MISSING", flush=True)
         return
 
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+
         response = requests.post(
             url,
             json={
@@ -56,46 +66,81 @@ def notify(message):
             },
             timeout=15,
         )
+
         if not response.ok:
             print(
                 f"TELEGRAM ERROR {response.status_code}: "
                 f"{response.text[:300]}",
                 flush=True,
             )
+
     except Exception as exc:
         print(f"TELEGRAM ERROR: {exc}", flush=True)
 
+
+# ============================================================
+# PUBLIC API
+# ============================================================
 
 def api_get(path, params=None):
     response = session.get(
         BASE_URL + path,
         params=params or {},
-        timeout=TIMEOUT,
+        timeout=REQUEST_TIMEOUT,
     )
-    response.raise_for_status()
+
+    if not response.ok:
+        raise RuntimeError(
+            f"HTTP {response.status_code}: {response.text[:500]}"
+        )
+
     return response.json()
 
+
+# ============================================================
+# SERVER TIME
+# ============================================================
 
 def get_server_time():
     data = api_get("/r/api/v1/time")
 
     if isinstance(data, dict):
-        for key in ("serverTime", "server_time", "time", "timestamp"):
+
+        for key in (
+            "serverTime",
+            "server_time",
+            "time",
+            "timestamp",
+        ):
             if key in data:
                 value = int(data[key])
                 return value * 1000 if value < 10**12 else value
 
         nested = data.get("data")
+
         if isinstance(nested, dict):
-            for key in ("serverTime", "server_time", "time", "timestamp"):
+            for key in (
+                "serverTime",
+                "server_time",
+                "time",
+                "timestamp",
+            ):
                 if key in nested:
                     value = int(nested[key])
                     return value * 1000 if value < 10**12 else value
 
-    raise RuntimeError(f"Cannot parse server time: {str(data)[:300]}")
+    raise RuntimeError(
+        f"Cannot parse server time: {str(data)[:300]}"
+    )
 
+
+# ============================================================
+# CREDENTIALS
+# ============================================================
 
 def get_credentials():
+
+    # TABDIL is the verified working pair.
     pairs = [
         (
             "TABDIL",
@@ -110,22 +155,32 @@ def get_credentials():
     ]
 
     for name, key, secret in pairs:
+
         if key and secret:
             return name, key, secret
 
     raise RuntimeError(
-        "API credentials missing. Check TABDIL_API_KEY and "
-        "TABDIL_API_SECRET GitHub Secrets."
+        "API credentials missing. "
+        "Check TABDIL_API_KEY and TABDIL_API_SECRET."
     )
 
 
+# ============================================================
+# SIGNED GET
+# ============================================================
+
 def signed_get(path, api_key, api_secret):
+
     timestamp = get_server_time()
-    query = f"timestamp={timestamp}&recvWindow={RECV_WINDOW}"
+
+    query_string = (
+        f"timestamp={timestamp}"
+        f"&recvWindow={RECV_WINDOW}"
+    )
 
     signature = hmac.new(
         api_secret.encode("utf-8"),
-        query.encode("utf-8"),
+        query_string.encode("utf-8"),
         hashlib.sha256,
     ).hexdigest()
 
@@ -138,19 +193,27 @@ def signed_get(path, api_key, api_secret):
     response = session.get(
         BASE_URL + path,
         params=params,
-        headers={"X-MBX-APIKEY": api_key},
-        timeout=TIMEOUT,
+        headers={
+            "X-MBX-APIKEY": api_key
+        },
+        timeout=REQUEST_TIMEOUT,
     )
 
     if not response.ok:
         raise RuntimeError(
-            f"HTTP {response.status_code}: {response.text[:500]}"
+            f"HTTP {response.status_code}: "
+            f"{response.text[:500]}"
         )
 
     return response.json()
 
 
+# ============================================================
+# AUTH
+# ============================================================
+
 def authenticate():
+
     name, key, secret = get_credentials()
 
     notify(
@@ -162,12 +225,26 @@ def authenticate():
         f"🕐 {log_time()}"
     )
 
-    data = signed_get("/r/api/v1/account", key, secret)
+    data = signed_get(
+        "/r/api/v1/account",
+        key,
+        secret,
+    )
 
     if isinstance(data, dict):
+
         code = data.get("code")
-        if code not in (None, 0, "0", 200, "200"):
-            raise RuntimeError(f"Account API rejected: {data}")
+
+        if code not in (
+            None,
+            0,
+            "0",
+            200,
+            "200",
+        ):
+            raise RuntimeError(
+                f"Account API rejected: {data}"
+            )
 
     notify(
         f"✅ ATI API AUTH SUCCESS {VERSION}\n"
@@ -178,28 +255,48 @@ def authenticate():
     )
 
 
+# ============================================================
+# EXCHANGE INFO
+# ============================================================
+
 def get_exchange_symbols():
-    data = api_get("/r/api/v1/exchangeInfo")
+
+    data = api_get(
+        "/r/api/v1/exchangeInfo"
+    )
 
     if isinstance(data, list):
+
         symbols = data
+
     elif isinstance(data, dict):
+
         symbols = data.get("symbols")
+
         if not isinstance(symbols, list):
             symbols = data.get("data")
+
         if isinstance(symbols, dict):
-            symbols = symbols.get("symbols", [])
+            symbols = symbols.get(
+                "symbols",
+                []
+            )
+
     else:
         symbols = []
 
     if not isinstance(symbols, list) or not symbols:
+
         raise RuntimeError(
-            f"Cannot parse exchangeInfo: {str(data)[:400]}"
+            "Cannot parse exchangeInfo: "
+            f"{str(data)[:500]}"
         )
 
     result = []
+    seen = set()
 
     for item in symbols:
+
         if not isinstance(item, dict):
             continue
 
@@ -208,61 +305,126 @@ def get_exchange_symbols():
             or item.get("tabdealSymbol")
             or item.get("s")
         )
+
         if not symbol:
             continue
 
-        normalized = str(symbol).upper().replace("/", "").replace("-", "")
-        normalized = normalized.replace("_", "")
+        normalized = (
+            str(symbol)
+            .upper()
+            .replace("/", "")
+            .replace("-", "")
+            .replace("_", "")
+        )
 
-        quote = item.get("quoteAsset") or item.get("quoteCurrency")
-        status = str(item.get("status", "")).upper()
+        quote = (
+            item.get("quoteAsset")
+            or item.get("quoteCurrency")
+        )
 
-        if normalized.endswith("USDT") and not normalized.startswith("USDT"):
-            if quote and str(quote).upper() != "USDT":
-                continue
-            if status and status not in ("TRADING", "ENABLED", "ACTIVE"):
-                continue
-            result.append((str(symbol), normalized))
+        status = str(
+            item.get("status", "")
+        ).upper()
 
-    # Remove duplicates while preserving order.
-    seen = set()
-    unique = []
-    for original, normalized in result:
-        if normalized not in seen:
-            seen.add(normalized)
-            unique.append((original, normalized))
+        if not normalized.endswith("USDT"):
+            continue
 
-    return unique
+        if normalized.startswith("USDT"):
+            continue
 
+        if quote and str(quote).upper() != "USDT":
+            continue
+
+        if status and status not in (
+            "TRADING",
+            "ENABLED",
+            "ACTIVE",
+        ):
+            continue
+
+        if normalized in seen:
+            continue
+
+        seen.add(normalized)
+
+        result.append(
+            (
+                str(symbol),
+                normalized
+            )
+        )
+
+    return result
+
+
+# ============================================================
+# NUMBER
+# ============================================================
 
 def number(value, default=0.0):
+
     try:
         return float(value)
-    except (TypeError, ValueError):
+
+    except (
+        TypeError,
+        ValueError
+    ):
         return default
 
 
+# ============================================================
+# TRADE PARSER
+# ============================================================
+
 def parse_trade(item):
+
     if not isinstance(item, dict):
         return None
 
     price = number(
-        item.get("price", item.get("p", item.get("rate")))
+        item.get(
+            "price",
+            item.get(
+                "p",
+                item.get("rate")
+            )
+        )
     )
+
     qty = number(
         item.get(
             "qty",
-            item.get("quantity", item.get("q", item.get("amount"))),
+            item.get(
+                "quantity",
+                item.get(
+                    "q",
+                    item.get("amount")
+                )
+            )
         )
     )
+
     stamp = item.get(
         "time",
-        item.get("timestamp", item.get("T", item.get("createdAt"))),
+        item.get(
+            "timestamp",
+            item.get(
+                "T",
+                item.get(
+                    "createdAt"
+                )
+            )
+        )
     )
 
     try:
         stamp = int(float(stamp))
-    except (TypeError, ValueError):
+
+    except (
+        TypeError,
+        ValueError
+    ):
         return None
 
     if stamp < 10**12:
@@ -274,43 +436,189 @@ def parse_trade(item):
     return stamp, price, qty
 
 
+# ============================================================
+# EXTRACT TRADE LIST
+# ============================================================
+
+def extract_trade_list(data):
+
+    if isinstance(data, list):
+        return data
+
+    if not isinstance(data, dict):
+        return []
+
+    possible = [
+        data.get("data"),
+        data.get("trades"),
+        data.get("result"),
+        data.get("items"),
+    ]
+
+    for value in possible:
+
+        if isinstance(value, list):
+            return value
+
+        if isinstance(value, dict):
+
+            for key in (
+                "trades",
+                "items",
+                "data",
+                "result",
+            ):
+
+                nested = value.get(key)
+
+                if isinstance(nested, list):
+                    return nested
+
+    return []
+
+
+# ============================================================
+# TRADE API
+#
+# IMPORTANT:
+# Try multiple parameter names.
+# The first successful non-empty response wins.
+# ============================================================
+
+def get_recent_trades(original_symbol):
+
+    attempts = [
+        (
+            "tabdealSymbol",
+            {
+                "tabdealSymbol": original_symbol,
+                "limit": TRADE_LIMIT,
+            }
+        ),
+        (
+            "symbol",
+            {
+                "symbol": original_symbol,
+                "limit": TRADE_LIMIT,
+            }
+        ),
+        (
+            "market",
+            {
+                "market": original_symbol,
+                "limit": TRADE_LIMIT,
+            }
+        ),
+        (
+            "tabdeal_symbol",
+            {
+                "tabdeal_symbol": original_symbol,
+                "limit": TRADE_LIMIT,
+            }
+        ),
+    ]
+
+    errors = []
+
+    for label, params in attempts:
+
+        try:
+
+            response = session.get(
+                BASE_URL + "/r/api/v1/trades",
+                params=params,
+                timeout=REQUEST_TIMEOUT,
+            )
+
+            text = response.text[:500]
+
+            if not response.ok:
+
+                errors.append(
+                    f"{label}=HTTP {response.status_code} "
+                    f"{text}"
+                )
+                continue
+
+            try:
+                data = response.json()
+
+            except ValueError:
+
+                errors.append(
+                    f"{label}=INVALID_JSON "
+                    f"{text}"
+                )
+                continue
+
+            trades = extract_trade_list(data)
+
+            # A valid list, even if empty, means the
+            # endpoint understood the request.
+            if isinstance(trades, list):
+
+                if trades:
+                    return trades, label, ""
+
+                # Empty response may be a valid market with
+                # no recent trades, but try the next format
+                # before declaring failure.
+                errors.append(
+                    f"{label}=EMPTY_RESPONSE"
+                )
+                continue
+
+            errors.append(
+                f"{label}=UNPARSED_RESPONSE "
+                f"{str(data)[:250]}"
+            )
+
+        except Exception as exc:
+
+            errors.append(
+                f"{label}=EXCEPTION {str(exc)[:200]}"
+            )
+
+    return [], "", " | ".join(errors)[:1200]
+
+
+# ============================================================
+# CANDLE BUILDER
+# ============================================================
+
 def get_candles(original_symbol):
-    data = api_get(
-        "/r/api/v1/trades",
-        params={
-            "tabdealSymbol": original_symbol,
-            "limit": TRADE_LIMIT,
-        },
+
+    trades, method, error = get_recent_trades(
+        original_symbol
     )
 
-    if isinstance(data, dict):
-        trades = data.get("data")
-        if trades is None:
-            trades = data.get("trades")
-        if trades is None:
-            trades = data.get("result")
-    else:
-        trades = data
+    if not trades:
 
-    if isinstance(trades, dict):
-        trades = trades.get("trades", trades.get("items", []))
-
-    if not isinstance(trades, list):
-        return []
+        raise RuntimeError(
+            f"TRADES_API_FAILED "
+            f"[{original_symbol}] "
+            f"{error[:1000]}"
+        )
 
     buckets = {}
 
     for raw in trades:
+
         parsed = parse_trade(raw)
+
         if not parsed:
             continue
 
         stamp, price, qty = parsed
-        bucket = (stamp // 300000) * 300000
+
+        bucket = (
+            stamp // 300000
+        ) * 300000
 
         candle = buckets.get(bucket)
 
         if candle is None:
+
             buckets[bucket] = {
                 "time": bucket,
                 "open": price,
@@ -319,29 +627,71 @@ def get_candles(original_symbol):
                 "close": price,
                 "volume": qty,
             }
+
         else:
-            candle["high"] = max(candle["high"], price)
-            candle["low"] = min(candle["low"], price)
+
+            candle["high"] = max(
+                candle["high"],
+                price
+            )
+
+            candle["low"] = min(
+                candle["low"],
+                price
+            )
+
             candle["close"] = price
+
             candle["volume"] += qty
 
-    candles = [buckets[key] for key in sorted(buckets)]
+    candles = [
+        buckets[key]
+        for key in sorted(buckets)
+    ]
 
-    # Exclude the currently open 5-minute candle.
-    current_bucket = (int(time.time() * 1000) // 300000) * 300000
-    candles = [c for c in candles if c["time"] < current_bucket]
+    current_bucket = (
+        int(time.time() * 1000)
+        // 300000
+    ) * 300000
+
+    candles = [
+        candle
+        for candle in candles
+        if candle["time"] < current_bucket
+    ]
+
+    if not candles:
+
+        raise RuntimeError(
+            f"NO_CLOSED_CANDLES "
+            f"API_METHOD={method}"
+        )
 
     return candles
 
 
+# ============================================================
+# PERCENT
+# ============================================================
+
 def pct_change(current, previous):
+
     if not previous:
         return 0.0
-    return (current / previous - 1.0) * 100.0
 
+    return (
+        (current / previous) - 1.0
+    ) * 100.0
+
+
+# ============================================================
+# ANALYSIS
+# ============================================================
 
 def analyze_market(symbol, candles):
+
     if len(candles) < MIN_CANDLES:
+
         return {
             "symbol": symbol,
             "valid": False,
@@ -354,35 +704,69 @@ def analyze_market(symbol, candles):
     previous = candles[:-1]
 
     reference = previous[-LOOKBACK:]
-    resistance = max(c["high"] for c in reference)
+
+    resistance = max(
+        c["high"]
+        for c in reference
+    )
 
     close = last["close"]
     open_price = last["open"]
     high = last["high"]
     low = last["low"]
 
-    breakout_pct = pct_change(close, resistance)
+    breakout_pct = pct_change(
+        close,
+        resistance
+    )
+
     candle_range = high - low
+
     body_ratio = (
-        abs(close - open_price) / candle_range
-        if candle_range > 0 else 0.0
+        abs(close - open_price)
+        / candle_range
+        if candle_range > 0
+        else 0.0
     )
 
-    recent_volumes = [c["volume"] for c in previous[-6:]]
+    recent_volumes = [
+        c["volume"]
+        for c in previous[-6:]
+    ]
+
     avg_volume = (
-        sum(recent_volumes) / len(recent_volumes)
-        if recent_volumes else 0.0
+        sum(recent_volumes)
+        / len(recent_volumes)
+        if recent_volumes
+        else 0.0
     )
+
     volume_ratio = (
-        last["volume"] / avg_volume
-        if avg_volume > 0 else 0.0
+        last["volume"]
+        / avg_volume
+        if avg_volume > 0
+        else 0.0
     )
 
-    momentum_5m = pct_change(close, candles[-2]["close"])
-    momentum_15m = pct_change(close, candles[-4]["close"])
-    momentum_1h = pct_change(close, candles[-13]["close"])
+    momentum_5m = pct_change(
+        close,
+        candles[-2]["close"]
+    )
 
-    chase_pct = max(0.0, pct_change(close, resistance))
+    momentum_15m = pct_change(
+        close,
+        candles[-4]["close"]
+    )
+
+    momentum_1h = pct_change(
+        close,
+        candles[-13]["close"]
+    )
+
+    chase_pct = max(
+        0.0,
+        breakout_pct
+    )
 
     bullish = close > open_price
     above_resistance = close > resistance
@@ -392,36 +776,51 @@ def analyze_market(symbol, candles):
     chase_ok = chase_pct <= MAX_CHASE_PCT
 
     score = 0
+
     if bullish:
         score += 2
+
     if above_resistance:
         score += 5
+
     if strong_body:
         score += 3
+
     if volume_ok:
         score += 4
+
     if momentum_15m_ok:
         score += 2
+
     if momentum_1h > 0:
         score += 3
+
     if above_resistance:
         score += 2
+
     if momentum_5m > 0:
         score += 1
 
     reasons = []
+
     if not bullish:
         reasons.append("NOT_BULLISH")
+
     if not above_resistance:
         reasons.append("BELOW_RESISTANCE")
+
     if not volume_ok:
         reasons.append("LOW_VOLUME")
+
     if not strong_body:
         reasons.append("WEAK_BODY")
+
     if not momentum_15m_ok:
         reasons.append("15M_NOT_UP")
+
     if not chase_ok:
         reasons.append("CHASE_TOO_HIGH")
+
     if score < MIN_SCORE:
         reasons.append("LOW_SCORE")
 
@@ -451,55 +850,90 @@ def analyze_market(symbol, candles):
     }
 
 
+# ============================================================
+# SCAN ONE
+# ============================================================
+
 def scan_one(pair):
+
     original, normalized = pair
 
     try:
-        candles = get_candles(original)
-        result = analyze_market(normalized, candles)
+
+        candles = get_candles(
+            original
+        )
+
+        result = analyze_market(
+            normalized,
+            candles
+        )
+
         result["original"] = original
+
         return result
+
     except Exception as exc:
+
         return {
             "symbol": normalized,
             "original": original,
             "valid": False,
             "score": -1,
-            "reason": f"API_ERROR: {str(exc)[:100]}",
+            "reason": str(exc)[:1200],
         }
 
 
+# ============================================================
+# FORMAT
+# ============================================================
+
 def format_result(item, rank):
+
     if "price" not in item:
+
         return (
             f"{rank}. {item['symbol']}\n"
-            f"   ⚠️ {item.get('reason', 'NO DATA')}\n"
-            f"   Candles: {item.get('candles', 0)}"
+            f"   ⚠️ {item.get('reason', 'NO DATA')}"
         )
 
-    reasons = item.get("reasons", [])
-    reason_text = ", ".join(reasons) if reasons else "NONE"
+    reasons = item.get(
+        "reasons",
+        []
+    )
+
+    reason_text = (
+        ", ".join(reasons)
+        if reasons
+        else "NONE"
+    )
 
     return (
-        f"{rank}. {item['symbol']} | SCORE {item['score']}/22\n"
+        f"{rank}. {item['symbol']} | "
+        f"SCORE {item['score']}/22\n"
         f"   Price: {item['price']:.8g}\n"
         f"   Breakout: {item['breakout']:+.3f}%\n"
-        f"   Volume Ratio: {item['volume_ratio']:.2f}x\n"
+        f"   Volume: {item['volume_ratio']:.2f}x\n"
         f"   Body: {item['body_ratio']:.1f}%\n"
-        f"   Momentum 5m: {item['momentum_5m']:+.2f}%\n"
-        f"   Momentum 15m: {item['momentum_15m']:+.2f}%\n"
-        f"   Momentum 1h: {item['momentum_1h']:+.2f}%\n"
+        f"   5m: {item['momentum_5m']:+.2f}%\n"
+        f"   15m: {item['momentum_15m']:+.2f}%\n"
+        f"   1h: {item['momentum_1h']:+.2f}%\n"
         f"   BLOCKED: {reason_text}"
     )
 
 
+# ============================================================
+# MAIN
+# ============================================================
+
 def main():
+
     start = time.time()
 
     notify(
         f"⚡ ATI CRYPTO BOT {VERSION}\n\n"
         f"📡 TABDEAL API: CONNECTING...\n"
-        f"📊 DIAGNOSTIC SCANNER\n"
+        f"📊 TRADE API DIAGNOSTIC\n"
         f"🕯 CLOSED 5M CANDLE ONLY\n"
         f"🔎 SCAN UNIVERSE: {SCAN_UNIVERSE}\n"
         f"🎯 DIAGNOSTIC TOP {TOP_RESULTS}\n\n"
@@ -515,103 +949,120 @@ def main():
     notify(
         f"📊 EXCHANGE INFO OK {VERSION}\n"
         f"🟢 USDT MARKETS: {len(pairs)}\n"
-        f"🔎 STARTING DIAGNOSTIC SCAN...\n"
+        f"🔎 STARTING TRADE API TEST...\n"
         f"🔒 REAL ORDERS: DISABLED"
     )
 
-    # This is a diagnostic sample, not a volume-ranked universe.
     selected = pairs[:SCAN_UNIVERSE]
 
     results = []
-    with ThreadPoolExecutor(max_workers=6) as executor:
+
+    with ThreadPoolExecutor(
+        max_workers=6
+    ) as executor:
+
         futures = {
-            executor.submit(scan_one, pair): pair
+            executor.submit(
+                scan_one,
+                pair
+            ): pair
             for pair in selected
         }
 
-        for future in as_completed(futures):
-            results.append(future.result())
+        for future in as_completed(
+            futures
+        ):
+            results.append(
+                future.result()
+            )
 
     elapsed = time.time() - start
 
-    successful = [r for r in results if "price" in r]
-    insufficient = sum(
-        1 for r in results
-        if r.get("reason") == "NOT_ENOUGH_CANDLES"
-    )
-    errors = sum(
-        1 for r in results
-        if str(r.get("reason", "")).startswith("API_ERROR")
-    )
-    qualified = [r for r in successful if r["valid"]]
+    successful = [
+        r for r in results
+        if "price" in r
+    ]
 
-    # Show the highest scores, including blocked candidates.
+    errors = [
+        r for r in results
+        if "price" not in r
+    ]
+
+    qualified = [
+        r for r in successful
+        if r["valid"]
+    ]
+
     ranked = sorted(
         successful,
-        key=lambda x: (x["score"], x["momentum_15m"]),
+        key=lambda x: (
+            x["score"],
+            x["momentum_15m"]
+        ),
         reverse=True,
     )[:TOP_RESULTS]
 
-    counts = {
-        "NOT_BULLISH": 0,
-        "BELOW_RESISTANCE": 0,
-        "LOW_VOLUME": 0,
-        "WEAK_BODY": 0,
-        "15M_NOT_UP": 0,
-        "CHASE_TOO_HIGH": 0,
-        "LOW_SCORE": 0,
-    }
-
-    for item in successful:
-        for reason in item.get("reasons", []):
-            if reason in counts:
-                counts[reason] += 1
-
-    summary = (
-        f"📊 ATI DIAGNOSTIC SUMMARY {VERSION}\n\n"
-        f"🟢 USDT MARKETS: {len(pairs)}\n"
+    notify(
+        f"📊 ATI TRADE API RESULT {VERSION}\n\n"
+        f"🟢 MARKETS: {len(pairs)}\n"
         f"🔎 REQUESTED: {len(selected)}\n"
         f"📈 ANALYZED: {len(successful)}\n"
-        f"⚠️ INSUFFICIENT CANDLES: {insufficient}\n"
-        f"❌ API ERRORS: {errors}\n"
+        f"❌ API/TRADE ERRORS: {len(errors)}\n"
         f"🎯 QUALIFIED: {len(qualified)}\n"
-        f"⏱ ELAPSED: {elapsed:.1f}s\n\n"
-        f"🚫 FILTER COUNTS (overlapping):\n"
-        f"Not bullish: {counts['NOT_BULLISH']}\n"
-        f"Below resistance: {counts['BELOW_RESISTANCE']}\n"
-        f"Low volume: {counts['LOW_VOLUME']}\n"
-        f"Weak body: {counts['WEAK_BODY']}\n"
-        f"15m not up: {counts['15M_NOT_UP']}\n"
-        f"Chase too high: {counts['CHASE_TOO_HIGH']}\n"
-        f"Low score: {counts['LOW_SCORE']}\n\n"
+        f"⏱ TIME: {elapsed:.1f}s\n\n"
         f"🔒 REAL ORDERS: DISABLED\n"
         f"🛑 NO ORDER WAS SENT\n"
         f"🕐 {log_time()}"
     )
-    notify(summary)
+
+    # Show first 5 errors in Telegram.
+    if errors:
+
+        error_lines = []
+
+        for item in errors[:5]:
+
+            error_lines.append(
+                f"❌ {item['symbol']}\n"
+                f"{item.get('reason', '')[:500]}"
+            )
+
+        notify(
+            f"🧪 TRADE API ERROR SAMPLE {VERSION}\n\n"
+            + "\n\n".join(error_lines)
+            + "\n\n🔒 REAL ORDERS: DISABLED"
+        )
 
     if ranked:
-        message = (
-            f"🔬 ATI DIAGNOSTIC TOP {len(ranked)} {VERSION}\n\n"
+
+        notify(
+            f"🔬 DIAGNOSTIC TOP {len(ranked)} "
+            f"{VERSION}\n\n"
             + "\n\n".join(
-                format_result(item, index + 1)
+                format_result(
+                    item,
+                    index + 1
+                )
                 for index, item in enumerate(ranked)
             )
-            + "\n\n🔒 REAL BUY: DISABLED"
-            + "\n🛑 DIAGNOSTIC ONLY"
+            + "\n\n🔒 REAL BUY: DISABLED\n"
+              "🛑 DIAGNOSTIC ONLY"
         )
-        notify(message)
+
     else:
+
         notify(
             f"⚠️ ATI {VERSION}\n"
-            f"NO ANALYZABLE MARKETS\n"
-            f"Check trade response format and API errors.\n"
+            f"NO MARKET COULD BE ANALYZED.\n\n"
+            f"🔎 TRADE API RESPONSE IS BEING "
+            f"DIAGNOSED ABOVE.\n"
             f"🔒 REAL ORDERS: DISABLED"
         )
 
     notify(
         f"✅ ATI {VERSION} COMPLETE\n"
         f"📊 ANALYZED: {len(successful)}\n"
+        f"❌ ERRORS: {len(errors)}\n"
         f"🎯 QUALIFIED: {len(qualified)}\n"
         f"🔒 REAL ORDERS: DISABLED\n"
         f"🛑 NO ORDER WAS SENT\n"
@@ -620,13 +1071,18 @@ def main():
 
 
 if __name__ == "__main__":
+
     try:
         main()
+
     except Exception as exc:
+
         notify(
             f"🚨 ATI BOT ERROR {VERSION}\n"
-            f"❌ {type(exc).__name__}: {str(exc)[:1000]}\n"
+            f"❌ {type(exc).__name__}: "
+            f"{str(exc)[:1200]}\n"
             f"🔒 REAL ORDERS: DISABLED\n"
             f"🕐 {log_time()}"
         )
+
         raise
