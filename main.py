@@ -9,36 +9,31 @@ import requests
 
 # ============================================================
 # ATI CRYPTO BOT V40.2.25
-# TABDEAL SPOT
-# DUAL CREDENTIAL AUTH DIAGNOSTIC
+# TABDEAL SPOT - AUTH DIAGNOSTIC
+# ============================================================
+# IMPORTANT:
+# - REAL ORDERS ARE LOCKED
+# - NO BUY ORDER IS SENT
+# - Tests TABDEAL and TABDIL credential pairs
+# - Uses HMAC-SHA256
+# - Uses integer millisecond timestamp
 # ============================================================
 
 VERSION = "V40.2.25"
 
 BASE_URL = "https://api1.tabdeal.org"
+
 AUTH_ENDPOINT = "/r/api/v1/account"
+TIME_ENDPOINT = "/r/api/v1/time"
 
-REAL_BUY_LOCKED = True
+RECV_WINDOW = int(os.getenv("RECV_WINDOW", "5000"))
 
-RECV_WINDOW = int(
-    os.getenv("RECV_WINDOW", "5000")
-)
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
-TELEGRAM_BOT_TOKEN = os.getenv(
-    "TELEGRAM_BOT_TOKEN", ""
-).strip()
+LIVE_TRADING = False
 
-TELEGRAM_CHAT_ID = os.getenv(
-    "TELEGRAM_CHAT_ID", ""
-).strip()
-
-
-SESSION = requests.Session()
-
-SESSION.headers.update({
-    "User-Agent": f"ATI-Crypto-Bot/{VERSION}",
-    "Accept": "application/json",
-})
+REQUEST_TIMEOUT = 20
 
 
 # ============================================================
@@ -46,92 +41,157 @@ SESSION.headers.update({
 # ============================================================
 
 def utc_now():
-    return datetime.now(
-        timezone.utc
-    ).strftime("%Y-%m-%d %H:%M:%S UTC")
+    return datetime.now(timezone.utc).strftime(
+        "%Y-%m-%d %H:%M:%S UTC"
+    )
 
 
 # ============================================================
 # TELEGRAM
 # ============================================================
 
-def telegram_send(message):
-
-    if not TELEGRAM_BOT_TOKEN:
+def send_telegram(message):
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        print(message)
         return False
 
-    if not TELEGRAM_CHAT_ID:
-        return False
+    url = (
+        f"https://api.telegram.org/bot"
+        f"{TELEGRAM_BOT_TOKEN}/sendMessage"
+    )
+
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": message,
+    }
 
     try:
-
-        r = SESSION.post(
-            "https://api.telegram.org/bot"
-            f"{TELEGRAM_BOT_TOKEN}/sendMessage",
-            json={
-                "chat_id": TELEGRAM_CHAT_ID,
-                "text": message,
-            },
-            timeout=15,
+        response = requests.post(
+            url,
+            json=payload,
+            timeout=REQUEST_TIMEOUT,
         )
 
-        return r.ok
+        if response.ok:
+            return True
 
-    except Exception:
-        return False
+        print(
+            "Telegram error:",
+            response.status_code,
+            response.text,
+        )
+
+    except Exception as e:
+        print("Telegram exception:", repr(e))
+
+    return False
 
 
 # ============================================================
-# SERVER TIME
+# HTTP TIME
 # ============================================================
 
 def get_server_time():
+    """
+    Try to read Tabdeal server time.
+
+    This is diagnostic only.
+    Failure here does NOT stop authentication testing.
+    """
 
     try:
-
-        r = SESSION.get(
-            f"{BASE_URL}/r/api/v1/time",
-            timeout=15,
+        response = requests.get(
+            BASE_URL + TIME_ENDPOINT,
+            timeout=REQUEST_TIMEOUT,
         )
 
-        if r.status_code != 200:
+        if response.status_code != 200:
             return None
 
-        data = r.json()
+        data = response.json()
 
         if isinstance(data, dict):
-
             for key in (
                 "serverTime",
                 "server_time",
                 "timestamp",
+                "time",
             ):
+                value = data.get(key)
 
-                if key in data:
-                    return int(data[key])
+                if value is not None:
+                    return int(value)
 
         if isinstance(data, int):
-            return data
-
-        return None
+            return int(data)
 
     except Exception:
-        return None
+        pass
+
+    return None
 
 
 # ============================================================
-# SIGNATURE
+# CREDENTIAL PAIRS
 # ============================================================
 
-def make_signed_request(
-    api_key,
-    api_secret,
-):
+def get_credential_pairs():
+    pairs = []
 
-    # --------------------------------------------------------
-    # IMPORTANT:
-    # EXACT Postman-style INTEGER TIMESTAMP
-    # --------------------------------------------------------
+    credentials = [
+        (
+            "TABDEAL",
+            os.getenv("TABDEAL_API_KEY", "").strip(),
+            os.getenv("TABDEAL_API_SECRET", "").strip(),
+        ),
+        (
+            "TABDIL",
+            os.getenv("TABDIL_API_KEY", "").strip(),
+            os.getenv("TABDIL_API_SECRET", "").strip(),
+        ),
+    ]
+
+    seen = set()
+
+    for name, api_key, api_secret in credentials:
+
+        if not api_key or not api_secret:
+            continue
+
+        pair_id = (api_key, api_secret)
+
+        if pair_id in seen:
+            continue
+
+        seen.add(pair_id)
+
+        pairs.append(
+            {
+                "name": name,
+                "api_key": api_key,
+                "api_secret": api_secret,
+            }
+        )
+
+    return pairs
+
+
+# ============================================================
+# SIGNED ACCOUNT REQUEST
+# ============================================================
+
+def make_signed_request(api_key, api_secret):
+    """
+    Tabdeal Spot private account request.
+
+    Signature:
+        HMAC-SHA256(secret, query_string)
+
+    Query order:
+        timestamp
+        recvWindow
+        signature
+    """
 
     timestamp = int(
         time.time() * 1000
@@ -148,284 +208,130 @@ def make_signed_request(
         hashlib.sha256,
     ).hexdigest()
 
+    # IMPORTANT:
+    # The '+' below fixes the previous SyntaxError.
     final_query = (
         query_string
-        f"&signature={signature}"
+        + f"&signature={signature}"
     )
 
     url = (
-        f"{BASE_URL}"
-        f"{AUTH_ENDPOINT}"
-        f"?{final_query}"
+        BASE_URL
+        + AUTH_ENDPOINT
+        + "?"
+        + final_query
     )
 
-    try:
+    headers = {
+        "X-MBX-APIKEY": api_key,
+        "Accept": "application/json",
+    }
 
-        response = SESSION.get(
-            url,
-            headers={
-                "X-MBX-APIKEY": api_key,
-            },
-            timeout=20,
-        )
-
-        try:
-            data = response.json()
-        except Exception:
-            data = {}
-
-        code = ""
-        msg = ""
-
-        if isinstance(data, dict):
-
-            code = data.get(
-                "code",
-                ""
-            )
-
-            msg = data.get(
-                "msg",
-                ""
-            )
-
-        if not msg:
-            msg = response.text[:300]
-
-        return {
-            "ok": response.status_code == 200,
-            "http": response.status_code,
-            "code": code,
-            "msg": msg,
-            "timestamp": timestamp,
-        }
-
-    except Exception as e:
-
-        return {
-            "ok": False,
-            "http": 0,
-            "code": "NETWORK",
-            "msg": str(e)[:300],
-            "timestamp": timestamp,
-        }
-
-
-# ============================================================
-# LOAD CREDENTIAL PAIRS
-# ============================================================
-
-def get_credential_pairs():
-
-    pairs = []
-
-    tabdeal_key = os.getenv(
-        "TABDEAL_API_KEY",
-        ""
-    ).strip()
-
-    tabdeal_secret = os.getenv(
-        "TABDEAL_API_SECRET",
-        ""
-    ).strip()
-
-    tabdil_key = os.getenv(
-        "TABDIL_API_KEY",
-        ""
-    ).strip()
-
-    tabdil_secret = os.getenv(
-        "TABDIL_API_SECRET",
-        ""
-    ).strip()
-
-    if tabdeal_key and tabdeal_secret:
-
-        pairs.append({
-            "name": "TABDEAL_*",
-            "key": tabdeal_key,
-            "secret": tabdeal_secret,
-        })
-
-    if tabdil_key and tabdil_secret:
-
-        # Avoid testing the exact same pair twice.
-        if (
-            tabdil_key != tabdeal_key
-            or tabdil_secret != tabdeal_secret
-        ):
-
-            pairs.append({
-                "name": "TABDIL_*",
-                "key": tabdil_key,
-                "secret": tabdil_secret,
-            })
-
-    return pairs
-
-
-# ============================================================
-# AUTH DIAGNOSTIC
-# ============================================================
-
-def authenticate():
-
-    pairs = get_credential_pairs()
-
-    if not pairs:
-
-        result = {
-            "ok": False,
-            "name": "NONE",
-            "http": 0,
-            "code": "MISSING",
-            "msg": "NO API CREDENTIAL PAIR FOUND",
-            "timestamp": 0,
-        }
-
-        return result
-
-    # --------------------------------------------------------
-    # SERVER CLOCK CHECK
-    # --------------------------------------------------------
-
-    server_time = get_server_time()
-
-    local_time = int(
-        time.time() * 1000
+    response = requests.get(
+        url,
+        headers=headers,
+        timeout=REQUEST_TIMEOUT,
     )
-
-    if server_time is not None:
-
-        clock_diff = (
-            local_time
-            - server_time
-        )
-
-    else:
-
-        clock_diff = None
-
-    # --------------------------------------------------------
-    # TEST EVERY AVAILABLE CREDENTIAL PAIR
-    # --------------------------------------------------------
-
-    failures = []
-
-    for pair in pairs:
-
-        result = make_signed_request(
-            pair["key"],
-            pair["secret"],
-        )
-
-        result["name"] = pair["name"]
-        result["server_time"] = server_time
-        result["clock_diff"] = clock_diff
-
-        if result["ok"]:
-
-            return result
-
-        failures.append(result)
-
-    # --------------------------------------------------------
-    # NONE WORKED
-    # --------------------------------------------------------
-
-    last = failures[-1]
 
     return {
-        "ok": False,
-        "name": "ALL_PAIRS_FAILED",
-        "http": last["http"],
-        "code": last["code"],
-        "msg": last["msg"],
-        "timestamp": last["timestamp"],
-        "server_time": server_time,
-        "clock_diff": clock_diff,
-        "tested": [
-            x["name"]
-            for x in failures
-        ],
+        "response": response,
+        "timestamp": timestamp,
+        "signature": signature,
+        "query_string": query_string,
     }
 
 
 # ============================================================
-# AUTH SUCCESS MESSAGE
+# AUTH TEST
 # ============================================================
 
-def send_auth_success(result):
+def test_credentials(credential):
+    name = credential["name"]
+    api_key = credential["api_key"]
+    api_secret = credential["api_secret"]
 
-    diff = result.get(
-        "clock_diff"
+    print(
+        f"Testing credential pair: {name}"
     )
 
-    if diff is None:
-        diff_text = "UNKNOWN"
-    else:
-        diff_text = f"{diff} ms"
+    try:
 
-    telegram_send(
-        f"✅ ATI API AUTH OK {VERSION}\n\n"
-        f"🟢 WORKING SECRET PAIR:\n"
-        f"{result.get('name')}\n\n"
-        f"📡 ENDPOINT:\n"
-        f"{AUTH_ENDPOINT}\n"
-        f"🔐 HMAC-SHA256\n"
-        f"🔢 INTEGER TIMESTAMP\n"
-        f"🕐 CLOCK DIFF: {diff_text}\n\n"
-        f"🔒 REAL BUY: LOCKED\n"
-        f"🛑 NO ORDER SENT\n"
-        f"🕐 {utc_now()}"
-    )
+        result = make_signed_request(
+            api_key,
+            api_secret,
+        )
+
+        response = result["response"]
+
+        print(
+            f"{name} HTTP:",
+            response.status_code,
+        )
+
+        print(
+            f"{name} RESPONSE:",
+            response.text[:1000],
+        )
+
+        if response.status_code == 200:
+
+            return {
+                "success": True,
+                "name": name,
+                "http": response.status_code,
+                "text": response.text,
+                "timestamp": result["timestamp"],
+            }
+
+        return {
+            "success": False,
+            "name": name,
+            "http": response.status_code,
+            "text": response.text,
+            "timestamp": result["timestamp"],
+        }
+
+    except Exception as e:
+
+        print(
+            f"{name} EXCEPTION:",
+            repr(e),
+        )
+
+        return {
+            "success": False,
+            "name": name,
+            "http": 0,
+            "text": repr(e),
+            "timestamp": int(time.time() * 1000),
+        }
 
 
 # ============================================================
-# AUTH FAILURE MESSAGE
+# PARSE ERROR
 # ============================================================
 
-def send_auth_failure(result):
+def extract_error(text):
+    if not text:
+        return "UNKNOWN"
 
-    diff = result.get(
-        "clock_diff"
-    )
+    try:
+        data = requests.models.complexjson.loads(text)
 
-    if diff is None:
-        diff_text = "UNKNOWN"
-    else:
-        diff_text = f"{diff} ms"
+        if isinstance(data, dict):
+            code = data.get("code")
+            msg = data.get("msg")
 
-    tested = result.get(
-        "tested",
-        []
-    )
+            if code is not None or msg:
+                return (
+                    f"CODE: {code}\n"
+                    f"MSG: {msg}"
+                )
 
-    tested_text = (
-        ", ".join(tested)
-        if tested
-        else "NONE"
-    )
+    except Exception:
+        pass
 
-    telegram_send(
-        f"🚨 ATI API AUTH FAILED {VERSION}\n\n"
-        f"❌ HTTP: {result.get('http')}\n"
-        f"❌ CODE: {result.get('code')}\n"
-        f"❌ MSG: {result.get('msg')}\n\n"
-        f"🔐 METHOD: HMAC-SHA256\n"
-        f"🔢 TIMESTAMP: INTEGER\n"
-        f"🔐 PARAM ORDER:\n"
-        f"timestamp → recvWindow\n"
-        f"🔑 HEADER: X-MBX-APIKEY\n"
-        f"📡 ENDPOINT:\n"
-        f"{AUTH_ENDPOINT}\n\n"
-        f"🧪 TESTED PAIRS:\n"
-        f"{tested_text}\n\n"
-        f"🕐 CLOCK DIFF: {diff_text}\n\n"
-        f"🔒 REAL BUY LOCKED\n"
-        f"🛑 NO ORDER WAS SENT\n"
-        f"🕐 {utc_now()}"
-    )
+    return text[:500]
 
 
 # ============================================================
@@ -434,57 +340,216 @@ def send_auth_failure(result):
 
 def main():
 
-    telegram_send(
+    print("=" * 60)
+    print(f"ATI CRYPTO BOT {VERSION}")
+    print("=" * 60)
+
+    startup_message = (
         f"⚡ ATI CRYPTO BOT {VERSION}\n\n"
         f"📡 TABDEAL API: CONNECTING...\n"
-        f"📊 AUTH DIAGNOSTIC: STARTING\n"
+        f"📊 AUTH DIAGNOSTIC: STARTING\n\n"
         f"🔐 HMAC-SHA256\n"
         f"🔢 INTEGER TIMESTAMP\n"
-        f"🧪 DUAL SECRET TEST\n"
         f"🔧 REAL ORDERS: DISABLED\n"
-        f"🔒 BUY LOCK: ACTIVE\n"
+        f"🔒 BUY LOCK: ACTIVE\n\n"
         f"🕐 {utc_now()}"
     )
 
+    print(startup_message)
+    send_telegram(startup_message)
+
     # --------------------------------------------------------
-    # AUTH
+    # Server time diagnostic
     # --------------------------------------------------------
 
-    result = authenticate()
+    local_timestamp = int(
+        time.time() * 1000
+    )
 
-    if not result["ok"]:
+    server_timestamp = get_server_time()
 
-        send_auth_failure(result)
+    if server_timestamp is not None:
 
-        telegram_send(
-            f"🛑 ATI SAFE STOP {VERSION}\n\n"
-            f"🚫 PRIVATE API AUTH FAILED\n"
-            f"❌ HTTP: {result.get('http')}\n"
-            f"❌ CODE: {result.get('code')}\n"
-            f"❌ MSG: {result.get('msg')}\n\n"
-            f"🔒 REAL BUY DISABLED\n"
-            f"🛑 NO ORDER WAS SENT\n"
+        clock_diff = (
+            local_timestamp
+            - server_timestamp
+        )
+
+        time_message = (
+            f"🕐 TABDEAL TIME CHECK\n\n"
+            f"LOCAL:\n"
+            f"{local_timestamp}\n\n"
+            f"SERVER:\n"
+            f"{server_timestamp}\n\n"
+            f"DIFF:\n"
+            f"{clock_diff} ms"
+        )
+
+        print(time_message)
+        send_telegram(time_message)
+
+    else:
+
+        clock_diff = None
+
+        print(
+            "⚠️ SERVER TIME: UNKNOWN"
+        )
+
+    # --------------------------------------------------------
+    # Credentials
+    # --------------------------------------------------------
+
+    credentials = get_credential_pairs()
+
+    if not credentials:
+
+        message = (
+            f"🚨 ATI API AUTH FAILED {VERSION}\n\n"
+            f"❌ NO API CREDENTIAL PAIR FOUND\n\n"
+            f"Expected one of:\n"
+            f"• TABDEAL_API_KEY + TABDEAL_API_SECRET\n"
+            f"• TABDIL_API_KEY + TABDIL_API_SECRET\n\n"
+            f"🔒 REAL BUY LOCKED\n"
+            f"🛑 NO ORDER WAS SENT\n\n"
             f"🕐 {utc_now()}"
         )
 
+        print(message)
+        send_telegram(message)
+
         return
+
+    # --------------------------------------------------------
+    # Test every credential pair
+    # --------------------------------------------------------
+
+    results = []
+    working = None
+
+    for credential in credentials:
+
+        result = test_credentials(
+            credential
+        )
+
+        results.append(result)
+
+        if result["success"]:
+            working = result
+            break
 
     # --------------------------------------------------------
     # SUCCESS
     # --------------------------------------------------------
 
-    send_auth_success(result)
+    if working:
 
-    telegram_send(
-        f"💓 ATI HEARTBEAT {VERSION}\n\n"
-        f"✅ PRIVATE API AUTHENTICATED\n"
-        f"🟢 WORKING PAIR: "
-        f"{result.get('name')}\n"
-        f"🔒 REAL BUY: LOCKED\n"
-        f"🛑 NO ORDER SENT\n"
+        success_message = (
+            f"✅ ATI API AUTH SUCCESS {VERSION}\n\n"
+            f"🟢 WORKING SECRET PAIR:\n"
+            f"{working['name']}\n\n"
+            f"📡 ENDPOINT:\n"
+            f"{AUTH_ENDPOINT}\n\n"
+            f"🔐 METHOD: HMAC-SHA256\n"
+            f"🔢 TIMESTAMP: INTEGER\n"
+            f"🧾 HTTP: {working['http']}\n\n"
+            f"🔒 REAL BUY: DISABLED\n"
+            f"🛑 NO ORDER WAS SENT\n\n"
+            f"🕐 {utc_now()}"
+        )
+
+        print(success_message)
+        send_telegram(success_message)
+
+        return
+
+    # --------------------------------------------------------
+    # FAILURE
+    # --------------------------------------------------------
+
+    lines = [
+        f"🚨 ATI API AUTH FAILED {VERSION}",
+        "",
+        "❌ ALL CREDENTIAL PAIRS FAILED",
+        "",
+    ]
+
+    for result in results:
+
+        lines.append(
+            f"🔑 PAIR: {result['name']}"
+        )
+
+        lines.append(
+            f"❌ HTTP: {result['http']}"
+        )
+
+        lines.append(
+            extract_error(
+                result["text"]
+            )
+        )
+
+        lines.append("")
+
+    if clock_diff is not None:
+
+        lines.extend(
+            [
+                "🕐 CLOCK DIFF:",
+                f"{clock_diff} ms",
+                "",
+            ]
+        )
+    else:
+
+        lines.extend(
+            [
+                "🕐 CLOCK DIFF:",
+                "UNKNOWN",
+                "",
+            ]
+        )
+
+    lines.extend(
+        [
+            f"📡 ENDPOINT:",
+            AUTH_ENDPOINT,
+            "",
+            "🔐 METHOD: HMAC-SHA256",
+            "🔢 TIMESTAMP: INTEGER",
+            "🔒 REAL BUY LOCKED",
+            "🛑 NO ORDER WAS SENT",
+            "",
+            f"🕐 {utc_now()}",
+        ]
+    )
+
+    failure_message = "\n".join(lines)
+
+    print(failure_message)
+    send_telegram(failure_message)
+
+    # --------------------------------------------------------
+    # SAFE STOP
+    # --------------------------------------------------------
+
+    safe_stop = (
+        f"🛑 ATI SAFE STOP {VERSION}\n\n"
+        f"🚫 PRIVATE API AUTH FAILED\n"
+        f"🔒 REAL BUY DISABLED\n"
+        f"🛑 NO ORDER WAS SENT\n\n"
         f"🕐 {utc_now()}"
     )
 
+    print(safe_stop)
+    send_telegram(safe_stop)
+
+
+# ============================================================
+# ENTRY
+# ============================================================
 
 if __name__ == "__main__":
     main()
