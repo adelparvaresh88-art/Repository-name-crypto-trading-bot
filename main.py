@@ -8,22 +8,12 @@ import requests
 
 
 # ============================================================
-# ATI CRYPTO BOT V40.2.28
-# TABDEAL REST API - NO PYTHON SDK
-# DIRECT HMAC-SHA256 AUTH TEST
-# ============================================================
-#
-# IMPORTANT:
-# - NO tabdeal package
-# - NO tabdeal.spot import
-# - NO SDK dependency
-# - REAL ORDERS DISABLED
-# - AUTHENTICATION TEST ONLY
-# - NO BUY ORDER IS SENT
-#
+# ATI CRYPTO BOT V40.2.29
+# TABDEAL DIRECT REST API
+# AUTH + EXCHANGE INFO + USDT MARKET DISCOVERY
 # ============================================================
 
-VERSION = "V40.2.28"
+VERSION = "V40.2.29"
 
 BASE_URL = "https://api1.tabdeal.org"
 
@@ -83,16 +73,14 @@ def send_telegram(message):
         + "/sendMessage"
     )
 
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": message,
-    }
-
     try:
 
         response = requests.post(
             url,
-            json=payload,
+            json={
+                "chat_id": TELEGRAM_CHAT_ID,
+                "text": message,
+            },
             timeout=REQUEST_TIMEOUT,
         )
 
@@ -102,10 +90,6 @@ def send_telegram(message):
         print(
             "Telegram HTTP:",
             response.status_code,
-        )
-
-        print(
-            response.text[:500]
         )
 
     except Exception as exc:
@@ -129,11 +113,6 @@ def get_server_time():
         response = requests.get(
             BASE_URL + "/r/api/v1/time",
             timeout=REQUEST_TIMEOUT,
-        )
-
-        print(
-            "TIME HTTP:",
-            response.status_code,
         )
 
         if response.status_code != 200:
@@ -204,7 +183,6 @@ def get_credentials():
     ]
 
     result = []
-
     seen = set()
 
     for name, api_key, api_secret in candidates:
@@ -234,7 +212,7 @@ def get_credentials():
 
 
 # ============================================================
-# HMAC SHA256
+# SIGNATURE
 # ============================================================
 
 def make_signature(
@@ -250,42 +228,22 @@ def make_signature(
 
 
 # ============================================================
-# AUTHENTICATED ACCOUNT REQUEST
+# AUTH ACCOUNT TEST
 # ============================================================
 
-def test_rest_auth(credential, server_time=None):
+def test_auth(
+    credential,
+    server_time,
+):
 
-    name = credential["name"]
     api_key = credential["api_key"]
     api_secret = credential["api_secret"]
 
-    print("=" * 70)
-    print(
-        "DIRECT REST AUTH TEST:",
-        name,
+    timestamp = (
+        int(server_time)
+        if server_time is not None
+        else int(time.time() * 1000)
     )
-    print("=" * 70)
-
-    # --------------------------------------------------------
-    # Use server timestamp when available.
-    # Otherwise local UTC milliseconds.
-    # --------------------------------------------------------
-
-    if server_time is not None:
-        timestamp = int(server_time)
-    else:
-        timestamp = int(
-            time.time() * 1000
-        )
-
-    # --------------------------------------------------------
-    # IMPORTANT:
-    # Parameter order:
-    #
-    # timestamp
-    # recvWindow
-    #
-    # --------------------------------------------------------
 
     query_string = (
         "timestamp="
@@ -312,31 +270,6 @@ def test_rest_auth(credential, server_time=None):
         "Content-Type": "application/json",
     }
 
-    print(
-        "TIMESTAMP:",
-        timestamp,
-    )
-
-    print(
-        "RECV WINDOW:",
-        RECV_WINDOW,
-    )
-
-    print(
-        "SIGN METHOD:",
-        "HMAC-SHA256",
-    )
-
-    print(
-        "PARAM ORDER:",
-        "timestamp -> recvWindow",
-    )
-
-    print(
-        "ENDPOINT:",
-        "/r/api/v1/account",
-    )
-
     try:
 
         response = requests.get(
@@ -346,82 +279,261 @@ def test_rest_auth(credential, server_time=None):
         )
 
         print(
-            "HTTP:",
+            "AUTH HTTP:",
             response.status_code,
         )
-
-        print(
-            "RESPONSE:",
-            response.text[:2000],
-        )
-
-        # ----------------------------------------------------
-        # SUCCESS
-        # ----------------------------------------------------
 
         if response.status_code == 200:
 
             try:
                 data = response.json()
             except Exception:
-                data = response.text
+                data = {}
 
             return {
                 "success": True,
-                "name": name,
-                "http": response.status_code,
-                "code": 0,
-                "message": "AUTH SUCCESS",
-                "result": data,
+                "data": data,
+                "timestamp": timestamp,
             }
 
-        # ----------------------------------------------------
-        # ERROR
-        # ----------------------------------------------------
-
-        code = "UNKNOWN"
-        message = response.text[:1000]
-
         try:
-
             data = response.json()
-
-            if isinstance(data, dict):
-
-                if "code" in data:
-                    code = data.get("code")
-
-                if "msg" in data:
-                    message = data.get("msg")
-
-                elif "message" in data:
-                    message = data.get("message")
-
         except Exception:
-            pass
+            data = {}
 
         return {
             "success": False,
-            "name": name,
             "http": response.status_code,
-            "code": code,
-            "message": message,
+            "data": data,
+            "text": response.text[:1000],
         }
 
     except Exception as exc:
 
+        return {
+            "success": False,
+            "http": 0,
+            "data": {},
+            "text": repr(exc),
+        }
+
+
+# ============================================================
+# EXCHANGE INFO
+# ============================================================
+
+def get_exchange_info():
+
+    url = (
+        BASE_URL
+        + "/r/api/v1/exchangeInfo"
+    )
+
+    try:
+
+        response = requests.get(
+            url,
+            timeout=REQUEST_TIMEOUT,
+        )
+
         print(
-            "REST AUTH ERROR:",
+            "EXCHANGE INFO HTTP:",
+            response.status_code,
+        )
+
+        if response.status_code != 200:
+
+            print(
+                "EXCHANGE INFO ERROR:",
+                response.text[:1000],
+            )
+
+            return None
+
+        return response.json()
+
+    except Exception as exc:
+
+        print(
+            "EXCHANGE INFO ERROR:",
             repr(exc),
         )
 
-        return {
-            "success": False,
-            "name": name,
-            "http": 0,
-            "code": "REQUEST_ERROR",
-            "message": repr(exc),
-        }
+        return None
+
+
+# ============================================================
+# NUMBER FORMAT
+# ============================================================
+
+def clean_value(value):
+
+    if value is None:
+        return "-"
+
+    return str(value)
+
+
+# ============================================================
+# EXTRACT FILTER
+# ============================================================
+
+def get_filter(
+    filters,
+    filter_type,
+):
+
+    if not isinstance(
+        filters,
+        list,
+    ):
+        return {}
+
+    for item in filters:
+
+        if not isinstance(
+            item,
+            dict,
+        ):
+            continue
+
+        if (
+            item.get("filterType")
+            == filter_type
+        ):
+            return item
+
+    return {}
+
+
+# ============================================================
+# MARKET PARSER
+# ============================================================
+
+def parse_usdt_markets(data):
+
+    symbols = []
+
+    if not isinstance(data, dict):
+        return symbols
+
+    raw_symbols = data.get(
+        "symbols",
+        [],
+    )
+
+    if not isinstance(
+        raw_symbols,
+        list,
+    ):
+        return symbols
+
+    for item in raw_symbols:
+
+        if not isinstance(
+            item,
+            dict,
+        ):
+            continue
+
+        symbol = str(
+            item.get(
+                "symbol",
+                "",
+            )
+        ).upper()
+
+        if not symbol.endswith(
+            "USDT"
+        ):
+            continue
+
+        status = str(
+            item.get(
+                "status",
+                "",
+            )
+        ).upper()
+
+        # Keep active markets.
+        if status and status not in (
+            "TRADING",
+            "ENABLED",
+            "ACTIVE",
+        ):
+            continue
+
+        filters = item.get(
+            "filters",
+            [],
+        )
+
+        lot = get_filter(
+            filters,
+            "LOT_SIZE",
+        )
+
+        market_lot = get_filter(
+            filters,
+            "MARKET_LOT_SIZE",
+        )
+
+        min_notional = get_filter(
+            filters,
+            "MIN_NOTIONAL",
+        )
+
+        notional = get_filter(
+            filters,
+            "NOTIONAL",
+        )
+
+        step_size = (
+            market_lot.get(
+                "stepSize"
+            )
+            or lot.get(
+                "stepSize"
+            )
+        )
+
+        min_qty = (
+            market_lot.get(
+                "minQty"
+            )
+            or lot.get(
+                "minQty"
+            )
+        )
+
+        min_value = (
+            min_notional.get(
+                "minNotional"
+            )
+            or notional.get(
+                "minNotional"
+            )
+        )
+
+        symbols.append(
+            {
+                "symbol": symbol,
+                "status": status,
+                "baseAsset": item.get(
+                    "baseAsset",
+                    "",
+                ),
+                "quoteAsset": item.get(
+                    "quoteAsset",
+                    "",
+                ),
+                "stepSize": step_size,
+                "minQty": min_qty,
+                "minNotional": min_value,
+            }
+        )
+
+    return symbols
 
 
 # ============================================================
@@ -439,17 +551,17 @@ def main():
     startup = (
         f"⚡ ATI CRYPTO BOT {VERSION}\n\n"
         f"📡 TABDEAL API: CONNECTING...\n"
-        f"📊 AUTH TEST: DIRECT REST API\n\n"
+        f"📊 AUTH + MARKET DISCOVERY\n\n"
+        f"🔐 DIRECT REST API\n"
         f"🔐 HMAC-SHA256\n"
-        f"🔢 TIMESTAMP + RECVWINDOW\n"
         f"🔧 PYTHON SDK: DISABLED\n"
+        f"📊 EXCHANGE INFO: ENABLED\n"
         f"🔒 REAL ORDERS: DISABLED\n"
         f"🛑 BUY LOCK: ACTIVE\n\n"
         f"🕐 {utc_now()}"
     )
 
     print(startup)
-
     send_telegram(startup)
 
     # ========================================================
@@ -471,12 +583,9 @@ def main():
 
         time_message = (
             f"🕐 TABDEAL TIME CHECK\n\n"
-            f"LOCAL:\n"
-            f"{local_time}\n\n"
-            f"SERVER:\n"
-            f"{server_time}\n\n"
-            f"DIFF:\n"
-            f"{clock_diff} ms"
+            f"LOCAL:\n{local_time}\n\n"
+            f"SERVER:\n{server_time}\n\n"
+            f"DIFF:\n{clock_diff} ms"
         )
 
     else:
@@ -484,16 +593,12 @@ def main():
         clock_diff = None
 
         time_message = (
-            f"⚠️ TABDEAL TIME CHECK\n\n"
-            f"SERVER TIME: UNKNOWN\n\n"
-            f"🕐 {utc_now()}"
+            "⚠️ TABDEAL TIME CHECK\n\n"
+            "SERVER TIME: UNKNOWN"
         )
 
     print(time_message)
-
-    send_telegram(
-        time_message
-    )
+    send_telegram(time_message)
 
     # ========================================================
     # CREDENTIALS
@@ -505,172 +610,209 @@ def main():
 
         message = (
             f"🚨 ATI AUTH FAILED {VERSION}\n\n"
-            f"❌ NO API CREDENTIALS FOUND\n\n"
-            f"Expected one of:\n"
-            f"• TABDEAL_API_KEY\n"
-            f"• TABDEAL_API_SECRET\n\n"
-            f"or:\n"
-            f"• TABDIL_API_KEY\n"
-            f"• TABDIL_API_SECRET\n\n"
+            f"❌ API CREDENTIALS NOT FOUND\n\n"
+            f"🔒 REAL BUY LOCKED\n"
+            f"🛑 NO ORDER WAS SENT"
+        )
+
+        print(message)
+        send_telegram(message)
+        return
+
+    # ========================================================
+    # AUTH
+    # ========================================================
+
+    working = None
+
+    for credential in credentials:
+
+        print(
+            "AUTH TEST:",
+            credential["name"],
+        )
+
+        result = test_auth(
+            credential,
+            server_time,
+        )
+
+        if result["success"]:
+
+            working = credential
+
+            print(
+                "AUTH SUCCESS:",
+                credential["name"],
+            )
+
+            break
+
+        print(
+            "AUTH FAILED:",
+            credential["name"],
+            result.get("http"),
+            result.get("data"),
+        )
+
+    if working is None:
+
+        message = (
+            f"🚨 ATI API AUTH FAILED {VERSION}\n\n"
+            f"❌ DIRECT REST AUTH FAILED\n\n"
             f"🔒 REAL BUY LOCKED\n"
             f"🛑 NO ORDER WAS SENT\n\n"
             f"🕐 {utc_now()}"
         )
 
         print(message)
-
         send_telegram(message)
-
         return
 
     # ========================================================
-    # AUTH TEST
+    # AUTH SUCCESS
     # ========================================================
 
-    results = []
+    auth_message = (
+        f"✅ ATI API AUTH SUCCESS {VERSION}\n\n"
+        f"🟢 WORKING PAIR:\n"
+        f"{working['name']}\n\n"
+        f"🔐 HMAC-SHA256\n"
+        f"📡 /r/api/v1/account\n\n"
+        f"🔒 REAL BUY: DISABLED\n"
+        f"🛑 NO ORDER WAS SENT"
+    )
 
-    working = None
-
-    for credential in credentials:
-
-        result = test_rest_auth(
-            credential,
-            server_time,
-        )
-
-        results.append(result)
-
-        if result["success"]:
-
-            working = result
-
-            break
+    print(auth_message)
+    send_telegram(auth_message)
 
     # ========================================================
-    # SUCCESS
+    # EXCHANGE INFO
     # ========================================================
 
-    if working:
+    print(
+        "=" * 70
+    )
 
-        success_message = (
-            f"✅ ATI API AUTH SUCCESS {VERSION}\n\n"
-            f"🟢 WORKING PAIR:\n"
-            f"{working['name']}\n\n"
-            f"🔐 METHOD:\n"
-            f"DIRECT REST API\n\n"
-            f"🔐 SIGN:\n"
-            f"HMAC-SHA256\n\n"
-            f"🔢 PARAM ORDER:\n"
-            f"timestamp → recvWindow\n\n"
-            f"📡 ENDPOINT:\n"
-            f"/r/api/v1/account\n\n"
-            f"🔒 REAL BUY: DISABLED\n"
+    print(
+        "EXCHANGE INFO: STARTING"
+    )
+
+    exchange_info = get_exchange_info()
+
+    if exchange_info is None:
+
+        message = (
+            f"🚨 EXCHANGE INFO FAILED {VERSION}\n\n"
+            f"❌ Could not read market information.\n\n"
+            f"🔒 REAL BUY LOCKED\n"
             f"🛑 NO ORDER WAS SENT\n\n"
             f"🕐 {utc_now()}"
         )
 
-        print(success_message)
-
-        send_telegram(
-            success_message
-        )
-
+        print(message)
+        send_telegram(message)
         return
 
     # ========================================================
-    # FAILURE
+    # PARSE USDT MARKETS
     # ========================================================
 
+    markets = parse_usdt_markets(
+        exchange_info
+    )
+
+    print(
+        "USDT MARKETS:",
+        len(markets),
+    )
+
+    if not markets:
+
+        message = (
+            f"🚨 NO USDT MARKETS {VERSION}\n\n"
+            f"❌ exchangeInfo returned no active USDT markets.\n\n"
+            f"🔒 REAL BUY LOCKED\n"
+            f"🛑 NO ORDER WAS SENT"
+        )
+
+        print(message)
+        send_telegram(message)
+        return
+
+    # ========================================================
+    # SHOW MARKET SAMPLE
+    # ========================================================
+
+    sample = markets[:10]
+
     lines = [
-        f"🚨 ATI API AUTH FAILED {VERSION}",
+        f"📊 ATI MARKET DISCOVERY {VERSION}",
         "",
-        "❌ DIRECT REST AUTH FAILED",
+        f"🟢 USDT MARKETS: {len(markets)}",
+        f"📋 SHOWING: {len(sample)}",
         "",
     ]
 
-    for result in results:
+    for index, market in enumerate(
+        sample,
+        start=1,
+    ):
 
         lines.append(
-            f"🔑 PAIR: {result['name']}"
+            f"{index}. {market['symbol']}"
         )
 
         lines.append(
-            f"❌ HTTP: {result.get('http', 'UNKNOWN')}"
+            f"   STEP: {clean_value(market['stepSize'])}"
         )
 
         lines.append(
-            f"❌ CODE: {result.get('code', 'UNKNOWN')}"
+            f"   MIN QTY: {clean_value(market['minQty'])}"
         )
 
         lines.append(
-            f"❌ MSG: {result.get('message', 'UNKNOWN')}"
+            f"   MIN NOTIONAL: "
+            f"{clean_value(market['minNotional'])}"
         )
 
         lines.append("")
 
-    if clock_diff is not None:
-
-        lines.extend(
-            [
-                "🕐 CLOCK DIFF:",
-                f"{clock_diff} ms",
-                "",
-            ]
-        )
-
     lines.extend(
         [
-            "🔐 AUTH METHOD:",
-            "DIRECT REST API",
-            "",
-            "🔐 SIGN:",
-            "HMAC-SHA256",
-            "",
-            "🔢 PARAM ORDER:",
-            "timestamp -> recvWindow",
-            "",
-            "📡 ENDPOINT:",
-            "/r/api/v1/account",
-            "",
-            "🔒 REAL BUY LOCKED",
+            "🔒 REAL BUY: DISABLED",
             "🛑 NO ORDER WAS SENT",
             "",
             f"🕐 {utc_now()}",
         ]
     )
 
-    failure_message = "\n".join(
+    market_message = "\n".join(
         lines
     )
 
-    print(failure_message)
-
-    send_telegram(
-        failure_message
-    )
+    print(market_message)
+    send_telegram(market_message)
 
     # ========================================================
-    # SAFE STOP
+    # FINAL SAFE STOP
     # ========================================================
 
-    safe_stop = (
-        f"🛑 ATI SAFE STOP {VERSION}\n\n"
-        f"🚫 API AUTH FAILED\n"
-        f"🔒 REAL BUY DISABLED\n"
+    final_message = (
+        f"✅ ATI V40.2.29 SAFE CHECK COMPLETE\n\n"
+        f"📡 API: OK\n"
+        f"🔐 AUTH: OK\n"
+        f"📊 EXCHANGE INFO: OK\n"
+        f"🟢 USDT MARKETS: {len(markets)}\n\n"
+        f"🔒 REAL ORDERS: DISABLED\n"
         f"🛑 NO ORDER WAS SENT\n\n"
-        f"🕐 {utc_now()}"
+        f"NEXT STEP:\n"
+        f"5m MARKET SCANNER"
     )
 
-    print(safe_stop)
+    print(final_message)
+    send_telegram(final_message)
 
-    send_telegram(
-        safe_stop
-    )
-
-
-# ============================================================
-# ENTRY
-# ============================================================
 
 if __name__ == "__main__":
     main()
