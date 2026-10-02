@@ -8,31 +8,24 @@ import requests
 
 
 # ============================================================
-# ATI CRYPTO BOT V40.2.29
+# ATI CRYPTO BOT V40.2.30
 # TABDEAL DIRECT REST API
-# AUTH + EXCHANGE INFO + USDT MARKET DISCOVERY
+# AUTH + EXCHANGE INFO RAW/PARSER TEST
 # ============================================================
 
-VERSION = "V40.2.29"
+VERSION = "V40.2.30"
 
 BASE_URL = "https://api1.tabdeal.org"
 
-RECV_WINDOW = int(
-    os.getenv("RECV_WINDOW", "5000")
-)
-
-REQUEST_TIMEOUT = int(
-    os.getenv("REQUEST_TIMEOUT", "20")
-)
+RECV_WINDOW = int(os.getenv("RECV_WINDOW", "5000"))
+REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", "20"))
 
 TELEGRAM_BOT_TOKEN = os.getenv(
-    "TELEGRAM_BOT_TOKEN",
-    ""
+    "TELEGRAM_BOT_TOKEN", ""
 ).strip()
 
 TELEGRAM_CHAT_ID = os.getenv(
-    "TELEGRAM_CHAT_ID",
-    ""
+    "TELEGRAM_CHAT_ID", ""
 ).strip()
 
 # HARD SAFETY LOCK
@@ -74,7 +67,6 @@ def send_telegram(message):
     )
 
     try:
-
         response = requests.post(
             url,
             json={
@@ -93,7 +85,6 @@ def send_telegram(message):
         )
 
     except Exception as exc:
-
         print(
             "Telegram ERROR:",
             repr(exc),
@@ -132,7 +123,6 @@ def get_server_time():
                 value = data.get(key)
 
                 if value is not None:
-
                     try:
                         return int(value)
                     except Exception:
@@ -212,7 +202,7 @@ def get_credentials():
 
 
 # ============================================================
-# SIGNATURE
+# HMAC
 # ============================================================
 
 def make_signature(
@@ -228,7 +218,7 @@ def make_signature(
 
 
 # ============================================================
-# AUTH ACCOUNT TEST
+# AUTH TEST
 # ============================================================
 
 def test_auth(
@@ -278,22 +268,11 @@ def test_auth(
             timeout=REQUEST_TIMEOUT,
         )
 
-        print(
-            "AUTH HTTP:",
-            response.status_code,
-        )
-
         if response.status_code == 200:
-
-            try:
-                data = response.json()
-            except Exception:
-                data = {}
 
             return {
                 "success": True,
-                "data": data,
-                "timestamp": timestamp,
+                "data": response.json(),
             }
 
         try:
@@ -341,16 +320,106 @@ def get_exchange_info():
             response.status_code,
         )
 
+        print(
+            "EXCHANGE INFO CONTENT-TYPE:",
+            response.headers.get(
+                "content-type",
+                "",
+            ),
+        )
+
         if response.status_code != 200:
 
             print(
                 "EXCHANGE INFO ERROR:",
-                response.text[:1000],
+                response.text[:2000],
             )
 
             return None
 
-        return response.json()
+        try:
+            data = response.json()
+        except Exception as exc:
+
+            print(
+                "EXCHANGE INFO JSON ERROR:",
+                repr(exc),
+            )
+
+            print(
+                "RAW:",
+                response.text[:3000],
+            )
+
+            return None
+
+        # ----------------------------------------------------
+        # IMPORTANT:
+        # Print only structural information.
+        # Do NOT print API credentials.
+        # ----------------------------------------------------
+
+        print(
+            "EXCHANGE INFO TYPE:",
+            type(data).__name__,
+        )
+
+        if isinstance(data, list):
+
+            print(
+                "EXCHANGE INFO LIST LENGTH:",
+                len(data),
+            )
+
+            if data:
+
+                print(
+                    "FIRST ITEM TYPE:",
+                    type(data[0]).__name__,
+                )
+
+                print(
+                    "FIRST ITEM:",
+                    str(data[0])[:3000],
+                )
+
+        elif isinstance(data, dict):
+
+            print(
+                "EXCHANGE INFO DICT KEYS:",
+                list(data.keys())[:50],
+            )
+
+            if "symbols" in data:
+
+                symbols = data.get(
+                    "symbols",
+                    [],
+                )
+
+                print(
+                    "SYMBOLS TYPE:",
+                    type(symbols).__name__,
+                )
+
+                print(
+                    "SYMBOLS LENGTH:",
+                    len(symbols)
+                    if isinstance(symbols, list)
+                    else "N/A",
+                )
+
+                if isinstance(
+                    symbols,
+                    list,
+                ) and symbols:
+
+                    print(
+                        "FIRST SYMBOL:",
+                        str(symbols[0])[:3000],
+                    )
+
+        return data
 
     except Exception as exc:
 
@@ -363,19 +432,74 @@ def get_exchange_info():
 
 
 # ============================================================
-# NUMBER FORMAT
+# GET RAW SYMBOL LIST
 # ============================================================
 
-def clean_value(value):
+def get_raw_symbols(data):
 
-    if value is None:
-        return "-"
+    # --------------------------------------------------------
+    # CASE 1:
+    # API returns:
+    #
+    # [
+    #   {...},
+    #   {...}
+    # ]
+    # --------------------------------------------------------
 
-    return str(value)
+    if isinstance(data, list):
+        return data
+
+    # --------------------------------------------------------
+    # CASE 2:
+    # API returns:
+    #
+    # {
+    #   "symbols": [...]
+    # }
+    # --------------------------------------------------------
+
+    if isinstance(data, dict):
+
+        symbols = data.get(
+            "symbols"
+        )
+
+        if isinstance(
+            symbols,
+            list,
+        ):
+            return symbols
+
+        # Some APIs may nest data.
+        nested = data.get("data")
+
+        if isinstance(
+            nested,
+            list,
+        ):
+            return nested
+
+        if isinstance(
+            nested,
+            dict,
+        ):
+
+            nested_symbols = nested.get(
+                "symbols"
+            )
+
+            if isinstance(
+                nested_symbols,
+                list,
+            ):
+                return nested_symbols
+
+    return []
 
 
 # ============================================================
-# EXTRACT FILTER
+# FILTER HELPERS
 # ============================================================
 
 def get_filter(
@@ -397,13 +521,45 @@ def get_filter(
         ):
             continue
 
-        if (
-            item.get("filterType")
-            == filter_type
-        ):
+        if str(
+            item.get(
+                "filterType",
+                "",
+            )
+        ).upper() == filter_type:
+
             return item
 
     return {}
+
+
+def first_value(
+    dictionaries,
+    keys,
+):
+
+    for dictionary in dictionaries:
+
+        if not isinstance(
+            dictionary,
+            dict,
+        ):
+            continue
+
+        for key in keys:
+
+            value = dictionary.get(key)
+
+            if value not in (
+                None,
+                "",
+                0,
+                "0",
+                "0.0",
+            ):
+                return value
+
+    return None
 
 
 # ============================================================
@@ -412,21 +568,11 @@ def get_filter(
 
 def parse_usdt_markets(data):
 
-    symbols = []
-
-    if not isinstance(data, dict):
-        return symbols
-
-    raw_symbols = data.get(
-        "symbols",
-        [],
+    raw_symbols = get_raw_symbols(
+        data
     )
 
-    if not isinstance(
-        raw_symbols,
-        list,
-    ):
-        return symbols
+    markets = []
 
     for item in raw_symbols:
 
@@ -439,11 +585,32 @@ def parse_usdt_markets(data):
         symbol = str(
             item.get(
                 "symbol",
-                "",
+                item.get(
+                    "market",
+                    item.get(
+                        "pair",
+                        "",
+                    ),
+                ),
             )
-        ).upper()
+        ).upper().strip()
 
-        if not symbol.endswith(
+        # ----------------------------------------------------
+        # Normalize common formats
+        # ----------------------------------------------------
+
+        normalized = symbol.replace(
+            "_",
+            "",
+        ).replace(
+            "-",
+            "",
+        ).replace(
+            "/",
+            "",
+        )
+
+        if not normalized.endswith(
             "USDT"
         ):
             continue
@@ -455,11 +622,16 @@ def parse_usdt_markets(data):
             )
         ).upper()
 
-        # Keep active markets.
+        # ----------------------------------------------------
+        # If status exists, keep active/trading.
+        # If status is absent, don't reject the market.
+        # ----------------------------------------------------
+
         if status and status not in (
             "TRADING",
             "ENABLED",
             "ACTIVE",
+            "ONLINE",
         ):
             continue
 
@@ -488,36 +660,47 @@ def parse_usdt_markets(data):
             "NOTIONAL",
         )
 
-        step_size = (
-            market_lot.get(
-                "stepSize"
-            )
-            or lot.get(
-                "stepSize"
-            )
+        step_size = first_value(
+            [
+                market_lot,
+                lot,
+                item,
+            ],
+            [
+                "stepSize",
+                "step_size",
+            ],
         )
 
-        min_qty = (
-            market_lot.get(
-                "minQty"
-            )
-            or lot.get(
-                "minQty"
-            )
+        min_qty = first_value(
+            [
+                market_lot,
+                lot,
+                item,
+            ],
+            [
+                "minQty",
+                "min_qty",
+            ],
         )
 
-        min_value = (
-            min_notional.get(
-                "minNotional"
-            )
-            or notional.get(
-                "minNotional"
-            )
+        min_notional_value = first_value(
+            [
+                min_notional,
+                notional,
+                item,
+            ],
+            [
+                "minNotional",
+                "min_notional",
+                "min_notional_value",
+            ],
         )
 
-        symbols.append(
+        markets.append(
             {
                 "symbol": symbol,
+                "normalized": normalized,
                 "status": status,
                 "baseAsset": item.get(
                     "baseAsset",
@@ -529,11 +712,11 @@ def parse_usdt_markets(data):
                 ),
                 "stepSize": step_size,
                 "minQty": min_qty,
-                "minNotional": min_value,
+                "minNotional": min_notional_value,
             }
         )
 
-    return symbols
+    return markets
 
 
 # ============================================================
@@ -551,11 +734,11 @@ def main():
     startup = (
         f"⚡ ATI CRYPTO BOT {VERSION}\n\n"
         f"📡 TABDEAL API: CONNECTING...\n"
-        f"📊 AUTH + MARKET DISCOVERY\n\n"
+        f"📊 AUTH + EXCHANGE INFO TEST\n\n"
         f"🔐 DIRECT REST API\n"
         f"🔐 HMAC-SHA256\n"
         f"🔧 PYTHON SDK: DISABLED\n"
-        f"📊 EXCHANGE INFO: ENABLED\n"
+        f"📊 RAW EXCHANGE INFO: ENABLED\n"
         f"🔒 REAL ORDERS: DISABLED\n"
         f"🛑 BUY LOCK: ACTIVE\n\n"
         f"🕐 {utc_now()}"
@@ -565,7 +748,7 @@ def main():
     send_telegram(startup)
 
     # ========================================================
-    # SERVER TIME
+    # TIME
     # ========================================================
 
     local_time = int(
@@ -601,7 +784,7 @@ def main():
     send_telegram(time_message)
 
     # ========================================================
-    # CREDENTIALS
+    # AUTH
     # ========================================================
 
     credentials = get_credentials()
@@ -619,18 +802,9 @@ def main():
         send_telegram(message)
         return
 
-    # ========================================================
-    # AUTH
-    # ========================================================
-
     working = None
 
     for credential in credentials:
-
-        print(
-            "AUTH TEST:",
-            credential["name"],
-        )
 
         result = test_auth(
             credential,
@@ -641,19 +815,7 @@ def main():
 
             working = credential
 
-            print(
-                "AUTH SUCCESS:",
-                credential["name"],
-            )
-
             break
-
-        print(
-            "AUTH FAILED:",
-            credential["name"],
-            result.get("http"),
-            result.get("data"),
-        )
 
     if working is None:
 
@@ -661,17 +823,12 @@ def main():
             f"🚨 ATI API AUTH FAILED {VERSION}\n\n"
             f"❌ DIRECT REST AUTH FAILED\n\n"
             f"🔒 REAL BUY LOCKED\n"
-            f"🛑 NO ORDER WAS SENT\n\n"
-            f"🕐 {utc_now()}"
+            f"🛑 NO ORDER WAS SENT"
         )
 
         print(message)
         send_telegram(message)
         return
-
-    # ========================================================
-    # AUTH SUCCESS
-    # ========================================================
 
     auth_message = (
         f"✅ ATI API AUTH SUCCESS {VERSION}\n\n"
@@ -690,48 +847,13 @@ def main():
     # EXCHANGE INFO
     # ========================================================
 
-    print(
-        "=" * 70
-    )
-
-    print(
-        "EXCHANGE INFO: STARTING"
-    )
-
     exchange_info = get_exchange_info()
 
     if exchange_info is None:
 
         message = (
             f"🚨 EXCHANGE INFO FAILED {VERSION}\n\n"
-            f"❌ Could not read market information.\n\n"
-            f"🔒 REAL BUY LOCKED\n"
-            f"🛑 NO ORDER WAS SENT\n\n"
-            f"🕐 {utc_now()}"
-        )
-
-        print(message)
-        send_telegram(message)
-        return
-
-    # ========================================================
-    # PARSE USDT MARKETS
-    # ========================================================
-
-    markets = parse_usdt_markets(
-        exchange_info
-    )
-
-    print(
-        "USDT MARKETS:",
-        len(markets),
-    )
-
-    if not markets:
-
-        message = (
-            f"🚨 NO USDT MARKETS {VERSION}\n\n"
-            f"❌ exchangeInfo returned no active USDT markets.\n\n"
+            f"❌ Could not read exchangeInfo.\n\n"
             f"🔒 REAL BUY LOCKED\n"
             f"🛑 NO ORDER WAS SENT"
         )
@@ -741,77 +863,105 @@ def main():
         return
 
     # ========================================================
-    # SHOW MARKET SAMPLE
+    # PARSE
     # ========================================================
 
-    sample = markets[:10]
+    markets = parse_usdt_markets(
+        exchange_info
+    )
 
-    lines = [
-        f"📊 ATI MARKET DISCOVERY {VERSION}",
-        "",
-        f"🟢 USDT MARKETS: {len(markets)}",
-        f"📋 SHOWING: {len(sample)}",
-        "",
-    ]
+    print(
+        "PARSED USDT MARKETS:",
+        len(markets),
+    )
 
-    for index, market in enumerate(
-        sample,
-        start=1,
-    ):
+    # ========================================================
+    # SUCCESS
+    # ========================================================
 
-        lines.append(
-            f"{index}. {market['symbol']}"
-        )
+    if markets:
 
-        lines.append(
-            f"   STEP: {clean_value(market['stepSize'])}"
-        )
+        sample = markets[:10]
 
-        lines.append(
-            f"   MIN QTY: {clean_value(market['minQty'])}"
-        )
-
-        lines.append(
-            f"   MIN NOTIONAL: "
-            f"{clean_value(market['minNotional'])}"
-        )
-
-        lines.append("")
-
-    lines.extend(
-        [
-            "🔒 REAL BUY: DISABLED",
-            "🛑 NO ORDER WAS SENT",
+        lines = [
+            f"📊 ATI MARKET DISCOVERY {VERSION}",
             "",
-            f"🕐 {utc_now()}",
+            f"🟢 USDT MARKETS: {len(markets)}",
+            f"📋 SHOWING: {len(sample)}",
+            "",
         ]
-    )
 
-    market_message = "\n".join(
-        lines
-    )
+        for index, market in enumerate(
+            sample,
+            start=1,
+        ):
 
-    print(market_message)
-    send_telegram(market_message)
+            lines.append(
+                f"{index}. {market['symbol']}"
+            )
+
+            lines.append(
+                f"   STEP: {market['stepSize'] or '-'}"
+            )
+
+            lines.append(
+                f"   MIN QTY: {market['minQty'] or '-'}"
+            )
+
+            lines.append(
+                f"   MIN NOTIONAL: "
+                f"{market['minNotional'] or '-'}"
+            )
+
+            lines.append("")
+
+        lines.extend(
+            [
+                "🔒 REAL BUY: DISABLED",
+                "🛑 NO ORDER WAS SENT",
+                "",
+                f"🕐 {utc_now()}",
+            ]
+        )
+
+        message = "\n".join(lines)
+
+        print(message)
+        send_telegram(message)
+
+        final = (
+            f"✅ ATI V40.2.30 SAFE CHECK COMPLETE\n\n"
+            f"📡 API: OK\n"
+            f"🔐 AUTH: OK\n"
+            f"📊 EXCHANGE INFO: OK\n"
+            f"🟢 USDT MARKETS: {len(markets)}\n\n"
+            f"🔒 REAL ORDERS: DISABLED\n"
+            f"🛑 NO ORDER WAS SENT\n\n"
+            f"NEXT STEP:\n"
+            f"5m MARKET SCANNER"
+        )
+
+        print(final)
+        send_telegram(final)
+
+        return
 
     # ========================================================
-    # FINAL SAFE STOP
+    # NO MARKETS
     # ========================================================
 
-    final_message = (
-        f"✅ ATI V40.2.29 SAFE CHECK COMPLETE\n\n"
-        f"📡 API: OK\n"
-        f"🔐 AUTH: OK\n"
-        f"📊 EXCHANGE INFO: OK\n"
-        f"🟢 USDT MARKETS: {len(markets)}\n\n"
-        f"🔒 REAL ORDERS: DISABLED\n"
+    no_markets = (
+        f"🚨 NO USDT MARKETS {VERSION}\n\n"
+        f"❌ PARSER FOUND 0 USDT MARKETS\n\n"
+        f"📊 EXCHANGE INFO RESPONSE WAS RECEIVED\n"
+        f"📋 RAW STRUCTURE WAS PRINTED IN ACTIONS LOG\n\n"
+        f"🔒 REAL BUY LOCKED\n"
         f"🛑 NO ORDER WAS SENT\n\n"
-        f"NEXT STEP:\n"
-        f"5m MARKET SCANNER"
+        f"🕐 {utc_now()}"
     )
 
-    print(final_message)
-    send_telegram(final_message)
+    print(no_markets)
+    send_telegram(no_markets)
 
 
 if __name__ == "__main__":
