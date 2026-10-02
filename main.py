@@ -1,10 +1,7 @@
 import os
 import time
-import json
 import hmac
 import hashlib
-import math
-from decimal import Decimal, ROUND_DOWN, InvalidOperation
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -12,116 +9,152 @@ import requests
 
 
 # ============================================================
-# ATI CRYPTO BOT V40.2.36
-# SMART 5M LOGIC - STRONG BULLISH CONFIRMATION
+# ATI CRYPTO BOT V40.2.37
+# ============================================================
+# SINGLE STRATEGY:
+#
+#        BOS -> BREAKOUT -> PULLBACK -> CONTINUATION
+#
+# NO EMA
+# NO MULTI-STRATEGY
+# CLOSED 5M CANDLES
 # TABDIL AUTH
-# SCANNER ONLY
-# REAL ORDERS PERMANENTLY DISABLED
+# SCANNER / PAPER ONLY
+# REAL ORDERS LOCKED
 # ============================================================
 
-VERSION = "V40.2.36"
+VERSION = "V40.2.37"
 
 BASE_URL = "https://api1.tabdeal.org"
 
-# ------------------------------------------------------------
-# SAFETY LOCK
-# ------------------------------------------------------------
+# ============================================================
+# SAFETY
+# ============================================================
+
 REAL_ORDERS = False
 BUY_LOCK = True
 
-# ------------------------------------------------------------
-# SCANNER SETTINGS
-# ------------------------------------------------------------
+# ============================================================
+# SCANNER
+# ============================================================
+
 SCAN_UNIVERSE = 40
 TOP_RESULTS = 10
-TIMEFRAME_MINUTES = 5
 
-MIN_CANDLES = 13
 TRADE_LIMIT = 1000
+MIN_CANDLES = 25
 
 REQUEST_TIMEOUT = 12
 MAX_WORKERS = 8
 
-# ------------------------------------------------------------
-# SIGNAL SETTINGS
-# ------------------------------------------------------------
-STRONG_MIN_SCORE = 14
-EARLY_MIN_SCORE = 10
-WATCH_MIN_SCORE = 7
+# ============================================================
+# STRATEGY SETTINGS
+# ============================================================
 
-MIN_STRONG_BODY = 50.0
-MIN_EARLY_BODY = 35.0
+# Resistance / structure
+STRUCTURE_LOOKBACK = 12
+PULLBACK_LOOKBACK = 4
 
-MIN_ACCEPTABLE_VOLUME = 0.70
-STRONG_VOLUME = 1.50
+# Breakout zone
+MIN_BREAKOUT = -0.15
+MAX_BREAKOUT = 1.80
 
-MAX_CHASE = 1.50
+# Pullback tolerance around broken resistance
+PULLBACK_TOLERANCE = 0.80
 
-# ------------------------------------------------------------
+# Continuation requirements
+MIN_CONTINUATION_MOVE = 0.05
+
+# Momentum
+MIN_M5_MOMENTUM = 0.00
+MIN_M15_MOMENTUM = 0.00
+MIN_1H_MOMENTUM = 0.00
+
+# ============================================================
 # TELEGRAM
-# ------------------------------------------------------------
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+# ============================================================
 
-# ------------------------------------------------------------
-# API CREDENTIALS
-# TABDIL is the verified working pair
-# ------------------------------------------------------------
-API_KEY = os.getenv("TABDIL_API_KEY", "").strip()
-API_SECRET = os.getenv("TABDIL_API_SECRET", "").strip()
+TELEGRAM_BOT_TOKEN = os.getenv(
+    "TELEGRAM_BOT_TOKEN",
+    ""
+).strip()
 
-# Optional fallback only if TABDIL names are absent.
+TELEGRAM_CHAT_ID = os.getenv(
+    "TELEGRAM_CHAT_ID",
+    ""
+).strip()
+
+# ============================================================
+# API
+# ============================================================
+
+API_KEY = os.getenv(
+    "TABDIL_API_KEY",
+    ""
+).strip()
+
+API_SECRET = os.getenv(
+    "TABDIL_API_SECRET",
+    ""
+).strip()
+
+# Fallback only
 if not API_KEY:
-    API_KEY = os.getenv("TABDEAL_API_KEY", "").strip()
+    API_KEY = os.getenv(
+        "TABDEAL_API_KEY",
+        ""
+    ).strip()
 
 if not API_SECRET:
-    API_SECRET = os.getenv("TABDEAL_API_SECRET", "").strip()
+    API_SECRET = os.getenv(
+        "TABDEAL_API_SECRET",
+        ""
+    ).strip()
 
 
 session = requests.Session()
+
 session.headers.update({
-    "User-Agent": "ATI-Crypto-Bot/" + VERSION
+    "User-Agent": f"ATI-Crypto-Bot/{VERSION}"
 })
 
 
 # ============================================================
-# HELPERS
+# TIME
 # ============================================================
 
 def utc_now():
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    return datetime.now(
+        timezone.utc
+    ).strftime(
+        "%Y-%m-%d %H:%M:%S UTC"
+    )
 
 
-def safe_float(value, default=0.0):
-    try:
-        return float(value)
-    except Exception:
-        return default
-
-
-def clamp(value, low, high):
-    return max(low, min(high, value))
-
+# ============================================================
+# TELEGRAM
+# ============================================================
 
 def telegram_send(message):
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+    if not TELEGRAM_BOT_TOKEN:
+        return False
+
+    if not TELEGRAM_CHAT_ID:
         return False
 
     try:
         url = (
-            f"https://api.telegram.org/bot"
+            "https://api.telegram.org/bot"
             f"{TELEGRAM_BOT_TOKEN}/sendMessage"
         )
 
-        payload = {
-            "chat_id": TELEGRAM_CHAT_ID,
-            "text": message,
-            "disable_web_page_preview": True,
-        }
-
         response = requests.post(
             url,
-            json=payload,
+            json={
+                "chat_id": TELEGRAM_CHAT_ID,
+                "text": message,
+                "disable_web_page_preview": True
+            },
             timeout=15
         )
 
@@ -131,32 +164,39 @@ def telegram_send(message):
         return False
 
 
-def send_long_telegram(message):
-    """
-    Telegram message limit protection.
-    """
-    max_len = 3900
+def telegram_long(message):
+    limit = 3900
 
-    if len(message) <= max_len:
+    if len(message) <= limit:
         telegram_send(message)
         return
 
-    parts = []
-
     while message:
-        parts.append(message[:max_len])
-        message = message[max_len:]
+        part = message[:limit]
+        message = message[limit:]
 
-    for part in parts:
         telegram_send(part)
+
         time.sleep(0.4)
 
 
 # ============================================================
-# API
+# SAFE CONVERSION
+# ============================================================
+
+def safe_float(value, default=0.0):
+    try:
+        return float(value)
+    except Exception:
+        return default
+
+
+# ============================================================
+# SERVER TIME
 # ============================================================
 
 def get_server_time():
+
     url = f"{BASE_URL}/r/api/v1/time"
 
     response = session.get(
@@ -168,22 +208,29 @@ def get_server_time():
 
     data = response.json()
 
+    if isinstance(data, (int, float)):
+        return int(data)
+
     if isinstance(data, dict):
+
         for key in (
             "serverTime",
             "timestamp",
-            "time",
-            "data"
+            "time"
         ):
+
             if key in data:
+
                 value = data[key]
 
                 if isinstance(value, dict):
+
                     for subkey in (
                         "serverTime",
                         "timestamp",
                         "time"
                     ):
+
                         if subkey in value:
                             value = value[subkey]
                             break
@@ -193,33 +240,43 @@ def get_server_time():
                 except Exception:
                     pass
 
-    if isinstance(data, (int, float)):
-        return int(data)
+    raise RuntimeError(
+        "SERVER_TIME_NOT_FOUND"
+    )
 
-    raise RuntimeError("SERVER_TIME_NOT_FOUND")
 
+# ============================================================
+# SIGNED GET
+# ============================================================
 
-def signed_get(path, extra_params=None):
-    """
-    Tabdil/Tabdeal signed GET.
+def signed_get(
+    path,
+    extra_params=None
+):
 
-    Signature:
-        timestamp=<server>&recvWindow=5000
+    if not API_KEY:
+        raise RuntimeError(
+            "TABDIL_API_KEY_MISSING"
+        )
 
-    HMAC-SHA256
-    """
+    if not API_SECRET:
+        raise RuntimeError(
+            "TABDIL_API_SECRET_MISSING"
+        )
 
-    if not API_KEY or not API_SECRET:
-        raise RuntimeError("API_CREDENTIALS_MISSING")
-
-    server_timestamp = get_server_time()
+    timestamp = get_server_time()
 
     params = {}
 
     if extra_params:
-        params.update(extra_params)
+        params.update(
+            extra_params
+        )
 
-    params["timestamp"] = int(server_timestamp)
+    params["timestamp"] = int(
+        timestamp
+    )
+
     params["recvWindow"] = 5000
 
     query = "&".join(
@@ -235,22 +292,18 @@ def signed_get(path, extra_params=None):
 
     params["signature"] = signature
 
-    headers = {
-        "X-MBX-APIKEY": API_KEY
-    }
-
-    url = f"{BASE_URL}{path}"
-
     response = session.get(
-        url,
+        f"{BASE_URL}{path}",
         params=params,
-        headers=headers,
+        headers={
+            "X-MBX-APIKEY": API_KEY
+        },
         timeout=REQUEST_TIMEOUT
     )
 
     if response.status_code == 401:
         raise RuntimeError(
-            f"AUTH_401:{response.text[:250]}"
+            "HTTP_401_INVALID_SIGNATURE"
         )
 
     response.raise_for_status()
@@ -258,27 +311,43 @@ def signed_get(path, extra_params=None):
     return response.json()
 
 
+# ============================================================
+# AUTH TEST
+# ============================================================
+
 def auth_test():
+
     data = signed_get(
         "/r/api/v1/account"
     )
 
     if isinstance(data, dict):
-        code = data.get("code")
 
-        if code not in (None, 0, "0"):
+        code = data.get(
+            "code"
+        )
+
+        if code not in (
+            None,
+            0,
+            "0"
+        ):
+
             raise RuntimeError(
-                f"ACCOUNT_CODE:{code}"
+                f"ACCOUNT_CODE_{code}"
             )
 
     return True
 
 
+# ============================================================
+# EXCHANGE INFO
+# ============================================================
+
 def get_exchange_info():
-    url = f"{BASE_URL}/r/api/v1/exchangeInfo"
 
     response = session.get(
-        url,
+        f"{BASE_URL}/r/api/v1/exchangeInfo",
         timeout=REQUEST_TIMEOUT
     )
 
@@ -287,18 +356,15 @@ def get_exchange_info():
     return response.json()
 
 
-# ============================================================
-# EXCHANGE INFO PARSER
-# ============================================================
+def extract_symbols(data):
 
-def extract_symbols(exchange_data):
-    symbols = []
+    raw = []
 
-    if isinstance(exchange_data, list):
-        raw = exchange_data
+    if isinstance(data, list):
 
-    elif isinstance(exchange_data, dict):
-        raw = None
+        raw = data
+
+    elif isinstance(data, dict):
 
         for key in (
             "symbols",
@@ -306,39 +372,51 @@ def extract_symbols(exchange_data):
             "result",
             "items"
         ):
-            value = exchange_data.get(key)
+
+            value = data.get(key)
 
             if isinstance(value, list):
                 raw = value
                 break
 
             if isinstance(value, dict):
+
                 for subkey in (
                     "symbols",
                     "data",
                     "result",
                     "items"
                 ):
-                    subvalue = value.get(subkey)
-                    if isinstance(subvalue, list):
+
+                    subvalue = value.get(
+                        subkey
+                    )
+
+                    if isinstance(
+                        subvalue,
+                        list
+                    ):
+
                         raw = subvalue
                         break
 
-                if raw is not None:
+                if raw:
                     break
 
-        if raw is None:
-            raw = []
-
-    else:
-        raw = []
+    result = []
+    seen = set()
 
     for item in raw:
+
         if isinstance(item, str):
+
             symbol = item.upper()
 
             if symbol.endswith("USDT"):
-                symbols.append(symbol)
+
+                if symbol not in seen:
+                    seen.add(symbol)
+                    result.append(symbol)
 
             continue
 
@@ -355,36 +433,41 @@ def extract_symbols(exchange_data):
         if not symbol:
             continue
 
-        symbol = str(symbol).upper()
+        symbol = str(
+            symbol
+        ).upper()
 
         status = str(
-            item.get("status", "TRADING")
+            item.get(
+                "status",
+                "TRADING"
+            )
         ).upper()
 
         quote = str(
-            item.get("quoteAsset")
-            or item.get("quote")
-            or ""
+            item.get(
+                "quoteAsset",
+                item.get(
+                    "quote",
+                    ""
+                )
+            )
         ).upper()
 
-        if (
-            symbol.endswith("USDT")
-            and status not in (
-                "BREAK",
-                "HALT",
-                "STOPPED",
-                "DISABLED"
-            )
+        if not symbol.endswith("USDT"):
+            continue
+
+        if status in (
+            "BREAK",
+            "HALT",
+            "STOPPED",
+            "DISABLED"
         ):
-            if not quote or quote == "USDT":
-                symbols.append(symbol)
+            continue
 
-    # unique
-    result = []
+        if quote and quote != "USDT":
+            continue
 
-    seen = set()
-
-    for symbol in symbols:
         if symbol not in seen:
             seen.add(symbol)
             result.append(symbol)
@@ -393,19 +476,10 @@ def extract_symbols(exchange_data):
 
 
 # ============================================================
-# TRADES API
+# TRADE API
 # ============================================================
 
 def parse_trade_list(data):
-    """
-    Supports:
-      list
-      {data: [...]}
-      {trades: [...]}
-      {result: [...]}
-      {items: [...]}
-      nested forms
-    """
 
     if isinstance(data, list):
         return data
@@ -419,13 +493,17 @@ def parse_trade_list(data):
         "result",
         "items"
     ):
+
         value = data.get(key)
 
         if isinstance(value, list):
             return value
 
         if isinstance(value, dict):
-            nested = parse_trade_list(value)
+
+            nested = parse_trade_list(
+                value
+            )
 
             if nested:
                 return nested
@@ -434,47 +512,54 @@ def parse_trade_list(data):
 
 
 def get_recent_trades(symbol):
-    """
-    V40.2.34-compatible endpoint fallback.
-    """
 
     attempts = [
         {"tabdealSymbol": symbol},
         {"symbol": symbol},
         {"market": symbol},
-        {"tabdeal_symbol": symbol},
+        {"tabdeal_symbol": symbol}
     ]
 
-    last_error = None
+    last_error = "UNKNOWN"
 
     for extra in attempts:
+
         try:
-            params = dict(extra)
+
+            params = dict(
+                extra
+            )
+
             params["limit"] = TRADE_LIMIT
 
-            url = f"{BASE_URL}/r/api/v1/trades"
-
             response = session.get(
-                url,
+                f"{BASE_URL}/r/api/v1/trades",
                 params=params,
                 timeout=REQUEST_TIMEOUT
             )
 
             if response.status_code != 200:
+
                 last_error = (
                     f"HTTP_{response.status_code}"
                 )
+
                 continue
 
             data = response.json()
 
-            trades = parse_trade_list(data)
+            trades = parse_trade_list(
+                data
+            )
 
             if trades:
                 return trades
 
         except Exception as exc:
-            last_error = str(exc)
+
+            last_error = str(
+                exc
+            )
 
     raise RuntimeError(
         f"TRADE_API_ERROR:{last_error}"
@@ -482,10 +567,11 @@ def get_recent_trades(symbol):
 
 
 # ============================================================
-# TRADE PARSER
+# TRADE PARSING
 # ============================================================
 
 def trade_price(item):
+
     if not isinstance(item, dict):
         return 0.0
 
@@ -495,8 +581,12 @@ def trade_price(item):
         "tradePrice",
         "lastPrice"
     ):
+
         if key in item:
-            value = safe_float(item[key])
+
+            value = safe_float(
+                item[key]
+            )
 
             if value > 0:
                 return value
@@ -505,6 +595,7 @@ def trade_price(item):
 
 
 def trade_quantity(item):
+
     if not isinstance(item, dict):
         return 0.0
 
@@ -516,8 +607,12 @@ def trade_quantity(item):
         "volume",
         "baseQty"
     ):
+
         if key in item:
-            value = safe_float(item[key])
+
+            value = safe_float(
+                item[key]
+            )
 
             if value > 0:
                 return value
@@ -526,6 +621,7 @@ def trade_quantity(item):
 
 
 def trade_time(item):
+
     if not isinstance(item, dict):
         return None
 
@@ -536,13 +632,15 @@ def trade_time(item):
         "tradeTime",
         "createdAt"
     ):
+
         if key not in item:
             continue
 
-        value = item[key]
-
         try:
-            value = float(value)
+
+            value = float(
+                item[key]
+            )
 
             if value < 10000000000:
                 value *= 1000
@@ -556,26 +654,40 @@ def trade_time(item):
 
 
 # ============================================================
-# CANDLE BUILDER
+# 5M CANDLES
 # ============================================================
 
 def build_5m_candles(trades):
+
     buckets = {}
 
     for item in trades:
-        price = trade_price(item)
-        qty = trade_quantity(item)
-        timestamp = trade_time(item)
 
-        if price <= 0 or timestamp is None:
+        price = trade_price(
+            item
+        )
+
+        quantity = trade_quantity(
+            item
+        )
+
+        timestamp = trade_time(
+            item
+        )
+
+        if price <= 0:
             continue
 
-        # 5 minute bucket
+        if timestamp is None:
+            continue
+
         bucket = (
-            timestamp // (5 * 60 * 1000)
+            timestamp
+            // (5 * 60 * 1000)
         ) * (5 * 60 * 1000)
 
         if bucket not in buckets:
+
             buckets[bucket] = {
                 "open": price,
                 "high": price,
@@ -583,7 +695,7 @@ def build_5m_candles(trades):
                 "close": price,
                 "volume": 0.0,
                 "quote_volume": 0.0,
-                "time": bucket,
+                "time": bucket
             }
 
         candle = buckets[bucket]
@@ -600,10 +712,10 @@ def build_5m_candles(trades):
 
         candle["close"] = price
 
-        candle["volume"] += qty
+        candle["volume"] += quantity
 
         candle["quote_volume"] += (
-            price * qty
+            price * quantity
         )
 
     candles = [
@@ -611,87 +723,56 @@ def build_5m_candles(trades):
         for key in sorted(buckets)
     ]
 
-    # Current/open candle must NOT be used.
-    now_ms = int(time.time() * 1000)
+    # Remove current open candle.
+    now_ms = int(
+        time.time() * 1000
+    )
 
     current_bucket = (
-        now_ms // (5 * 60 * 1000)
+        now_ms
+        // (5 * 60 * 1000)
     ) * (5 * 60 * 1000)
 
     candles = [
-        c for c in candles
-        if c["time"] < current_bucket
+        candle
+        for candle in candles
+        if candle["time"] < current_bucket
     ]
 
     return candles
 
 
 # ============================================================
-# CANDLE METRICS
+# CANDLE FUNCTIONS
 # ============================================================
 
 def candle_body_percent(candle):
+
     high = candle["high"]
     low = candle["low"]
-    open_price = candle["open"]
-    close_price = candle["close"]
 
-    candle_range = high - low
-
-    if candle_range <= 0:
+    if high <= low:
         return 0.0
 
     return (
-        abs(close_price - open_price)
-        / candle_range
+        abs(
+            candle["close"]
+            - candle["open"]
+        )
+        / (high - low)
     ) * 100.0
 
 
-def is_bullish(candle):
+def bullish(candle):
     return candle["close"] > candle["open"]
 
 
-def is_bearish(candle):
+def bearish(candle):
     return candle["close"] < candle["open"]
 
 
-def average_volume(candles, count=10):
-    if not candles:
-        return 0.0
-
-    values = [
-        safe_float(c["volume"])
-        for c in candles[-count:]
-    ]
-
-    if not values:
-        return 0.0
-
-    return sum(values) / len(values)
-
-
-def volume_ratio(candles):
-    if len(candles) < 2:
-        return 0.0
-
-    current = safe_float(
-        candles[-1]["volume"]
-    )
-
-    previous = candles[:-1][-10:]
-
-    if not previous:
-        return 0.0
-
-    avg = average_volume(previous, 10)
-
-    if avg <= 0:
-        return 0.0
-
-    return current / avg
-
-
 def percent_change(old, new):
+
     if old <= 0:
         return 0.0
 
@@ -701,7 +782,12 @@ def percent_change(old, new):
     ) * 100.0
 
 
+# ============================================================
+# MOMENTUM
+# ============================================================
+
 def momentum_5m(candles):
+
     if len(candles) < 2:
         return 0.0
 
@@ -712,6 +798,7 @@ def momentum_5m(candles):
 
 
 def momentum_15m(candles):
+
     if len(candles) < 4:
         return 0.0
 
@@ -722,6 +809,7 @@ def momentum_15m(candles):
 
 
 def momentum_1h(candles):
+
     if len(candles) < 13:
         return 0.0
 
@@ -731,335 +819,552 @@ def momentum_1h(candles):
     )
 
 
-def resistance_level(candles):
-    """
-    Previous 12 closed candles.
-    Current breakout candle is excluded.
-    """
+# ============================================================
+# STRUCTURE
+# ============================================================
 
-    if len(candles) < 13:
-        return None
+def resistance(candles):
 
-    previous = candles[-13:-1]
+    if len(candles) < (
+        STRUCTURE_LOOKBACK + 1
+    ):
+        return 0.0
 
-    if not previous:
-        return None
+    previous = candles[
+        -(STRUCTURE_LOOKBACK + 1):-1
+    ]
 
     return max(
-        c["high"]
-        for c in previous
+        candle["high"]
+        for candle in previous
+    )
+
+
+def recent_swing_low(candles):
+
+    if len(candles) < PULLBACK_LOOKBACK:
+        return 0.0
+
+    previous = candles[
+        -PULLBACK_LOOKBACK:
+    ]
+
+    return min(
+        candle["low"]
+        for candle in previous
     )
 
 
 # ============================================================
-# MARKET ANALYSIS
+# VOLUME
+# ============================================================
+
+def average_volume(
+    candles,
+    count=10
+):
+
+    if len(candles) < 2:
+        return 0.0
+
+    previous = candles[
+        -(count + 1):-1
+    ]
+
+    if not previous:
+        return 0.0
+
+    values = [
+        safe_float(
+            candle["volume"]
+        )
+        for candle in previous
+    ]
+
+    if not values:
+        return 0.0
+
+    return (
+        sum(values)
+        / len(values)
+    )
+
+
+def volume_ratio(candles):
+
+    if len(candles) < 3:
+        return 0.0
+
+    current = safe_float(
+        candles[-1]["volume"]
+    )
+
+    avg = average_volume(
+        candles,
+        10
+    )
+
+    if avg <= 0:
+        return 0.0
+
+    return current / avg
+
+
+# ============================================================
+# SINGLE STRATEGY
+# BOS -> BREAKOUT -> PULLBACK -> CONTINUATION
 # ============================================================
 
 def analyze_symbol(symbol):
+
     result = {
         "symbol": symbol,
         "ok": False,
+        "state": "FILTERED",
         "score": 0,
-        "state": "ERROR",
         "price": 0.0,
+        "resistance": 0.0,
         "breakout": 0.0,
         "volume": 0.0,
         "body": 0.0,
         "m5": 0.0,
         "m15": 0.0,
         "m1h": 0.0,
-        "reason": "UNKNOWN",
-        "candles": 0,
+        "setup": "NONE",
+        "reason": "",
+        "candles": 0
     }
 
     try:
-        trades = get_recent_trades(symbol)
 
-        candles = build_5m_candles(trades)
+        trades = get_recent_trades(
+            symbol
+        )
 
-        result["candles"] = len(candles)
+        candles = build_5m_candles(
+            trades
+        )
+
+        result["candles"] = len(
+            candles
+        )
 
         if len(candles) < MIN_CANDLES:
-            result["reason"] = "NOT_ENOUGH_CANDLES"
+
+            result["reason"] = (
+                "NOT_ENOUGH_CANDLES"
+            )
+
             return result
 
         last = candles[-1]
 
-        price = safe_float(last["close"])
+        price = safe_float(
+            last["close"]
+        )
 
         if price <= 0:
-            result["reason"] = "INVALID_PRICE"
+
+            result["reason"] = (
+                "INVALID_PRICE"
+            )
+
             return result
 
-        resistance = resistance_level(candles)
+        level = resistance(
+            candles
+        )
 
-        if resistance is None or resistance <= 0:
-            result["reason"] = "NO_RESISTANCE"
+        if level <= 0:
+
+            result["reason"] = (
+                "NO_RESISTANCE"
+            )
+
             return result
 
         breakout = (
-            (price - resistance)
-            / resistance
+            (price - level)
+            / level
         ) * 100.0
 
-        vol = volume_ratio(candles)
+        m5 = momentum_5m(
+            candles
+        )
 
-        body = candle_body_percent(last)
+        m15 = momentum_15m(
+            candles
+        )
 
-        m5 = momentum_5m(candles)
-        m15 = momentum_15m(candles)
-        m1h = momentum_1h(candles)
+        m1h = momentum_1h(
+            candles
+        )
 
-        bullish = is_bullish(last)
-        bearish = is_bearish(last)
+        volume = volume_ratio(
+            candles
+        )
+
+        body = candle_body_percent(
+            last
+        )
+
+        is_green = bullish(
+            last
+        )
+
+        is_red = bearish(
+            last
+        )
+
+        # ----------------------------------------------------
+        # Structure BEFORE current candle
+        # ----------------------------------------------------
+
+        previous_closes = [
+            candle["close"]
+            for candle in candles[
+                -(STRUCTURE_LOOKBACK + 1):-1
+            ]
+        ]
+
+        previous_high = max(
+            candle["high"]
+            for candle in candles[
+                -(STRUCTURE_LOOKBACK + 1):-1
+            ]
+        )
+
+        # ----------------------------------------------------
+        # Was resistance broken?
+        # ----------------------------------------------------
+
+        breakout_detected = (
+            price >= previous_high
+        )
+
+        # ----------------------------------------------------
+        # Pullback detection
+        #
+        # Current candle can be:
+        # - above resistance
+        # - slightly below resistance
+        # - touching resistance
+        #
+        # while recent candle lows prove price
+        # interacted with the broken level.
+        # ----------------------------------------------------
+
+        recent = candles[
+            -PULLBACK_LOOKBACK:
+        ]
+
+        recent_low = min(
+            candle["low"]
+            for candle in recent
+        )
+
+        pullback_distance = (
+            abs(recent_low - level)
+            / level
+        ) * 100.0
+
+        touched_level = (
+            pullback_distance
+            <= PULLBACK_TOLERANCE
+        )
+
+        # ----------------------------------------------------
+        # Continuation
+        # ----------------------------------------------------
+
+        continuation = (
+            is_green
+            and m5 > MIN_M5_MOMENTUM
+            and price >= level
+        )
+
+        # ----------------------------------------------------
+        # Trend
+        # ----------------------------------------------------
+
+        trend_up = (
+            m15 > MIN_M15_MOMENTUM
+            and m1h > MIN_1H_MOMENTUM
+        )
+
+        # ----------------------------------------------------
+        # Chase protection
+        # ----------------------------------------------------
+
+        chasing = (
+            breakout > MAX_BREAKOUT
+        )
+
+        # ----------------------------------------------------
+        # Score
+        #
+        # This score is NOT another strategy.
+        # It ranks the quality of the SAME setup.
+        # ----------------------------------------------------
 
         score = 0
         reasons = []
 
-        # ----------------------------------------------------
-        # BREAKOUT
-        # ----------------------------------------------------
-
-        if breakout >= 0:
-            score += 4
-        elif breakout >= -0.50:
-            score += 2
-            reasons.append("NEAR_RESISTANCE")
-        else:
-            reasons.append("BELOW_RESISTANCE")
-
-        # ----------------------------------------------------
-        # VOLUME
-        # ----------------------------------------------------
-
-        if vol >= 1.50:
-            score += 2
-        elif vol >= 0.70:
-            score += 1
-        else:
-            reasons.append("LOW_VOLUME")
-
-        # ----------------------------------------------------
-        # CANDLE DIRECTION
-        # IMPORTANT V40.2.36
-        # ----------------------------------------------------
-
-        if bullish:
+        # 1. 1H trend
+        if m1h > 0:
             score += 3
         else:
             score -= 2
-            reasons.append("RED_CANDLE")
+            reasons.append(
+                "1H_DOWN"
+            )
 
-        # ----------------------------------------------------
-        # CANDLE BODY
-        # ----------------------------------------------------
-
-        if body >= 60:
-            score += 2
-        elif body >= 35:
+        if m1h >= 2.0:
             score += 1
-        else:
-            reasons.append("WEAK_BODY")
 
-        # ----------------------------------------------------
-        # 5M MOMENTUM
-        # ----------------------------------------------------
-
-        if m5 > 0:
-            score += 2
-
-            if m5 >= 0.30:
-                score += 1
-        else:
-            reasons.append("5M_NOT_UP")
-
-        # ----------------------------------------------------
-        # 15M MOMENTUM
-        # ----------------------------------------------------
-
+        # 2. 15M trend
         if m15 > 0:
             score += 3
-
-            if m15 >= 1.00:
-                score += 1
         else:
-            reasons.append("15M_NOT_UP")
+            score -= 2
+            reasons.append(
+                "15M_DOWN"
+            )
 
-        # ----------------------------------------------------
-        # 1H MOMENTUM
-        # ----------------------------------------------------
+        if m15 >= 1.0:
+            score += 1
 
-        if m1h > 0:
+        # 3. 5M continuation
+        if m5 > 0:
+            score += 3
+        else:
+            score -= 2
+            reasons.append(
+                "5M_DOWN"
+            )
+
+        if m5 >= 0.30:
+            score += 1
+
+        # 4. Structure
+        if breakout_detected:
+            score += 3
+        elif breakout >= -0.30:
             score += 2
-
-            if m1h >= 2.00:
-                score += 1
+            reasons.append(
+                "NEAR_BOS"
+            )
         else:
-            reasons.append("1H_NOT_UP")
-
-        # ----------------------------------------------------
-        # NEGATIVE MOMENTUM PENALTIES
-        # ----------------------------------------------------
-
-        if m15 < -0.50:
             score -= 2
-            reasons.append("15M_WEAK")
+            reasons.append(
+                "BELOW_STRUCTURE"
+            )
 
-        if m1h < -1.00:
-            score -= 2
-            reasons.append("1H_WEAK")
+        # 5. Pullback
+        if touched_level:
+            score += 3
+        else:
+            reasons.append(
+                "NO_PULLBACK"
+            )
 
-        # ----------------------------------------------------
-        # CHASE PROTECTION
-        # ----------------------------------------------------
+        # 6. Continuation candle
+        if is_green:
+            score += 2
+        else:
+            score -= 1
+            reasons.append(
+                "NO_GREEN_CONFIRMATION"
+            )
 
-        chasing = breakout > MAX_CHASE
+        # 7. Body
+        if body >= 50:
+            score += 2
+        elif body >= 25:
+            score += 1
+        else:
+            reasons.append(
+                "SMALL_BODY"
+            )
 
+        # 8. Volume
+        if volume >= 1.50:
+            score += 2
+        elif volume >= 0.70:
+            score += 1
+        else:
+            reasons.append(
+                "LOW_VOLUME"
+            )
+
+        # 9. Chase
         if chasing:
-            score -= 3
-            reasons.append("CHASE")
+            score -= 4
+            reasons.append(
+                "CHASE"
+            )
 
-        score = int(
-            clamp(score, 0, 20)
+        score = max(
+            0,
+            min(
+                20,
+                score
+            )
         )
 
         # ----------------------------------------------------
-        # HARD QUALITY GATES
+        # CLASSIFICATION
         # ----------------------------------------------------
 
-        # A red candle can NEVER be STRONG/EARLY.
-        if not bullish:
-            state = "WATCH"
-
-        # Body below 35% can NEVER be STRONG/EARLY.
-        elif body < MIN_EARLY_BODY:
-            state = "WATCH"
-
-        # Negative 5m / 15m / 1h prevents entry classification.
-        elif m5 <= 0 or m15 <= 0 or m1h <= 0:
-            state = "WATCH"
-
-        # Chase protection.
-        elif chasing:
-            state = "WATCH"
-
-        # ----------------------------------------------------
-        # STRONG
-        # ----------------------------------------------------
-
-        elif (
-            breakout >= 0
-            and bullish
-            and body >= MIN_STRONG_BODY
-            and vol >= STRONG_VOLUME
-            and m5 > 0
-            and m15 > 0
-            and m1h > 0
-            and score >= STRONG_MIN_SCORE
+        # STRONG:
+        # complete setup:
+        # BOS + pullback + continuation + trend
+        if (
+            breakout_detected
+            and touched_level
+            and continuation
+            and trend_up
+            and not chasing
+            and body >= 25
+            and score >= 14
         ):
+
             state = "STRONG"
 
-        # ----------------------------------------------------
-        # EARLY WATCH
-        # ----------------------------------------------------
+            setup = (
+                "BOS+PULLBACK+CONTINUATION"
+            )
 
+        # EARLY:
+        # near BOS / pullback zone,
+        # trend is aligned,
+        # continuation is beginning.
         elif (
-            breakout >= -0.20
-            and bullish
-            and body >= MIN_EARLY_BODY
-            and vol >= MIN_ACCEPTABLE_VOLUME
+            breakout >= -0.30
+            and touched_level
+            and trend_up
             and m5 > 0
-            and m15 > 0
-            and m1h > 0
-            and score >= EARLY_MIN_SCORE
+            and is_green
+            and not chasing
+            and score >= 10
         ):
+
             state = "EARLY"
 
-        # ----------------------------------------------------
-        # WATCH
-        # ----------------------------------------------------
+            setup = (
+                "BREAKOUT/PULLBACK"
+            )
 
+        # WATCH:
+        # ranked candidate but setup incomplete.
         elif (
-            score >= WATCH_MIN_SCORE
-            and m15 > 0
-            and m1h > 0
+            trend_up
+            and score >= 7
         ):
+
             state = "WATCH"
 
+            setup = (
+                "SETUP_INCOMPLETE"
+            )
+
         else:
+
             state = "FILTERED"
+
+            setup = "NONE"
 
         result.update({
             "ok": True,
-            "score": score,
             "state": state,
+            "score": score,
             "price": price,
+            "resistance": level,
             "breakout": breakout,
-            "volume": vol,
+            "volume": volume,
             "body": body,
             "m5": m5,
             "m15": m15,
             "m1h": m1h,
-            "reason": ",".join(reasons) if reasons else "OK",
+            "setup": setup,
+            "reason": (
+                ",".join(reasons)
+                if reasons
+                else "OK"
+            )
         })
 
         return result
 
     except Exception as exc:
-        result["reason"] = str(exc)[:180]
+
+        result["reason"] = str(
+            exc
+        )[:180]
+
         return result
 
 
 # ============================================================
-# DISPLAY
+# FORMAT
 # ============================================================
 
-def format_result(index, item):
-    state = item["state"]
+def format_result(
+    index,
+    item
+):
 
-    if state == "STRONG":
+    if item["state"] == "STRONG":
+
         icon = "🟢"
         label = "STRONG"
-    elif state == "EARLY":
+
+    elif item["state"] == "EARLY":
+
         icon = "🟡"
-        label = "EARLY WATCH"
+        label = "EARLY"
+
     else:
+
         icon = "⚪"
         label = "WATCH"
 
-    reasons = item["reason"]
-
-    if not reasons:
-        reasons = "OK"
-
     return (
-        f"{index}. {item['symbol']} {icon} {label}\n"
+        f"{index}. "
+        f"{item['symbol']} "
+        f"{icon} {label}\n"
         f"Score: {item['score']}/20\n"
+        f"Setup: {item['setup']}\n"
         f"Price: {item['price']:.10g}\n"
+        f"Resistance: {item['resistance']:.10g}\n"
         f"Breakout: {item['breakout']:+.2f}%\n"
         f"Volume: {item['volume']:.2f}x\n"
         f"Body: {item['body']:.0f}%\n"
         f"5m: {item['m5']:+.2f}% | "
         f"15m: {item['m15']:+.2f}% | "
         f"1h: {item['m1h']:+.2f}%\n"
-        f"State: {reasons}"
+        f"State: {item['reason']}"
     )
 
 
 # ============================================================
-# MAIN SCAN
+# MAIN
 # ============================================================
 
 def main():
+
     start_time = time.time()
+
+    # --------------------------------------------------------
+    # START
+    # --------------------------------------------------------
 
     telegram_send(
         f"⚡ ATI CRYPTO BOT {VERSION}\n\n"
-        f"📡 TABDEAL API: CONNECTING...\n"
-        f"🧠 SMART 5M LOGIC V2\n"
-        f"🕯 CLOSED CANDLE ONLY\n"
-        f"🟢 BULLISH CANDLE CONFIRMATION\n"
-        f"📊 BODY FILTER: ≥35% EARLY / ≥50% STRONG\n"
+        f"🧠 ONE STRATEGY ONLY\n"
+        f"📐 BOS → BREAKOUT → PULLBACK → CONTINUATION\n"
+        f"🕯 CLOSED 5M CANDLES\n"
+        f"🚫 NO EMA\n"
         f"🔎 SCAN UNIVERSE: {SCAN_UNIVERSE}\n"
         f"🎯 TOP {TOP_RESULTS}\n\n"
         f"🔒 REAL ORDERS: DISABLED\n"
@@ -1072,6 +1377,7 @@ def main():
     # --------------------------------------------------------
 
     try:
+
         telegram_send(
             f"🔐 ATI AUTH TEST {VERSION}\n\n"
             f"🔑 KEY PAIR: TABDIL\n"
@@ -1092,6 +1398,7 @@ def main():
         )
 
     except Exception as exc:
+
         telegram_send(
             f"🚨 ATI API AUTH FAILED {VERSION}\n\n"
             f"❌ {str(exc)[:600]}\n\n"
@@ -1099,6 +1406,7 @@ def main():
             f"🔒 REAL ORDERS: DISABLED\n"
             f"🕐 {utc_now()}"
         )
+
         return
 
     # --------------------------------------------------------
@@ -1106,7 +1414,10 @@ def main():
     # --------------------------------------------------------
 
     try:
-        exchange_data = get_exchange_info()
+
+        exchange_data = (
+            get_exchange_info()
+        )
 
         symbols = extract_symbols(
             exchange_data
@@ -1115,34 +1426,40 @@ def main():
         telegram_send(
             f"📊 EXCHANGE INFO OK {VERSION}\n"
             f"🟢 USDT MARKETS: {len(symbols)}\n"
-            f"🔎 SMART SCAN STARTING...\n"
+            f"🔎 STRATEGY SCAN STARTING...\n"
+            f"📐 BOS → PULLBACK → CONTINUATION\n"
             f"🔒 REAL ORDERS: DISABLED"
         )
 
     except Exception as exc:
+
         telegram_send(
             f"🚨 EXCHANGE INFO ERROR {VERSION}\n"
             f"❌ {str(exc)[:500]}\n"
             f"🔒 REAL ORDERS: DISABLED"
         )
+
         return
 
     if not symbols:
+
         telegram_send(
             f"❌ NO USDT MARKETS FOUND\n"
-            f"🛑 SCAN STOPPED\n"
-            f"🔒 REAL ORDERS: DISABLED"
+            f"🛑 SCAN STOPPED"
         )
+
         return
 
     # --------------------------------------------------------
-    # SCAN UNIVERSE
+    # SCAN
     # --------------------------------------------------------
 
-    scan_symbols = symbols[:SCAN_UNIVERSE]
+    scan_symbols = symbols[
+        :SCAN_UNIVERSE
+    ]
 
     analyzed = []
-    api_errors = 0
+    errors = 0
 
     with ThreadPoolExecutor(
         max_workers=MAX_WORKERS
@@ -1156,20 +1473,26 @@ def main():
             for symbol in scan_symbols
         }
 
-        for future in as_completed(futures):
+        for future in as_completed(
+            futures
+        ):
+
             try:
+
                 item = future.result()
 
                 if item["ok"]:
-                    analyzed.append(item)
+                    analyzed.append(
+                        item
+                    )
                 else:
-                    api_errors += 1
+                    errors += 1
 
             except Exception:
-                api_errors += 1
+                errors += 1
 
     # --------------------------------------------------------
-    # CLASSIFICATION
+    # SORT
     # --------------------------------------------------------
 
     strong = [
@@ -1192,98 +1515,105 @@ def main():
         if x["state"] == "FILTERED"
     ]
 
-    # Strong first, then Early, then Watch.
+    def rank_key(item):
+
+        return (
+            item["score"],
+            item["m15"],
+            item["m1h"],
+            item["breakout"],
+            item["volume"]
+        )
+
     strong.sort(
-        key=lambda x: (
-            x["score"],
-            x["breakout"],
-            x["volume"]
-        ),
+        key=rank_key,
         reverse=True
     )
 
     early.sort(
-        key=lambda x: (
-            x["score"],
-            x["breakout"],
-            x["volume"]
-        ),
+        key=rank_key,
         reverse=True
     )
 
     watch.sort(
-        key=lambda x: (
-            x["score"],
-            x["m15"],
-            x["m1h"]
-        ),
+        key=rank_key,
         reverse=True
     )
 
+    # Strong -> Early -> Watch
     top = (
         strong
         + early
         + watch
     )[:TOP_RESULTS]
 
-    elapsed = time.time() - start_time
+    elapsed = (
+        time.time()
+        - start_time
+    )
 
     # --------------------------------------------------------
     # SUMMARY
     # --------------------------------------------------------
 
     telegram_send(
-        f"📊 SMART SCAN RESULT {VERSION}\n\n"
+        f"📊 STRATEGY RESULT {VERSION}\n\n"
         f"🟢 MARKETS: {len(symbols)}\n"
         f"🔎 CHECKED: {len(scan_symbols)}\n"
         f"📈 ANALYZED: {len(analyzed)}\n"
-        f"❌ API/TRADE ERRORS: {api_errors}\n\n"
+        f"❌ API ERRORS: {errors}\n\n"
         f"🟢 STRONG: {len(strong)}\n"
         f"🟡 EARLY: {len(early)}\n"
         f"⚪ WATCH: {len(watch)}\n"
         f"❌ FILTERED: {len(filtered)}\n"
         f"⏱ TIME: {elapsed:.1f}s\n\n"
+        f"📐 STRATEGY:\n"
+        f"BOS → BREAKOUT → PULLBACK → CONTINUATION\n\n"
         f"🔒 REAL ORDERS: DISABLED\n"
         f"🛑 NO ORDER WAS SENT\n"
         f"🕐 {utc_now()}"
     )
 
     # --------------------------------------------------------
-    # TOP RESULTS
+    # TOP 10
     # --------------------------------------------------------
 
     if top:
+
         message = (
-            f"🎯 ATI SMART TOP {TOP_RESULTS} {VERSION}\n\n"
-            f"🧠 NEW RULE:\n"
-            f"🔴 RED CANDLE CANNOT BE STRONG/EARLY\n"
-            f"📏 BODY <35% CANNOT BE STRONG/EARLY\n"
-            f"📈 5m/15m/1h MUST BE POSITIVE\n"
-            f"🔊 STRONG VOLUME ≥1.50x\n\n"
+            f"🏆 ATI TOP {TOP_RESULTS} "
+            f"{VERSION}\n\n"
+            f"📐 ONE STRATEGY:\n"
+            f"BOS → BREAKOUT → PULLBACK "
+            f"→ CONTINUATION\n\n"
         )
 
         for index, item in enumerate(
             top,
             start=1
         ):
+
             message += (
-                format_result(index, item)
+                format_result(
+                    index,
+                    item
+                )
                 + "\n\n"
             )
 
-        send_long_telegram(
+        telegram_long(
             message.rstrip()
         )
 
     else:
+
         telegram_send(
-            f"🎯 ATI SMART TOP {TOP_RESULTS} {VERSION}\n\n"
-            f"❌ NO QUALITY CANDIDATE\n\n"
-            f"Reason:\n"
-            f"🔴 Weak/red candles rejected\n"
-            f"📏 Weak body rejected\n"
-            f"📉 Negative momentum rejected\n"
-            f"🔊 Weak volume cannot become STRONG\n\n"
+            f"🏆 ATI TOP {TOP_RESULTS} "
+            f"{VERSION}\n\n"
+            f"❌ NO CANDIDATE FOUND\n\n"
+            f"📐 Strategy:\n"
+            f"BOS → BREAKOUT → PULLBACK "
+            f"→ CONTINUATION\n\n"
             f"🔒 REAL BUY: DISABLED\n"
             f"🛑 SCANNER ONLY\n"
             f"🕐 {utc_now()}"
@@ -1305,6 +1635,10 @@ def main():
         f"🕐 {utc_now()}"
     )
 
+
+# ============================================================
+# RUN
+# ============================================================
 
 if __name__ == "__main__":
     main()
