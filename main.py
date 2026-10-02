@@ -1,25 +1,29 @@
 import os
 import time
+import hmac
+import hashlib
 from datetime import datetime, timezone
 
 import requests
 
-from tabdeal.spot import Spot
-from tabdeal.exceptions import ClientException, ServerException
-
 
 # ============================================================
-# ATI CRYPTO BOT V40.2.27
-# TABDEAL OFFICIAL PYTHON SDK AUTH TEST
+# ATI CRYPTO BOT V40.2.28
+# TABDEAL REST API - NO PYTHON SDK
+# DIRECT HMAC-SHA256 AUTH TEST
 # ============================================================
+#
 # IMPORTANT:
+# - NO tabdeal package
+# - NO tabdeal.spot import
+# - NO SDK dependency
 # - REAL ORDERS DISABLED
-# - NO BUY ORDER IS SENT
 # - AUTHENTICATION TEST ONLY
-# - Uses official tabdeal-python Spot.account()
+# - NO BUY ORDER IS SENT
+#
 # ============================================================
 
-VERSION = "V40.2.27"
+VERSION = "V40.2.28"
 
 BASE_URL = "https://api1.tabdeal.org"
 
@@ -127,6 +131,11 @@ def get_server_time():
             timeout=REQUEST_TIMEOUT,
         )
 
+        print(
+            "TIME HTTP:",
+            response.status_code,
+        )
+
         if response.status_code != 200:
             return None
 
@@ -144,7 +153,11 @@ def get_server_time():
                 value = data.get(key)
 
                 if value is not None:
-                    return int(value)
+
+                    try:
+                        return int(value)
+                    except Exception:
+                        pass
 
         if isinstance(data, int):
             return int(data)
@@ -160,7 +173,7 @@ def get_server_time():
 
 
 # ============================================================
-# CREDENTIAL PAIRS
+# CREDENTIALS
 # ============================================================
 
 def get_credentials():
@@ -221,138 +234,184 @@ def get_credentials():
 
 
 # ============================================================
-# OFFICIAL SDK AUTH TEST
+# HMAC SHA256
 # ============================================================
 
-def test_official_sdk(credential):
+def make_signature(
+    api_secret,
+    query_string,
+):
+
+    return hmac.new(
+        api_secret.encode("utf-8"),
+        query_string.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+# ============================================================
+# AUTHENTICATED ACCOUNT REQUEST
+# ============================================================
+
+def test_rest_auth(credential, server_time=None):
 
     name = credential["name"]
     api_key = credential["api_key"]
     api_secret = credential["api_secret"]
 
-    print("=" * 60)
+    print("=" * 70)
     print(
-        "OFFICIAL SDK TEST:",
+        "DIRECT REST AUTH TEST:",
         name,
     )
-    print("=" * 60)
+    print("=" * 70)
+
+    # --------------------------------------------------------
+    # Use server timestamp when available.
+    # Otherwise local UTC milliseconds.
+    # --------------------------------------------------------
+
+    if server_time is not None:
+        timestamp = int(server_time)
+    else:
+        timestamp = int(
+            time.time() * 1000
+        )
+
+    # --------------------------------------------------------
+    # IMPORTANT:
+    # Parameter order:
+    #
+    # timestamp
+    # recvWindow
+    #
+    # --------------------------------------------------------
+
+    query_string = (
+        "timestamp="
+        + str(timestamp)
+        + "&recvWindow="
+        + str(RECV_WINDOW)
+    )
+
+    signature = make_signature(
+        api_secret,
+        query_string,
+    )
+
+    url = (
+        BASE_URL
+        + "/r/api/v1/account?"
+        + query_string
+        + "&signature="
+        + signature
+    )
+
+    headers = {
+        "X-MBX-APIKEY": api_key,
+        "Content-Type": "application/json",
+    }
+
+    print(
+        "TIMESTAMP:",
+        timestamp,
+    )
+
+    print(
+        "RECV WINDOW:",
+        RECV_WINDOW,
+    )
+
+    print(
+        "SIGN METHOD:",
+        "HMAC-SHA256",
+    )
+
+    print(
+        "PARAM ORDER:",
+        "timestamp -> recvWindow",
+    )
+
+    print(
+        "ENDPOINT:",
+        "/r/api/v1/account",
+    )
 
     try:
 
-        # ----------------------------------------------------
-        # IMPORTANT:
-        # This is the official Tabdeal Spot client.
-        # ----------------------------------------------------
-
-        client = Spot(
-            api_key=api_key,
-            api_secret=api_secret,
-            base_url=BASE_URL,
-            version="v1",
+        response = requests.get(
+            url,
+            headers=headers,
             timeout=REQUEST_TIMEOUT,
-            receive_window=RECV_WINDOW,
         )
 
-        # ----------------------------------------------------
-        # IMPORTANT:
-        # account() is the official SDK method.
-        # NO order method is called.
-        # ----------------------------------------------------
-
-        result = client.account()
-
         print(
-            "OFFICIAL SDK ACCOUNT SUCCESS"
+            "HTTP:",
+            response.status_code,
         )
 
         print(
             "RESPONSE:",
-            str(result)[:1000],
+            response.text[:2000],
         )
 
-        return {
-            "success": True,
-            "name": name,
-            "http": 200,
-            "result": result,
-        }
+        # ----------------------------------------------------
+        # SUCCESS
+        # ----------------------------------------------------
 
-    except ClientException as exc:
+        if response.status_code == 200:
 
-        print(
-            "OFFICIAL SDK CLIENT ERROR"
-        )
+            try:
+                data = response.json()
+            except Exception:
+                data = response.text
 
-        print(
-            "STATUS:",
-            getattr(
-                exc,
-                "status",
-                "UNKNOWN",
-            ),
-        )
+            return {
+                "success": True,
+                "name": name,
+                "http": response.status_code,
+                "code": 0,
+                "message": "AUTH SUCCESS",
+                "result": data,
+            }
 
-        print(
-            "CODE:",
-            getattr(
-                exc,
-                "code",
-                "UNKNOWN",
-            ),
-        )
+        # ----------------------------------------------------
+        # ERROR
+        # ----------------------------------------------------
 
-        print(
-            "MESSAGE:",
-            getattr(
-                exc,
-                "message",
-                str(exc),
-            ),
-        )
+        code = "UNKNOWN"
+        message = response.text[:1000]
 
-        return {
-            "success": False,
-            "name": name,
-            "http": getattr(
-                exc,
-                "status",
-                0,
-            ),
-            "code": getattr(
-                exc,
-                "code",
-                "UNKNOWN",
-            ),
-            "message": getattr(
-                exc,
-                "message",
-                str(exc),
-            ),
-        }
+        try:
 
-    except ServerException as exc:
+            data = response.json()
 
-        print(
-            "OFFICIAL SDK SERVER ERROR:",
-            repr(exc),
-        )
+            if isinstance(data, dict):
+
+                if "code" in data:
+                    code = data.get("code")
+
+                if "msg" in data:
+                    message = data.get("msg")
+
+                elif "message" in data:
+                    message = data.get("message")
+
+        except Exception:
+            pass
 
         return {
             "success": False,
             "name": name,
-            "http": getattr(
-                exc,
-                "status",
-                500,
-            ),
-            "code": "SERVER_ERROR",
-            "message": str(exc),
+            "http": response.status_code,
+            "code": code,
+            "message": message,
         }
 
     except Exception as exc:
 
         print(
-            "OFFICIAL SDK UNKNOWN ERROR:",
+            "REST AUTH ERROR:",
             repr(exc),
         )
 
@@ -360,7 +419,7 @@ def test_official_sdk(credential):
             "success": False,
             "name": name,
             "http": 0,
-            "code": "UNKNOWN",
+            "code": "REQUEST_ERROR",
             "message": repr(exc),
         }
 
@@ -380,11 +439,12 @@ def main():
     startup = (
         f"⚡ ATI CRYPTO BOT {VERSION}\n\n"
         f"📡 TABDEAL API: CONNECTING...\n"
-        f"📊 AUTH TEST: OFFICIAL SDK\n\n"
-        f"🔐 TABDEAL PYTHON SDK\n"
-        f"🔐 Spot.account()\n"
-        f"🔧 REAL ORDERS: DISABLED\n"
-        f"🔒 BUY LOCK: ACTIVE\n\n"
+        f"📊 AUTH TEST: DIRECT REST API\n\n"
+        f"🔐 HMAC-SHA256\n"
+        f"🔢 TIMESTAMP + RECVWINDOW\n"
+        f"🔧 PYTHON SDK: DISABLED\n"
+        f"🔒 REAL ORDERS: DISABLED\n"
+        f"🛑 BUY LOCK: ACTIVE\n\n"
         f"🕐 {utc_now()}"
     )
 
@@ -392,9 +452,9 @@ def main():
 
     send_telegram(startup)
 
-    # --------------------------------------------------------
-    # TIME CHECK
-    # --------------------------------------------------------
+    # ========================================================
+    # SERVER TIME
+    # ========================================================
 
     local_time = int(
         time.time() * 1000
@@ -419,12 +479,6 @@ def main():
             f"{clock_diff} ms"
         )
 
-        print(time_message)
-
-        send_telegram(
-            time_message
-        )
-
     else:
 
         clock_diff = None
@@ -435,15 +489,15 @@ def main():
             f"🕐 {utc_now()}"
         )
 
-        print(time_message)
+    print(time_message)
 
-        send_telegram(
-            time_message
-        )
+    send_telegram(
+        time_message
+    )
 
-    # --------------------------------------------------------
+    # ========================================================
     # CREDENTIALS
-    # --------------------------------------------------------
+    # ========================================================
 
     credentials = get_credentials()
 
@@ -452,7 +506,7 @@ def main():
         message = (
             f"🚨 ATI AUTH FAILED {VERSION}\n\n"
             f"❌ NO API CREDENTIALS FOUND\n\n"
-            f"Expected:\n"
+            f"Expected one of:\n"
             f"• TABDEAL_API_KEY\n"
             f"• TABDEAL_API_SECRET\n\n"
             f"or:\n"
@@ -469,9 +523,9 @@ def main():
 
         return
 
-    # --------------------------------------------------------
-    # TEST ALL AVAILABLE PAIRS
-    # --------------------------------------------------------
+    # ========================================================
+    # AUTH TEST
+    # ========================================================
 
     results = []
 
@@ -479,8 +533,9 @@ def main():
 
     for credential in credentials:
 
-        result = test_official_sdk(
-            credential
+        result = test_rest_auth(
+            credential,
+            server_time,
         )
 
         results.append(result)
@@ -491,9 +546,9 @@ def main():
 
             break
 
-    # --------------------------------------------------------
+    # ========================================================
     # SUCCESS
-    # --------------------------------------------------------
+    # ========================================================
 
     if working:
 
@@ -502,9 +557,11 @@ def main():
             f"🟢 WORKING PAIR:\n"
             f"{working['name']}\n\n"
             f"🔐 METHOD:\n"
-            f"OFFICIAL TABDEAL PYTHON SDK\n\n"
-            f"🔐 CALL:\n"
-            f"Spot.account()\n\n"
+            f"DIRECT REST API\n\n"
+            f"🔐 SIGN:\n"
+            f"HMAC-SHA256\n\n"
+            f"🔢 PARAM ORDER:\n"
+            f"timestamp → recvWindow\n\n"
             f"📡 ENDPOINT:\n"
             f"/r/api/v1/account\n\n"
             f"🔒 REAL BUY: DISABLED\n"
@@ -520,14 +577,14 @@ def main():
 
         return
 
-    # --------------------------------------------------------
+    # ========================================================
     # FAILURE
-    # --------------------------------------------------------
+    # ========================================================
 
     lines = [
         f"🚨 ATI API AUTH FAILED {VERSION}",
         "",
-        "❌ OFFICIAL SDK AUTH FAILED",
+        "❌ DIRECT REST AUTH FAILED",
         "",
     ]
 
@@ -564,10 +621,13 @@ def main():
     lines.extend(
         [
             "🔐 AUTH METHOD:",
-            "OFFICIAL TABDEAL PYTHON SDK",
+            "DIRECT REST API",
             "",
-            "🔐 CALL:",
-            "Spot.account()",
+            "🔐 SIGN:",
+            "HMAC-SHA256",
+            "",
+            "🔢 PARAM ORDER:",
+            "timestamp -> recvWindow",
             "",
             "📡 ENDPOINT:",
             "/r/api/v1/account",
@@ -589,13 +649,13 @@ def main():
         failure_message
     )
 
-    # --------------------------------------------------------
+    # ========================================================
     # SAFE STOP
-    # --------------------------------------------------------
+    # ========================================================
 
     safe_stop = (
         f"🛑 ATI SAFE STOP {VERSION}\n\n"
-        f"🚫 OFFICIAL SDK AUTH FAILED\n"
+        f"🚫 API AUTH FAILED\n"
         f"🔒 REAL BUY DISABLED\n"
         f"🛑 NO ORDER WAS SENT\n\n"
         f"🕐 {utc_now()}"
