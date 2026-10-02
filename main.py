@@ -6,45 +6,69 @@ import hashlib
 import math
 from decimal import Decimal, ROUND_DOWN, InvalidOperation
 from datetime import datetime, timezone
+from urllib.parse import urlencode
 
 import requests
 
 
 # ============================================================
-# ATI CRYPTO BOT V40.2.20
+# ATI CRYPTO BOT V40.2.21
 # TABDEAL SPOT
-# OFFICIAL POSTMAN SIGNATURE METHOD
+#
+# AUTHENTICATION FIX:
+# EXACTLY MIRRORS OFFICIAL TABDEAL PYTHON SDK
+#
+# timestamp = time.time() * 1000
+# recvWindow = optional
+# query = urlencode(data)
+# signature = HMAC-SHA256(query, API_SECRET)
+#
+# IMPORTANT:
+# REAL BUY IS LOCKED UNTIL AUTHENTICATION PASSES
 # ============================================================
 
-VERSION = "V40.2.20"
+VERSION = "V40.2.21"
 
 BASE_URL = "https://api1.tabdeal.org"
 
 API_KEY = os.getenv("TABDEAL_API_KEY", "").strip()
 API_SECRET = os.getenv("TABDEAL_API_SECRET", "").strip()
 
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
-
-LIVE_TRADING = os.getenv("LIVE_TRADING", "false").strip().lower() == "true"
-
-# Fixed USDT amount
-ORDER_USDT = Decimal(os.getenv("ORDER_USDT", "2"))
-
-# Backward compatibility with old secret
+# Backward compatibility
 if not API_KEY:
     API_KEY = os.getenv("TABDIL_API_KEY", "").strip()
 
 if not API_SECRET:
     API_SECRET = os.getenv("TABDIL_API_SECRET", "").strip()
 
-RECV_WINDOW = "5000"
+TELEGRAM_BOT_TOKEN = os.getenv(
+    "TELEGRAM_BOT_TOKEN", ""
+).strip()
+
+TELEGRAM_CHAT_ID = os.getenv(
+    "TELEGRAM_CHAT_ID", ""
+).strip()
+
+LIVE_TRADING = (
+    os.getenv("LIVE_TRADING", "false")
+    .strip()
+    .lower()
+    == "true"
+)
+
+ORDER_USDT = Decimal(
+    os.getenv("ORDER_USDT", "2")
+)
+
+RECV_WINDOW = os.getenv(
+    "RECV_WINDOW", ""
+).strip()
 
 TIMEOUT = 20
 
-MAX_MARKETS = 15
+MAX_SCAN_MARKETS = 15
 
-HEARTBEAT_MINUTES = 5
+AUTH_ENDPOINT = "/api/v1/account"
 
 REAL_BUY_LOCKED = True
 
@@ -52,7 +76,10 @@ session = requests.Session()
 
 session.headers.update(
     {
-        "User-Agent": "ATI-Crypto-Bot/" + VERSION,
+        "User-Agent": (
+            "ATI-Crypto-Bot/"
+            + VERSION
+        ),
         "Accept": "application/json",
     }
 )
@@ -63,7 +90,11 @@ session.headers.update(
 # ============================================================
 
 def utc_now():
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    return datetime.now(
+        timezone.utc
+    ).strftime(
+        "%Y-%m-%d %H:%M:%S UTC"
+    )
 
 
 # ============================================================
@@ -71,17 +102,22 @@ def utc_now():
 # ============================================================
 
 def telegram(message):
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+
+    if (
+        not TELEGRAM_BOT_TOKEN
+        or not TELEGRAM_CHAT_ID
+    ):
         return False
 
     try:
+
         url = (
             "https://api.telegram.org/bot"
             + TELEGRAM_BOT_TOKEN
             + "/sendMessage"
         )
 
-        r = requests.post(
+        response = requests.post(
             url,
             data={
                 "chat_id": TELEGRAM_CHAT_ID,
@@ -90,85 +126,115 @@ def telegram(message):
             timeout=15,
         )
 
-        return r.ok
+        return response.ok
 
     except Exception:
+
         return False
 
 
 # ============================================================
-# HTTP
+# PUBLIC GET
 # ============================================================
 
 def public_get(path, params=None):
-    url = BASE_URL + path
 
-    r = session.get(
-        url,
+    response = session.get(
+        BASE_URL + path,
         params=params or {},
         timeout=TIMEOUT,
     )
 
-    r.raise_for_status()
+    response.raise_for_status()
 
-    return r.json()
+    return response.json()
 
 
 # ============================================================
-# OFFICIAL TABDEAL SIGNATURE
+# OFFICIAL TABDEAL AUTHENTICATION
 #
-# IMPORTANT:
-# Postman official:
+# This is intentionally copied in structure from the official
+# Tabdeal Python SDK.
 #
-# paramsObject:
-#     original parameters
-#     timestamp
-#     recvWindow
+# Official SDK:
 #
-# queryString:
-#     key=value&key=value
+# timestamp = time.time() * 1000
+# data.update({"timestamp": timestamp})
+# data_query = urlencode(data)
+# signature = hmac.new(
+#     secret,
+#     data_query,
+#     hashlib.sha256
+# ).hexdigest()
+# data.update({"signature": signature})
 #
-# signature:
-#     HMAC-SHA256(queryString, api_secret)
-#
-# NO urlencode()
-# NO sorting()
-# NO signature inside signed string
 # ============================================================
 
-def build_signed_params(params=None):
-    if not API_KEY or not API_SECRET:
-        raise RuntimeError("API credentials are missing")
+def build_signed_data(params=None):
 
-    params = params.copy() if params else {}
+    if not API_KEY:
+        raise RuntimeError(
+            "TABDEAL API KEY IS MISSING"
+        )
 
-    # Remove anything that must be generated again
-    params.pop("signature", None)
-    params.pop("timestamp", None)
-    params.pop("recvWindow", None)
+    if not API_SECRET:
+        raise RuntimeError(
+            "TABDEAL API SECRET IS MISSING"
+        )
 
-    # Exact order:
-    # existing parameters -> timestamp -> recvWindow
-    timestamp = int(time.time() * 1000)
+    data = {}
 
-    params["timestamp"] = timestamp
-    params["recvWindow"] = RECV_WINDOW
+    if params:
+        data.update(params)
 
-    # EXACT RAW QUERY STRING
-    query_string = "&".join(
-        f"{key}={value}"
-        for key, value in params.items()
+    # Never reuse authentication fields
+    data.pop("signature", None)
+    data.pop("timestamp", None)
+    data.pop("recvWindow", None)
+
+    # IMPORTANT:
+    # Do NOT convert to int.
+    # Official SDK uses time.time() * 1000.
+    timestamp = time.time() * 1000
+
+    data.update(
+        {
+            "timestamp": timestamp
+        }
     )
+
+    if RECV_WINDOW:
+        try:
+            data.update(
+                {
+                    "recvWindow": int(
+                        RECV_WINDOW
+                    )
+                }
+            )
+        except ValueError:
+            data.update(
+                {
+                    "recvWindow": RECV_WINDOW
+                }
+            )
+
+    # EXACT OFFICIAL METHOD
+    data_query = urlencode(data)
 
     signature = hmac.new(
         API_SECRET.encode("utf-8"),
-        query_string.encode("utf-8"),
+        data_query.encode("utf-8"),
         hashlib.sha256,
     ).hexdigest()
 
-    params["signature"] = signature
+    data.update(
+        {
+            "signature": signature
+        }
+    )
 
-    return params, query_string
+    return data, data_query
 
 
 # ============================================================
@@ -176,22 +242,23 @@ def build_signed_params(params=None):
 # ============================================================
 
 def signed_get(path, params=None):
-    signed_params, raw_query = build_signed_params(params)
+
+    data, signed_query = (
+        build_signed_data(params)
+    )
 
     headers = {
-        "X-MBX-APIKEY": API_KEY,
+        "X-MBX-APIKEY": API_KEY
     }
 
-    url = BASE_URL + path
-
-    r = session.get(
-        url,
-        params=signed_params,
+    response = session.get(
+        BASE_URL + path,
+        params=data,
         headers=headers,
         timeout=TIMEOUT,
     )
 
-    return r, raw_query
+    return response, signed_query
 
 
 # ============================================================
@@ -199,103 +266,99 @@ def signed_get(path, params=None):
 # ============================================================
 
 def signed_post(path, params=None):
-    signed_params, raw_query = build_signed_params(params)
+
+    data, signed_query = (
+        build_signed_data(params)
+    )
 
     headers = {
-        "X-MBX-APIKEY": API_KEY,
+        "X-MBX-APIKEY": API_KEY
     }
 
-    url = BASE_URL + path
-
-    # Tabdeal Postman uses form-data for spot order
-    r = session.post(
-        url,
-        data=signed_params,
+    response = session.post(
+        BASE_URL + path,
+        data=data,
         headers=headers,
         timeout=TIMEOUT,
     )
 
-    return r, raw_query
+    return response, signed_query
 
 
 # ============================================================
 # API ERROR
 # ============================================================
 
-def api_error_text(response):
+def get_api_error(response):
+
     try:
+
         data = response.json()
 
         if isinstance(data, dict):
-            code = data.get("code", "")
-            msg = data.get("msg", data.get("message", ""))
 
-            return f"CODE: {code}\nMSG: {msg}"
+            code = data.get(
+                "code",
+                ""
+            )
+
+            message = data.get(
+                "msg",
+                data.get(
+                    "message",
+                    ""
+                ),
+            )
+
+            return (
+                f"CODE: {code}\n"
+                f"MSG: {message}"
+            )
 
         return str(data)
 
     except Exception:
-        return response.text[:500]
+
+        text = (
+            response.text
+            if response.text
+            else ""
+        )
+
+        return text[:1000]
 
 
 # ============================================================
 # AUTHENTICATION TEST
+#
+# Uses the SAME private account endpoint that the official
+# Tabdeal Spot SDK exposes.
 # ============================================================
 
 def authenticate():
+
     telegram(
-        f"🔐 ATI API AUTH TEST {VERSION}\n"
-        f"📡 Tabdeal private endpoint\n"
+        f"🔐 ATI API AUTH TEST {VERSION}\n\n"
+        f"📡 PRIVATE ENDPOINT: account\n"
+        f"🔐 HMAC-SHA256\n"
+        f"🔢 TIMESTAMP: time.time()*1000\n"
+        f"🔐 urlencode(data)\n"
         f"🕐 {utc_now()}"
     )
 
     try:
-        response, raw_query = signed_get(
-            "/r/api/v1/account"
+
+        response, signed_query = signed_get(
+            AUTH_ENDPOINT
         )
 
-    except Exception as e:
-        telegram(
-            f"🚨 ATI API CONNECTION FAILED {VERSION}\n\n"
-            f"❌ {type(e).__name__}\n"
-            f"❌ {e}\n\n"
-            f"🛑 REAL BUY LOCKED\n"
-            f"🕐 {utc_now()}"
-        )
-
-        return False
-
-    if response.status_code == 200:
-
-        try:
-            data = response.json()
-        except Exception:
-            data = {}
+    except Exception as error:
 
         telegram(
-            f"✅ ATI API AUTH OK {VERSION}\n\n"
-            f"🔐 HMAC-SHA256: OK\n"
-            f"🔢 INTEGER TIMESTAMP: OK\n"
-            f"🔐 RAW QUERY: OK\n"
-            f"🔐 timestamp → recvWindow: OK\n"
-            f"📡 PRIVATE ACCOUNT: HTTP 200\n"
-            f"🟢 API AUTHENTICATED\n"
-            f"🕐 {utc_now()}"
-        )
-
-        return True
-
-    error = api_error_text(response)
-
-    if response.status_code == 401 or "1103" in error:
-        telegram(
-            f"🚨 ATI API AUTH FAILED {VERSION}\n\n"
-            f"❌ HTTP {response.status_code}\n"
+            f"🚨 ATI API CONNECTION FAILED "
+            f"{VERSION}\n\n"
+            f"❌ {type(error).__name__}\n"
             f"❌ {error}\n\n"
-            f"🔐 HMAC-SHA256\n"
-            f"🔢 INTEGER TIMESTAMP\n"
-            f"🔐 RAW QUERY\n"
-            f"🔐 timestamp → recvWindow\n"
             f"🛑 REAL BUY LOCKED\n"
             f"🛑 NO ORDER WAS SENT\n"
             f"🕐 {utc_now()}"
@@ -303,11 +366,67 @@ def authenticate():
 
         return False
 
+    # --------------------------------------------------------
+    # SUCCESS
+    # --------------------------------------------------------
+
+    if response.status_code < 400:
+
+        telegram(
+            f"✅ ATI API AUTH OK {VERSION}\n\n"
+            f"🔐 HMAC-SHA256: OK\n"
+            f"🔢 TIMESTAMP: OK\n"
+            f"🔐 URLENCODE: OK\n"
+            f"🔑 API KEY: ACCEPTED\n"
+            f"📡 PRIVATE ACCOUNT: HTTP "
+            f"{response.status_code}\n"
+            f"🟢 AUTHENTICATED\n\n"
+            f"🛑 REAL BUY STILL LOCKED\n"
+            f"🕐 {utc_now()}"
+        )
+
+        return True
+
+    # --------------------------------------------------------
+    # 401 / 1103
+    # --------------------------------------------------------
+
+    error = get_api_error(
+        response
+    )
+
+    if (
+        response.status_code == 401
+        or "1103" in error
+    ):
+
+        telegram(
+            f"🚨 ATI API AUTH FAILED "
+            f"{VERSION}\n\n"
+            f"❌ HTTP {response.status_code}\n"
+            f"❌ {error}\n\n"
+            f"🔐 METHOD: HMAC-SHA256\n"
+            f"🔢 TIMESTAMP: time.time()*1000\n"
+            f"🔐 QUERY: urlencode(data)\n"
+            f"🔑 HEADER: X-MBX-APIKEY\n\n"
+            f"🛑 REAL BUY LOCKED\n"
+            f"🛑 NO ORDER WAS SENT\n"
+            f"🕐 {utc_now()}"
+        )
+
+        return False
+
+    # --------------------------------------------------------
+    # OTHER PRIVATE API ERROR
+    # --------------------------------------------------------
+
     telegram(
-        f"🚨 ATI PRIVATE API ERROR {VERSION}\n\n"
+        f"🚨 ATI PRIVATE API ERROR "
+        f"{VERSION}\n\n"
         f"❌ HTTP {response.status_code}\n"
         f"❌ {error}\n\n"
         f"🛑 REAL BUY LOCKED\n"
+        f"🛑 NO ORDER WAS SENT\n"
         f"🕐 {utc_now()}"
     )
 
@@ -318,98 +437,185 @@ def authenticate():
 # EXCHANGE INFO
 # ============================================================
 
-def exchange_info():
-    return public_get("/r/api/v1/exchangeInfo")
+def get_exchange_info():
+
+    return public_get(
+        "/r/api/v1/exchangeInfo"
+    )
 
 
 # ============================================================
-# USDT MARKETS
+# MARKET LIST
 # ============================================================
 
 def get_usdt_markets():
-    data = exchange_info()
 
-    symbols = data.get("symbols", [])
+    data = get_exchange_info()
 
-    result = []
+    if not isinstance(
+        data,
+        dict
+    ):
+        return []
+
+    symbols = data.get(
+        "symbols",
+        []
+    )
+
+    if not isinstance(
+        symbols,
+        list
+    ):
+        return []
+
+    markets = []
 
     for item in symbols:
 
-        if not isinstance(item, dict):
+        if not isinstance(
+            item,
+            dict
+        ):
             continue
 
         symbol = str(
-            item.get("symbol")
-            or item.get("tabdealSymbol")
-            or ""
+            item.get(
+                "symbol",
+                ""
+            )
         ).upper()
+
+        if not symbol:
+            continue
+
+        if not symbol.endswith(
+            "USDT"
+        ):
+            continue
 
         status = str(
-            item.get("status", "TRADING")
+            item.get(
+                "status",
+                "TRADING"
+            )
         ).upper()
 
-        if not symbol.endswith("USDT"):
+        if status not in (
+            "TRADING",
+            "ACTIVE",
+            "1",
+        ):
             continue
 
-        if status not in ("TRADING", "1", "ACTIVE"):
-            continue
+        markets.append(item)
 
-        result.append(item)
-
-    return result
+    return markets
 
 
 # ============================================================
-# SYMBOL HELPERS
+# SYMBOL
 # ============================================================
 
-def symbol_name(item):
+def get_symbol(item):
+
     return str(
-        item.get("symbol")
-        or item.get("tabdealSymbol")
-        or ""
+        item.get(
+            "symbol",
+            ""
+        )
     ).upper()
 
 
-def get_filter(item, names):
-    filters = item.get("filters", [])
+# ============================================================
+# FILTER
+# ============================================================
 
-    for f in filters:
+def find_filter(
+    item,
+    filter_names
+):
 
-        if not isinstance(f, dict):
+    filters = item.get(
+        "filters",
+        []
+    )
+
+    if not isinstance(
+        filters,
+        list
+    ):
+        return {}
+
+    for item_filter in filters:
+
+        if not isinstance(
+            item_filter,
+            dict
+        ):
             continue
 
-        ftype = str(f.get("filterType", "")).upper()
+        filter_type = str(
+            item_filter.get(
+                "filterType",
+                ""
+            )
+        ).upper()
 
-        if ftype in names:
-            return f
+        if (
+            filter_type
+            in filter_names
+        ):
+            return item_filter
 
     return {}
 
 
+# ============================================================
+# STEP SIZE
+# ============================================================
+
 def get_step_size(item):
-    f = get_filter(
+
+    f = find_filter(
         item,
-        {"LOT_SIZE", "MARKET_LOT_SIZE"},
+        {
+            "LOT_SIZE",
+            "MARKET_LOT_SIZE",
+        },
     )
 
     value = (
         f.get("stepSize")
-        or f.get("step")
         or item.get("stepSize")
         or "0.00000001"
     )
 
     try:
-        return Decimal(str(value))
-    except Exception:
-        return Decimal("0.00000001")
 
+        return Decimal(
+            str(value)
+        )
+
+    except Exception:
+
+        return Decimal(
+            "0.00000001"
+        )
+
+
+# ============================================================
+# MIN QTY
+# ============================================================
 
 def get_min_qty(item):
-    f = get_filter(
+
+    f = find_filter(
         item,
-        {"LOT_SIZE", "MARKET_LOT_SIZE"},
+        {
+            "LOT_SIZE",
+            "MARKET_LOT_SIZE",
+        },
     )
 
     value = (
@@ -419,15 +625,28 @@ def get_min_qty(item):
     )
 
     try:
-        return Decimal(str(value))
+
+        return Decimal(
+            str(value)
+        )
+
     except Exception:
+
         return Decimal("0")
 
 
+# ============================================================
+# MIN NOTIONAL
+# ============================================================
+
 def get_min_notional(item):
-    f = get_filter(
+
+    f = find_filter(
         item,
-        {"MIN_NOTIONAL", "NOTIONAL"},
+        {
+            "MIN_NOTIONAL",
+            "NOTIONAL",
+        },
     )
 
     value = (
@@ -438,51 +657,75 @@ def get_min_notional(item):
     )
 
     try:
-        return Decimal(str(value))
+
+        return Decimal(
+            str(value)
+        )
+
     except Exception:
+
         return Decimal("0")
 
 
 # ============================================================
-# DECIMAL ROUNDING
+# DECIMAL FLOOR
 # ============================================================
 
-def floor_step(value, step):
+def floor_to_step(
+    value,
+    step
+):
 
     if step <= 0:
         return value
 
     try:
-        units = (value / step).to_integral_value(
+
+        units = (
+            value / step
+        ).to_integral_value(
             rounding=ROUND_DOWN
         )
 
         return units * step
 
     except Exception:
+
         return value
 
 
+# ============================================================
+# DECIMAL FORMAT
+# ============================================================
+
 def decimal_string(value):
 
-    s = format(
+    result = format(
         value,
         "f"
     )
 
-    if "." in s:
-        s = s.rstrip("0").rstrip(".")
+    if "." in result:
 
-    return s or "0"
+        result = (
+            result
+            .rstrip("0")
+            .rstrip(".")
+        )
+
+    return result or "0"
 
 
 # ============================================================
-# TRADES
+# RECENT TRADES
 # ============================================================
 
-def get_recent_trades(symbol):
+def get_recent_trades(
+    symbol
+):
 
     try:
+
         data = public_get(
             "/r/api/v1/trades",
             {
@@ -491,10 +734,16 @@ def get_recent_trades(symbol):
             },
         )
 
-        if isinstance(data, list):
+        if isinstance(
+            data,
+            list
+        ):
             return data
 
-        if isinstance(data, dict):
+        if isinstance(
+            data,
+            dict
+        ):
 
             for key in (
                 "data",
@@ -502,22 +751,33 @@ def get_recent_trades(symbol):
                 "result",
             ):
 
-                if isinstance(data.get(key), list):
-                    return data[key]
+                value = data.get(
+                    key
+                )
+
+                if isinstance(
+                    value,
+                    list
+                ):
+                    return value
 
     except Exception:
-        pass
+
+        return []
 
     return []
 
 
 # ============================================================
-# PRICE FROM TRADES
+# TRADE PRICE
 # ============================================================
 
-def trade_price(t):
+def extract_price(trade):
 
-    if not isinstance(t, dict):
+    if not isinstance(
+        trade,
+        dict
+    ):
         return None
 
     for key in (
@@ -525,91 +785,140 @@ def trade_price(t):
         "p",
     ):
 
-        if key in t:
+        if key in trade:
 
             try:
-                return float(t[key])
+
+                value = float(
+                    trade[key]
+                )
+
+                if value > 0:
+                    return value
+
             except Exception:
-                return None
+                pass
 
     return None
 
 
 # ============================================================
-# BASIC 5M MOMENTUM
+# SIMPLE MOMENTUM ANALYSIS
 # ============================================================
 
-def analyze_symbol(item):
+def analyze_market(
+    item
+):
 
-    symbol = symbol_name(item)
+    symbol = get_symbol(
+        item
+    )
 
     if not symbol:
         return None
 
-    trades = get_recent_trades(symbol)
+    trades = get_recent_trades(
+        symbol
+    )
 
     prices = []
 
-    for t in trades:
+    for trade in trades:
 
-        p = trade_price(t)
+        price = extract_price(
+            trade
+        )
 
-        if p is not None and p > 0:
-            prices.append(p)
+        if (
+            price is not None
+            and price > 0
+        ):
+            prices.append(
+                price
+            )
 
     if len(prices) < 20:
         return None
 
-    # Keep chronological-ish order from API response.
-    # If API returns newest first, reverse it.
+    # API can return newest -> oldest
     if prices[0] > prices[-1]:
+
         prices.reverse()
 
-    last = prices[-1]
+    current = prices[-1]
 
-    lookback = min(60, len(prices))
+    lookback = min(
+        60,
+        len(prices)
+    )
 
-    old = prices[-lookback]
+    old_price = prices[
+        -lookback
+    ]
 
-    if old <= 0:
+    if old_price <= 0:
         return None
 
-    move = ((last - old) / old) * 100.0
+    move = (
+        (
+            current
+            - old_price
+        )
+        / old_price
+        * 100
+    )
 
-    # Recent momentum
-    short_n = min(20, len(prices))
+    short_n = min(
+        20,
+        len(prices)
+    )
 
-    short_old = prices[-short_n]
+    short_old = prices[
+        -short_n
+    ]
 
     if short_old <= 0:
         return None
 
     short_move = (
-        (last - short_old)
+        (
+            current
+            - short_old
+        )
         / short_old
-        * 100.0
+        * 100
     )
 
-    # Simple pressure proxy
     up = 0
     down = 0
 
+    start = max(
+        1,
+        len(prices) - 30
+    )
+
     for i in range(
-        max(1, len(prices) - 30),
+        start,
         len(prices)
     ):
 
-        if prices[i] > prices[i - 1]:
+        if (
+            prices[i]
+            > prices[i - 1]
+        ):
             up += 1
 
-        elif prices[i] < prices[i - 1]:
+        elif (
+            prices[i]
+            < prices[i - 1]
+        ):
             down += 1
 
     total = up + down
 
     pressure = (
-        (up / total) * 100
-        if total
+        up / total * 100
+        if total > 0
         else 50
     )
 
@@ -645,7 +954,7 @@ def analyze_symbol(item):
 
     return {
         "symbol": symbol,
-        "price": last,
+        "price": current,
         "move": move,
         "short_move": short_move,
         "pressure": pressure,
@@ -657,57 +966,68 @@ def analyze_symbol(item):
 # SCAN
 # ============================================================
 
-def scan():
+def scan_markets():
 
     telegram(
         f"⚡ ATI CRYPTO BOT {VERSION}\n\n"
-        f"📡 TABDEAL API: CONNECTING...\n"
+        f"📡 TABDEAL API: OK\n"
+        f"🔐 PRIVATE AUTH: PASSED\n"
         f"📊 SCAN: STARTING\n"
         f"⏱ TIMEFRAME: 5m\n"
         f"🕯 CLOSED CANDLE: YES\n"
-        f"💵 ORDER MODE: FIXED USDT AMOUNT\n"
-        f"💰 ORDER AMOUNT: {ORDER_USDT} USDT\n"
-        f"🔧 REAL ORDERS: "
-        f"{'ENABLED' if LIVE_TRADING else 'DISABLED'}\n"
+        f"💵 ORDER: {ORDER_USDT} USDT\n"
+        f"🛡 REAL BUY: LOCKED\n"
         f"🕐 {utc_now()}"
     )
 
     try:
+
         markets = get_usdt_markets()
 
-    except Exception as e:
+    except Exception as error:
 
         telegram(
-            f"🚨 EXCHANGE INFO ERROR {VERSION}\n\n"
-            f"❌ {type(e).__name__}: {e}\n"
+            f"🚨 EXCHANGE INFO ERROR "
+            f"{VERSION}\n\n"
+            f"❌ {type(error).__name__}\n"
+            f"❌ {error}\n"
             f"🕐 {utc_now()}"
         )
 
         return []
 
     telegram(
-        f"📊 ATI MARKET SCAN {VERSION}\n\n"
-        f"🟢 USDT MARKETS: {len(markets)}\n"
-        f"🔎 REQUESTED: {MAX_MARKETS}\n"
+        f"📊 ATI MARKET SCAN "
+        f"{VERSION}\n\n"
+        f"🟢 USDT MARKETS: "
+        f"{len(markets)}\n"
+        f"🔎 DEEP SCAN: "
+        f"{MAX_SCAN_MARKETS}\n"
         f"🕐 {utc_now()}"
     )
 
     results = []
 
-    # Prioritize a limited number to keep GitHub Actions
-    # runtime reasonable.
-    markets = markets[:MAX_MARKETS]
+    # Keep GitHub Actions runtime controlled.
+    selected = markets[
+        :MAX_SCAN_MARKETS
+    ]
 
-    for item in markets:
+    for item in selected:
 
         try:
 
-            result = analyze_symbol(item)
+            result = analyze_market(
+                item
+            )
 
             if result:
-                results.append(result)
+                results.append(
+                    result
+                )
 
         except Exception:
+
             continue
 
     results.sort(
@@ -719,83 +1039,142 @@ def scan():
 
 
 # ============================================================
-# ORDER PREPARATION
+# ORDER QUANTITY
 # ============================================================
 
-def prepare_quantity(item, price):
-
-    if price <= 0:
-        return None, "INVALID PRICE"
+def prepare_quantity(
+    item,
+    price
+):
 
     try:
 
-        price_d = Decimal(str(price))
+        price_decimal = Decimal(
+            str(price)
+        )
+
+        if price_decimal <= 0:
+
+            return (
+                None,
+                "INVALID PRICE"
+            )
 
         quantity = (
             ORDER_USDT
-            / price_d
+            / price_decimal
         )
 
-        step = get_step_size(item)
+        step = get_step_size(
+            item
+        )
 
-        min_qty = get_min_qty(item)
+        min_qty = get_min_qty(
+            item
+        )
 
-        min_notional = get_min_notional(item)
+        min_notional = (
+            get_min_notional(
+                item
+            )
+        )
 
-        quantity = floor_step(
+        quantity = floor_to_step(
             quantity,
-            step,
+            step
         )
-
-        if quantity < min_qty:
-            return (
-                None,
-                f"quantity {quantity} < minQty {min_qty}"
-            )
-
-        notional = quantity * price_d
-
-        if min_notional > 0 and notional < min_notional:
-
-            return (
-                None,
-                f"order value {notional} < "
-                f"MIN_NOTIONAL {min_notional}"
-            )
 
         if quantity <= 0:
-            return None, "QUANTITY ZERO"
 
-        return quantity, None
+            return (
+                None,
+                "QUANTITY ZERO"
+            )
 
-    except (InvalidOperation, ValueError, TypeError) as e:
+        if (
+            min_qty > 0
+            and quantity < min_qty
+        ):
 
-        return None, str(e)
+            return (
+                None,
+                (
+                    f"quantity "
+                    f"{quantity} < "
+                    f"minQty "
+                    f"{min_qty}"
+                ),
+            )
+
+        notional = (
+            quantity
+            * price_decimal
+        )
+
+        if (
+            min_notional > 0
+            and notional < min_notional
+        ):
+
+            return (
+                None,
+                (
+                    f"order value "
+                    f"{notional} < "
+                    f"MIN_NOTIONAL "
+                    f"{min_notional}"
+                ),
+            )
+
+        return (
+            quantity,
+            None
+        )
+
+    except (
+        InvalidOperation,
+        ValueError,
+        TypeError,
+    ) as error:
+
+        return (
+            None,
+            str(error)
+        )
 
 
 # ============================================================
 # REAL BUY
+#
+# STILL LOCKED IN THIS VERSION.
+# Authentication must first be confirmed.
 # ============================================================
 
-def real_buy(item, signal):
+def real_buy(
+    item,
+    signal
+):
 
-    global REAL_BUY_LOCKED
-
-    symbol = symbol_name(item)
+    symbol = get_symbol(
+        item
+    )
 
     price = Decimal(
         str(signal["price"])
     )
 
-    quantity, error = prepare_quantity(
-        item,
-        price,
+    quantity, error = (
+        prepare_quantity(
+            item,
+            price
+        )
     )
 
     if error:
 
         telegram(
-            f"⚠️ BUY SKIPPED\n\n"
+            f"⚠️ BUY SKIPPED "
+            f"{VERSION}\n\n"
             f"🪙 {symbol}\n"
             f"❌ {error}\n"
             f"🛑 NO ORDER SENT\n"
@@ -804,13 +1183,20 @@ def real_buy(item, signal):
 
         return False
 
+    # --------------------------------------------------------
+    # SAFETY LOCK
+    # --------------------------------------------------------
+
     if REAL_BUY_LOCKED:
 
         telegram(
-            f"🛑 REAL BUY LOCKED\n\n"
+            f"🛑 REAL BUY LOCKED "
+            f"{VERSION}\n\n"
             f"🪙 {symbol}\n"
-            f"💰 VALUE: {ORDER_USDT} USDT\n"
-            f"🔢 QTY: {decimal_string(quantity)}\n"
+            f"💰 VALUE: "
+            f"{ORDER_USDT} USDT\n"
+            f"🔢 QTY: "
+            f"{decimal_string(quantity)}\n"
             f"🛑 NO ORDER SENT\n"
             f"🕐 {utc_now()}"
         )
@@ -820,67 +1206,103 @@ def real_buy(item, signal):
     if not LIVE_TRADING:
 
         telegram(
-            f"🟡 PAPER BUY\n\n"
+            f"🟡 PAPER BUY "
+            f"{VERSION}\n\n"
             f"🪙 {symbol}\n"
-            f"💰 VALUE: {ORDER_USDT} USDT\n"
-            f"🔢 QTY: {decimal_string(quantity)}\n"
-            f"💵 PRICE: {price}\n"
+            f"💰 VALUE: "
+            f"{ORDER_USDT} USDT\n"
+            f"🔢 QTY: "
+            f"{decimal_string(quantity)}\n"
+            f"💵 PRICE: "
+            f"{price}\n"
             f"🕐 {utc_now()}"
         )
 
         return False
 
-    params = {
-        "tabdealSymbol": symbol,
+    # --------------------------------------------------------
+    # OFFICIAL SDK ORDER DATA STRUCTURE
+    #
+    # side
+    # type
+    # quantity
+    # price
+    # stopPrice
+    # symbol
+    #
+    # --------------------------------------------------------
+
+    order_data = {
         "side": "BUY",
         "type": "MARKET",
-        "quantity": decimal_string(quantity),
+        "quantity": decimal_string(
+            quantity
+        ),
+        "price": "0",
+        "stopPrice": "0",
+        "symbol": symbol,
     }
 
     try:
 
-        response, raw_query = signed_post(
-            "/api/v1/order",
-            params,
+        response, signed_query = (
+            signed_post(
+                "/api/v1/order",
+                order_data
+            )
         )
 
-    except Exception as e:
+    except Exception as error:
 
         telegram(
-            f"🚨 REAL BUY CONNECTION ERROR\n\n"
+            f"🚨 REAL BUY CONNECTION ERROR "
+            f"{VERSION}\n\n"
             f"🪙 {symbol}\n"
-            f"❌ {e}\n"
-            f"🛑 ORDER STATUS UNKNOWN\n"
+            f"❌ {type(error).__name__}\n"
+            f"❌ {error}\n"
+            f"🛑 ORDER NOT CONFIRMED\n"
             f"🕐 {utc_now()}"
         )
 
         return False
 
-    if response.status_code in (200, 201):
+    if response.status_code < 400:
 
         try:
-            data = response.json()
+
+            result = response.json()
+
         except Exception:
-            data = {}
+
+            result = {}
 
         telegram(
-            f"🚨 REAL BUY SENT\n\n"
+            f"🚨 REAL BUY RESPONSE "
+            f"{VERSION}\n\n"
             f"🪙 {symbol}\n"
-            f"💰 VALUE: {ORDER_USDT} USDT\n"
-            f"🔢 QTY: {decimal_string(quantity)}\n"
-            f"📡 HTTP: {response.status_code}\n"
-            f"📋 ORDER ID: {data.get('orderId', 'N/A')}\n"
+            f"💰 VALUE: "
+            f"{ORDER_USDT} USDT\n"
+            f"🔢 QTY: "
+            f"{decimal_string(quantity)}\n"
+            f"📡 HTTP: "
+            f"{response.status_code}\n"
+            f"📋 RESPONSE:\n"
+            f"{json.dumps(result, ensure_ascii=False)[:1200]}\n"
             f"🕐 {utc_now()}"
         )
 
         return True
 
-    error = api_error_text(response)
+    error = get_api_error(
+        response
+    )
 
     telegram(
-        f"🚨 REAL BUY ERROR\n\n"
+        f"🚨 REAL BUY ERROR "
+        f"{VERSION}\n\n"
         f"🪙 {symbol}\n"
-        f"❌ HTTP {response.status_code}\n"
+        f"❌ HTTP "
+        f"{response.status_code}\n"
         f"❌ {error}\n"
         f"🛑 ORDER NOT CONFIRMED\n"
         f"🕐 {utc_now()}"
@@ -895,27 +1317,52 @@ def real_buy(item, signal):
 
 def main():
 
+    # --------------------------------------------------------
+    # STARTUP
+    # --------------------------------------------------------
+
     telegram(
         f"🚀 ATI CRYPTO BOT {VERSION}\n\n"
         f"📡 TABDEAL API: CONNECTING...\n"
-        f"🔐 AUTH TEST: STARTING\n"
+        f"🔐 AUTHENTICATION: STARTING\n"
         f"🛡 REAL BUY LOCK: ON\n"
+        f"💰 ORDER AMOUNT: "
+        f"{ORDER_USDT} USDT\n"
         f"🕐 {utc_now()}"
     )
 
-    if not API_KEY or not API_SECRET:
+    # --------------------------------------------------------
+    # CREDENTIAL CHECK
+    # --------------------------------------------------------
+
+    if not API_KEY:
 
         telegram(
-            f"🚨 ATI CONFIG ERROR {VERSION}\n\n"
-            f"❌ API KEY OR API SECRET MISSING\n"
+            f"🚨 ATI CONFIG ERROR "
+            f"{VERSION}\n\n"
+            f"❌ TABDEAL API KEY MISSING\n"
             f"🛑 REAL BUY LOCKED\n"
+            f"🛑 NO ORDER WAS SENT\n"
+            f"🕐 {utc_now()}"
+        )
+
+        return
+
+    if not API_SECRET:
+
+        telegram(
+            f"🚨 ATI CONFIG ERROR "
+            f"{VERSION}\n\n"
+            f"❌ TABDEAL API SECRET MISSING\n"
+            f"🛑 REAL BUY LOCKED\n"
+            f"🛑 NO ORDER WAS SENT\n"
             f"🕐 {utc_now()}"
         )
 
         return
 
     # --------------------------------------------------------
-    # AUTHENTICATION MUST PASS FIRST
+    # AUTHENTICATION FIRST
     # --------------------------------------------------------
 
     authenticated = authenticate()
@@ -932,25 +1379,45 @@ def main():
 
         return
 
-    # Auth succeeded
-    REAL_BUY_LOCKED = False
+    # --------------------------------------------------------
+    # IMPORTANT:
+    # Keep real BUY locked even after auth.
+    # This version is for authentication verification.
+    # --------------------------------------------------------
+
+    REAL_BUY_LOCKED = True
+
+    telegram(
+        f"🟢 ATI AUTHENTICATION PASSED "
+        f"{VERSION}\n\n"
+        f"🔐 PRIVATE API: OK\n"
+        f"📊 SCAN CAN START\n"
+        f"🛑 REAL BUY: LOCKED\n"
+        f"🛑 NO REAL ORDER WILL BE SENT\n"
+        f"🕐 {utc_now()}"
+    )
 
     # --------------------------------------------------------
-    # PUBLIC SCAN
+    # SCAN
     # --------------------------------------------------------
 
-    results = scan()
+    results = scan_markets()
 
     if not results:
 
         telegram(
-            f"📭 ATI NO SIGNALS {VERSION}\n\n"
-            f"❌ No valid candidates\n"
+            f"📭 ATI NO VALID CANDIDATES "
+            f"{VERSION}\n\n"
             f"📊 SCAN COMPLETE\n"
+            f"🛑 REAL BUY LOCKED\n"
             f"🕐 {utc_now()}"
         )
 
         return
+
+    # --------------------------------------------------------
+    # TOP 10
+    # --------------------------------------------------------
 
     top = results[:10]
 
@@ -959,25 +1426,40 @@ def main():
         "",
     ]
 
-    for i, r in enumerate(top, 1):
+    for index, result in enumerate(
+        top,
+        1
+    ):
 
         lines.append(
-            f"{i}. {r['symbol']} "
-            f"| SCORE {r['score']} "
-            f"| MOVE {r['move']:.2f}% "
-            f"| PRESSURE {r['pressure']:.1f}%"
+            f"{index}. "
+            f"{result['symbol']} "
+            f"| SCORE "
+            f"{result['score']} "
+            f"| MOVE "
+            f"{result['move']:.2f}% "
+            f"| PRESSURE "
+            f"{result['pressure']:.1f}%"
         )
 
     lines.append("")
-    lines.append(f"📊 CANDIDATES: {len(results)}")
-    lines.append(f"🕐 {utc_now()}")
+    lines.append(
+        f"📊 CANDIDATES: "
+        f"{len(results)}"
+    )
+    lines.append(
+        "🛑 REAL BUY: LOCKED"
+    )
+    lines.append(
+        f"🕐 {utc_now()}"
+    )
 
     telegram(
         "\n".join(lines)
     )
 
     # --------------------------------------------------------
-    # BUY ONLY TOP SIGNAL
+    # BEST SIGNAL INFORMATION
     # --------------------------------------------------------
 
     best = results[0]
@@ -985,51 +1467,42 @@ def main():
     if best["score"] < 10:
 
         telegram(
-            f"👀 ATI WATCH ONLY {VERSION}\n\n"
+            f"👀 ATI WATCH ONLY "
+            f"{VERSION}\n\n"
             f"🪙 {best['symbol']}\n"
-            f"📊 SCORE: {best['score']}\n"
-            f"📈 MOVE: {best['move']:.2f}%\n"
-            f"💪 PRESSURE: {best['pressure']:.1f}%\n"
-            f"🛑 BUY NOT CONFIRMED\n"
+            f"📊 SCORE: "
+            f"{best['score']}\n"
+            f"📈 MOVE: "
+            f"{best['move']:.2f}%\n"
+            f"💪 PRESSURE: "
+            f"{best['pressure']:.1f}%\n"
+            f"🛑 REAL BUY LOCKED\n"
             f"🕐 {utc_now()}"
         )
 
         return
 
-    # Find original exchange info
-    selected_item = None
-
-    try:
-
-        markets = get_usdt_markets()
-
-        for item in markets:
-
-            if symbol_name(item) == best["symbol"]:
-
-                selected_item = item
-                break
-
-    except Exception:
-        selected_item = None
-
-    if selected_item is None:
-
-        telegram(
-            f"⚠️ ATI ORDER SKIPPED {VERSION}\n\n"
-            f"🪙 {best['symbol']}\n"
-            f"❌ MARKET INFO NOT FOUND\n"
-            f"🛑 NO ORDER SENT\n"
-            f"🕐 {utc_now()}"
-        )
-
-        return
-
-    real_buy(
-        selected_item,
-        best,
+    telegram(
+        f"🟢 ATI SIGNAL DETECTED "
+        f"{VERSION}\n\n"
+        f"🪙 {best['symbol']}\n"
+        f"📊 SCORE: "
+        f"{best['score']}\n"
+        f"📈 MOVE: "
+        f"{best['move']:.2f}%\n"
+        f"💪 PRESSURE: "
+        f"{best['pressure']:.1f}%\n"
+        f"💵 PRICE: "
+        f"{best['price']}\n\n"
+        f"🛑 REAL BUY LOCKED\n"
+        f"❌ NO ORDER SENT\n"
+        f"🕐 {utc_now()}"
     )
 
+
+# ============================================================
+# ENTRY
+# ============================================================
 
 if __name__ == "__main__":
     main()
