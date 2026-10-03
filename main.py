@@ -12,7 +12,7 @@ import requests
 # ============================================================
 # ATI CRYPTO BOT V40.2.43
 # TABDEAL SPOT
-# OFFICIAL-STYLE HMAC SIGNING
+# REAL TRADING
 # ============================================================
 
 VERSION = "V40.2.43"
@@ -26,44 +26,79 @@ ORDER_ROOT = f"{BASE}/api/v1"
 TIMEOUT = 20
 RECV_WINDOW = 10000
 
-API_KEY = os.getenv("TABDEAL_API_KEY", "").strip()
-API_SECRET = os.getenv("TABDEAL_API_SECRET", "").strip()
+API_KEY = os.getenv(
+    "TABDEAL_API_KEY",
+    ""
+).strip()
+
+API_SECRET = os.getenv(
+    "TABDEAL_API_SECRET",
+    ""
+).strip()
 
 TELEGRAM_TOKEN = os.getenv(
-    "TELEGRAM_BOT_TOKEN", ""
+    "TELEGRAM_BOT_TOKEN",
+    ""
 ).strip()
 
 TELEGRAM_CHAT_ID = os.getenv(
-    "TELEGRAM_CHAT_ID", ""
+    "TELEGRAM_CHAT_ID",
+    ""
 ).strip()
+
+
+# ============================================================
+# REAL TRADING SWITCH
+# LIVE_TRADING HAS PRIORITY
+# REAL_TRADING KEPT FOR COMPATIBILITY
+# ============================================================
 
 REAL_TRADING = (
     os.getenv(
-        "REAL_TRADING",
-        "false"
+        "LIVE_TRADING",
+        os.getenv(
+            "REAL_TRADING",
+            "false"
+        )
     ).strip().lower()
-    in ("1", "true", "yes", "on")
+    in (
+        "1",
+        "true",
+        "yes",
+        "on"
+    )
 )
 
+
+# ============================================================
+# ORDER QTY
+# ============================================================
+
 try:
+
     ORDER_QTY = Decimal(
         os.getenv(
             "ORDER_QTY",
             "0.001"
         ).strip()
     )
+
 except Exception:
-    ORDER_QTY = Decimal("0.001")
+
+    ORDER_QTY = Decimal(
+        "0.001"
+    )
 
 
 SESSION = requests.Session()
 
 SESSION.headers.update({
-    "User-Agent": (
+    "User-Agent":
         "ATI-Crypto-Bot/"
-        + VERSION
-    ),
-    "Accept": "application/json",
+        + VERSION,
+
+    "Accept":
+        "application/json",
 })
 
 
@@ -72,6 +107,7 @@ SESSION.headers.update({
 # ============================================================
 
 def log(message):
+
     print(
         str(message),
         flush=True
@@ -79,6 +115,7 @@ def log(message):
 
 
 def utc_now():
+
     return datetime.now(
         timezone.utc
     ).strftime(
@@ -90,14 +127,26 @@ def utc_now():
 # DECIMAL
 # ============================================================
 
-def dec(value, default="0"):
+def dec(
+    value,
+    default="0"
+):
+
     try:
-        return Decimal(str(value))
+
+        return Decimal(
+            str(value)
+        )
+
     except Exception:
-        return Decimal(default)
+
+        return Decimal(
+            default
+        )
 
 
 def decimal_text(value):
+
     value = dec(value)
 
     text = format(
@@ -106,7 +155,12 @@ def decimal_text(value):
     )
 
     if "." in text:
-        text = text.rstrip("0").rstrip(".")
+
+        text = (
+            text
+            .rstrip("0")
+            .rstrip(".")
+        )
 
     return text or "0"
 
@@ -115,10 +169,12 @@ def floor_step(
     value,
     step
 ):
+
     value = dec(value)
     step = dec(step)
 
     if step <= 0:
+
         return value
 
     units = (
@@ -140,6 +196,7 @@ def telegram(message):
         not TELEGRAM_TOKEN
         or not TELEGRAM_CHAT_ID
     ):
+
         return False
 
     url = (
@@ -148,8 +205,11 @@ def telegram(message):
     )
 
     payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": str(message),
+        "chat_id":
+            TELEGRAM_CHAT_ID,
+
+        "text":
+            str(message),
     }
 
     try:
@@ -188,43 +248,24 @@ def telegram(message):
 def response_json(response):
 
     try:
+
         return response.json()
+
     except Exception:
+
         return {
-            "raw": response.text
+            "raw":
+                response.text
         }
 
 
 # ============================================================
-# OFFICIAL-STYLE TABDEAL SIGNING
+# TABDEAL HMAC
 # ============================================================
 
 def create_signed_parameters(
     parameters=None
 ):
-    """
-    This intentionally follows the structure of the
-    official Tabdeal Postman pre-request script.
-
-    Postman logic:
-
-        paramsObject = {}
-        existing request parameters are copied
-        timestamp is added
-        recvWindow is added
-
-        queryString =
-            key=value&key=value
-
-        HMAC-SHA256(
-            queryString,
-            api_secret
-        )
-
-    IMPORTANT:
-    We DO NOT URL encode values before HMAC because the
-    official Postman script shown by Tabdeal does not do so.
-    """
 
     params_object = {}
 
@@ -237,27 +278,34 @@ def create_signed_parameters(
                 "timestamp",
                 "recvWindow"
             ):
+
                 continue
 
             if value is None:
+
                 continue
 
             value = str(value)
 
             if not value.strip():
+
                 continue
 
-            params_object[key] = value
+            params_object[
+                key
+            ] = value
 
     timestamp = int(
         time.time() * 1000
     )
 
-    params_object["timestamp"] = timestamp
+    params_object[
+        "timestamp"
+    ] = timestamp
 
-    params_object["recvWindow"] = (
-        RECV_WINDOW
-    )
+    params_object[
+        "recvWindow"
+    ] = RECV_WINDOW
 
     query_string = "&".join(
         f"{key}={value}"
@@ -266,8 +314,14 @@ def create_signed_parameters(
     )
 
     signature = hmac.new(
-        API_SECRET.encode("utf-8"),
-        query_string.encode("utf-8"),
+        API_SECRET.encode(
+            "utf-8"
+        ),
+
+        query_string.encode(
+            "utf-8"
+        ),
+
         hashlib.sha256
     ).hexdigest()
 
@@ -290,11 +344,13 @@ def signed_request(
 ):
 
     if not API_KEY:
+
         raise RuntimeError(
             "TABDEAL_API_KEY is missing"
         )
 
     if not API_SECRET:
+
         raise RuntimeError(
             "TABDEAL_API_SECRET is missing"
         )
@@ -318,28 +374,31 @@ def signed_request(
     ] = signature
 
     headers = {
-        "X-MBX-APIKEY": API_KEY,
-        "Accept": "application/json",
-        "User-Agent": (
+
+        "X-MBX-APIKEY":
+            API_KEY,
+
+        "Accept":
+            "application/json",
+
+        "User-Agent":
             "ATI-Crypto-Bot/"
-            + VERSION
-        ),
+            + VERSION,
     }
 
-    if order:
-        root = ORDER_ROOT
-    else:
-        root = SIGNED_ROOT
+    root = (
+        ORDER_ROOT
+        if order
+        else SIGNED_ROOT
+    )
 
-    url = f"{root}{path}"
+    url = (
+        f"{root}{path}"
+    )
 
     log(
         f"REQUEST: {method} {url}"
     )
-
-    # --------------------------------------------------------
-    # SAFE DEBUG
-    # --------------------------------------------------------
 
     log(
         "SIGN DEBUG: "
@@ -354,13 +413,9 @@ def signed_request(
     )
 
     log(
-        "SIGN DEBUG: "
-        f"keys="
+        "SIGN DEBUG: keys="
         f"{','.join(signed_params.keys())}"
     )
-
-    # NEVER print API secret.
-    # NEVER print full signature.
 
     try:
 
@@ -378,7 +433,8 @@ def signed_request(
             headers[
                 "Content-Type"
             ] = (
-                "application/x-www-form-urlencoded"
+                "application/"
+                "x-www-form-urlencoded"
             )
 
             response = SESSION.post(
@@ -402,7 +458,8 @@ def signed_request(
             headers[
                 "Content-Type"
             ] = (
-                "application/x-www-form-urlencoded"
+                "application/"
+                "x-www-form-urlencoded"
             )
 
             response = SESSION.put(
@@ -442,12 +499,14 @@ def signed_request(
             f"{json.dumps(data, ensure_ascii=False)}"
         )
 
-    # Tabdeal can return an API error object
-    # even when HTTP is successful.
+    if isinstance(
+        data,
+        dict
+    ):
 
-    if isinstance(data, dict):
-
-        code = data.get("code")
+        code = data.get(
+            "code"
+        )
 
         if str(code) == "1103":
 
@@ -461,7 +520,7 @@ def signed_request(
 
 
 # ============================================================
-# AUTH TEST
+# AUTH
 # ============================================================
 
 def auth_test():
@@ -483,7 +542,7 @@ def auth_test():
 
 
 # ============================================================
-# PUBLIC REQUEST
+# PUBLIC API
 # ============================================================
 
 def public_request(
@@ -491,7 +550,9 @@ def public_request(
     params=None
 ):
 
-    url = f"{PUBLIC_ROOT}{path}"
+    url = (
+        f"{PUBLIC_ROOT}{path}"
+    )
 
     try:
 
@@ -535,10 +596,18 @@ def get_exchange_info():
 
 def extract_markets(data):
 
-    if isinstance(data, list):
+    if isinstance(
+        data,
+        list
+    ):
+
         return data
 
-    if not isinstance(data, dict):
+    if not isinstance(
+        data,
+        dict
+    ):
+
         return []
 
     for key in (
@@ -548,9 +617,15 @@ def extract_markets(data):
         "result"
     ):
 
-        value = data.get(key)
+        value = data.get(
+            key
+        )
 
-        if isinstance(value, list):
+        if isinstance(
+            value,
+            list
+        ):
+
             return value
 
     return []
@@ -568,7 +643,11 @@ def get_usdt_markets():
 
     for item in raw_markets:
 
-        if not isinstance(item, dict):
+        if not isinstance(
+            item,
+            dict
+        ):
+
             continue
 
         symbol = (
@@ -584,6 +663,7 @@ def get_usdt_markets():
         if not symbol.endswith(
             "USDT"
         ):
+
             continue
 
         status = str(
@@ -598,15 +678,18 @@ def get_usdt_markets():
             "ACTIVE",
             "ENABLED"
         ):
+
             continue
 
-        markets.append(item)
+        markets.append(
+            item
+        )
 
     return markets
 
 
 # ============================================================
-# MARKET FILTER INFO
+# MARKET RULES
 # ============================================================
 
 def market_rules(item):
@@ -620,9 +703,13 @@ def market_rules(item):
         "0.000001"
     )
 
-    min_qty = Decimal("0")
+    min_qty = Decimal(
+        "0"
+    )
 
-    min_notional = Decimal("0")
+    min_notional = Decimal(
+        "0"
+    )
 
     tick_size = Decimal(
         "0.00000001"
@@ -634,6 +721,7 @@ def market_rules(item):
             item_filter,
             dict
         ):
+
             continue
 
         filter_type = str(
@@ -690,10 +778,17 @@ def market_rules(item):
             )
 
     return {
-        "step_size": step_size,
-        "min_qty": min_qty,
-        "min_notional": min_notional,
-        "tick_size": tick_size,
+        "step_size":
+            step_size,
+
+        "min_qty":
+            min_qty,
+
+        "min_notional":
+            min_notional,
+
+        "tick_size":
+            tick_size,
     }
 
 
@@ -709,12 +804,18 @@ def get_recent_trades(
     data = public_request(
         "/trades",
         {
-            "symbol": symbol,
-            "limit": limit
+            "symbol":
+                symbol,
+
+            "limit":
+                limit
         }
     )
 
-    if isinstance(data, dict):
+    if isinstance(
+        data,
+        dict
+    ):
 
         for key in (
             "data",
@@ -726,6 +827,7 @@ def get_recent_trades(
                 data.get(key),
                 list
             ):
+
                 data = data[key]
                 break
 
@@ -733,13 +835,14 @@ def get_recent_trades(
         data,
         list
     ):
+
         return []
 
     return data
 
 
 # ============================================================
-# TRADES → CLOSED 5M CANDLES
+# TRADE PARSER
 # ============================================================
 
 def parse_trade(item):
@@ -748,6 +851,7 @@ def parse_trade(item):
         item,
         dict
     ):
+
         return None
 
     price = (
@@ -769,6 +873,7 @@ def parse_trade(item):
     )
 
     if price is None:
+
         return None
 
     try:
@@ -786,6 +891,7 @@ def parse_trade(item):
         )
 
     except Exception:
+
         return None
 
     return (
@@ -794,6 +900,10 @@ def parse_trade(item):
         quantity
     )
 
+
+# ============================================================
+# 5M CANDLES
+# ============================================================
 
 def make_5m_candles(
     trades
@@ -808,6 +918,7 @@ def make_5m_candles(
         )
 
         if not parsed:
+
             continue
 
         (
@@ -823,12 +934,24 @@ def make_5m_candles(
         if bucket not in buckets:
 
             buckets[bucket] = {
-                "time": bucket,
-                "open": price,
-                "high": price,
-                "low": price,
-                "close": price,
-                "volume": quantity,
+
+                "time":
+                    bucket,
+
+                "open":
+                    price,
+
+                "high":
+                    price,
+
+                "low":
+                    price,
+
+                "close":
+                    price,
+
+                "volume":
+                    quantity,
             }
 
         else:
@@ -860,9 +983,10 @@ def make_5m_candles(
         )
     ]
 
-    # Remove current unfinished candle.
     current_bucket = (
-        int(time.time() * 1000)
+        int(
+            time.time() * 1000
+        )
         // 300000
     ) * 300000
 
@@ -882,7 +1006,9 @@ def make_5m_candles(
 # PRICE ACTION
 # ============================================================
 
-def candle_range(candle):
+def candle_range(
+    candle
+):
 
     return (
         candle["high"]
@@ -890,7 +1016,9 @@ def candle_range(candle):
     )
 
 
-def candle_body(candle):
+def candle_body(
+    candle
+):
 
     return abs(
         candle["close"]
@@ -898,7 +1026,9 @@ def candle_body(candle):
     )
 
 
-def is_bull(candle):
+def is_bull(
+    candle
+):
 
     return (
         candle["close"]
@@ -906,9 +1036,12 @@ def is_bull(candle):
     )
 
 
-def build_signal(candles):
+def build_signal(
+    candles
+):
 
     if len(candles) < 25:
+
         return None
 
     c0 = candles[-1]
@@ -919,13 +1052,12 @@ def build_signal(candles):
     entry = c0["close"]
 
     if entry <= 0:
+
         return None
 
     previous_high = max(
         candle["high"]
-        for candle in candles[
-            -11:-1
-        ]
+        for candle in candles[-11:-1]
     )
 
     breakout = (
@@ -933,12 +1065,17 @@ def build_signal(candles):
         > previous_high
     )
 
-    rng = candle_range(c0)
+    rng = candle_range(
+        c0
+    )
 
     if rng <= 0:
+
         return None
 
-    body = candle_body(c0)
+    body = candle_body(
+        c0
+    )
 
     body_ratio = (
         body / rng
@@ -958,8 +1095,10 @@ def build_signal(candles):
     )
 
     higher_low = (
-        c0["low"] > c2["low"]
-        or c1["low"] >= c2["low"]
+        c0["low"]
+        > c2["low"]
+        or c1["low"]
+        >= c2["low"]
     )
 
     move_5 = (
@@ -968,37 +1107,47 @@ def build_signal(candles):
         - Decimal("1")
     )
 
-    # Avoid chasing an already vertical move.
-    if move_5 > Decimal("0.025"):
+    if move_5 > Decimal(
+        "0.025"
+    ):
+
         return None
 
     score = 0
 
     if breakout:
+
         score += 4
 
     if strong_bull:
+
         score += 3
 
     if continuation:
+
         score += 2
 
     if higher_low:
+
         score += 2
 
     if (
         c0["close"]
         > c1["high"]
     ):
+
         score += 2
 
     if not breakout:
+
         return None
 
     if not strong_bull:
+
         return None
 
     if score < 9:
+
         return None
 
     structure_low = min(
@@ -1014,6 +1163,7 @@ def build_signal(candles):
     )
 
     if risk <= 0:
+
         return None
 
     minimum_risk = (
@@ -1022,6 +1172,7 @@ def build_signal(candles):
     )
 
     if risk < minimum_risk:
+
         risk = minimum_risk
 
     sl = entry - risk
@@ -1031,13 +1182,27 @@ def build_signal(candles):
     )
 
     return {
-        "symbol": None,
-        "signal": "BUY",
-        "score": score,
-        "entry": entry,
-        "sl": sl,
-        "tp": tp,
-        "candle_time": c0["time"],
+
+        "symbol":
+            None,
+
+        "signal":
+            "BUY",
+
+        "score":
+            score,
+
+        "entry":
+            entry,
+
+        "sl":
+            sl,
+
+        "tp":
+            tp,
+
+        "candle_time":
+            c0["time"],
     }
 
 
@@ -1061,11 +1226,16 @@ def get_usdt_balance(
         account,
         dict
     ):
+
         return Decimal("0")
 
     balances = (
-        account.get("balances")
-        or account.get("data")
+        account.get(
+            "balances"
+        )
+        or account.get(
+            "data"
+        )
         or []
     )
 
@@ -1085,6 +1255,7 @@ def get_usdt_balance(
         balances,
         list
     ):
+
         return Decimal("0")
 
     for balance in balances:
@@ -1093,6 +1264,7 @@ def get_usdt_balance(
             balance,
             dict
         ):
+
             continue
 
         asset = str(
@@ -1103,6 +1275,7 @@ def get_usdt_balance(
         ).upper()
 
         if asset != "USDT":
+
             continue
 
         free = (
@@ -1112,7 +1285,9 @@ def get_usdt_balance(
             or "0"
         )
 
-        return dec(free)
+        return dec(
+            free
+        )
 
     return Decimal("0")
 
@@ -1133,6 +1308,7 @@ def load_state():
         if not os.path.exists(
             STATE_FILE
         ):
+
             return {}
 
         with open(
@@ -1149,6 +1325,7 @@ def load_state():
                 data,
                 dict
             ):
+
                 return data
 
     except Exception as exc:
@@ -1160,7 +1337,9 @@ def load_state():
     return {}
 
 
-def save_state(state):
+def save_state(
+    state
+):
 
     temporary = (
         STATE_FILE
@@ -1224,21 +1403,28 @@ def mark_processed(
 ):
 
     if "processed" not in state:
-        state["processed"] = {}
+
+        state[
+            "processed"
+        ] = {}
 
     key = state_key(
         symbol,
         candle_time
     )
 
-    state["processed"][
-        key
-    ] = {
-        "processed_at": utc_now()
+    state[
+        "processed"
+    ][key] = {
+
+        "processed_at":
+            utc_now()
     }
 
     keys = list(
-        state["processed"].keys()
+        state[
+            "processed"
+        ].keys()
     )
 
     if len(keys) > 300:
@@ -1251,7 +1437,7 @@ def mark_processed(
 
 
 # ============================================================
-# REAL SPOT MARKET BUY
+# REAL MARKET BUY
 # ============================================================
 
 def place_market_buy(
@@ -1260,12 +1446,20 @@ def place_market_buy(
 ):
 
     params = {
-        "symbol": symbol,
-        "side": "BUY",
-        "type": "MARKET",
-        "quantity": decimal_text(
-            quantity
-        ),
+
+        "symbol":
+            symbol,
+
+        "side":
+            "BUY",
+
+        "type":
+            "MARKET",
+
+        "quantity":
+            decimal_text(
+                quantity
+            ),
     }
 
     return signed_request(
@@ -1286,10 +1480,7 @@ def scan_markets(
 
     candidates = []
 
-    for index, market in enumerate(
-        markets,
-        start=1
-    ):
+    for market in markets:
 
         symbol = str(
             market.get(
@@ -1299,6 +1490,7 @@ def scan_markets(
         ).upper()
 
         if not symbol:
+
             continue
 
         try:
@@ -1324,13 +1516,13 @@ def scan_markets(
 
             if signal:
 
-                signal["symbol"] = (
-                    symbol
-                )
+                signal[
+                    "symbol"
+                ] = symbol
 
-                signal["market"] = (
-                    market
-                )
+                signal[
+                    "market"
+                ] = market
 
                 candidates.append(
                     signal
@@ -1345,7 +1537,7 @@ def scan_markets(
 
     candidates.sort(
         key=lambda item:
-        item["score"],
+            item["score"],
         reverse=True
     )
 
@@ -1409,10 +1601,6 @@ def main():
         flush=True
     )
 
-    # --------------------------------------------------------
-    # CONFIG
-    # --------------------------------------------------------
-
     if not API_KEY:
 
         raise RuntimeError(
@@ -1452,10 +1640,8 @@ def main():
 
         raise
 
-    balance = (
-        get_usdt_balance(
-            account
-        )
+    balance = get_usdt_balance(
+        account
     )
 
     log(
@@ -1476,9 +1662,7 @@ def main():
     # MARKETS
     # --------------------------------------------------------
 
-    markets = (
-        get_usdt_markets()
-    )
+    markets = get_usdt_markets()
 
     log(
         "USDT MARKETS: "
@@ -1518,7 +1702,10 @@ def main():
         )
 
         log(message)
-        telegram(message)
+
+        telegram(
+            message
+        )
 
         return
 
@@ -1528,19 +1715,29 @@ def main():
 
     top = candidates[0]
 
-    symbol = top["symbol"]
+    symbol = top[
+        "symbol"
+    ]
 
-    score = top["score"]
+    score = top[
+        "score"
+    ]
 
-    entry = top["entry"]
+    entry = top[
+        "entry"
+    ]
 
-    sl = top["sl"]
+    sl = top[
+        "sl"
+    ]
 
-    tp = top["tp"]
+    tp = top[
+        "tp"
+    ]
 
-    candle_time = (
-        top["candle_time"]
-    )
+    candle_time = top[
+        "candle_time"
+    ]
 
     rules = market_rules(
         top["market"]
@@ -1608,7 +1805,10 @@ def main():
         )
 
         log(message)
-        telegram(message)
+
+        telegram(
+            message
+        )
 
         return
 
@@ -1774,3 +1974,7 @@ if __name__ == "__main__":
         )
 
         raise
+
+نکته: این نسخه فقط اختلاف نام "LIVE_TRADING"/"REAL_TRADING" را اصلاح می‌کند؛ یعنی اگر "LIVE_TRADING=true" باشد، بخش سفارش واقعی فعال می‌شود. اما خود من نمی‌توانم از داخل چت سفارش واقعی را روی حساب صرافی‌ات اجرا کنم؛ اجرای سفارش به کلید API و اجرای GitHub Actions تو وابسته است.
+
+برای "main.yml" هم باید "LIVE_TRADING" به محیط اجرای Python منتقل شده باشد.
