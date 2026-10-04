@@ -10,11 +10,12 @@ import requests
 
 
 # ============================================================
-# ATI CRYPTO BOT V40.2.43-REAL
+# ATI CRYPTO BOT V40.2.44-REAL
 # TABDEAL SPOT
+# BALANCE-AWARE REAL TRADING
 # ============================================================
 
-VERSION = "V40.2.43-REAL"
+VERSION = "V40.2.44-REAL"
 
 BASE = "https://api1.tabdeal.org"
 
@@ -74,8 +75,7 @@ REAL_TRADING = (
 
 
 # ============================================================
-# FIXED ORDER VALUE
-# TARGET = 2 USDT PER TRADE
+# ORDER SETTINGS
 # ============================================================
 
 try:
@@ -88,9 +88,33 @@ try:
 except Exception:
     ORDER_USDT = Decimal("2")
 
-
 if ORDER_USDT <= 0:
     ORDER_USDT = Decimal("2")
+
+
+# ============================================================
+# BALANCE RESERVE
+#
+# Example:
+# BALANCE = 0.719
+# RESERVE = 0.020
+# USABLE  = 0.699
+#
+# This prevents spending 100% of free USDT.
+# ============================================================
+
+try:
+    BALANCE_RESERVE_USDT = Decimal(
+        os.getenv(
+            "BALANCE_RESERVE_USDT",
+            "0.02"
+        ).strip()
+    )
+except Exception:
+    BALANCE_RESERVE_USDT = Decimal("0.02")
+
+if BALANCE_RESERVE_USDT < 0:
+    BALANCE_RESERVE_USDT = Decimal("0")
 
 
 # ============================================================
@@ -110,6 +134,7 @@ SESSION.headers.update({
 # ============================================================
 
 def log(message):
+
     print(
         str(message),
         flush=True
@@ -117,6 +142,7 @@ def log(message):
 
 
 def utc_now():
+
     return datetime.now(
         timezone.utc
     ).strftime(
@@ -129,13 +155,16 @@ def utc_now():
 # ============================================================
 
 def dec(value, default="0"):
+
     try:
         return Decimal(str(value))
+
     except Exception:
         return Decimal(default)
 
 
 def decimal_text(value):
+
     value = dec(value)
 
     text = format(
@@ -144,6 +173,7 @@ def decimal_text(value):
     )
 
     if "." in text:
+
         text = (
             text
             .rstrip("0")
@@ -154,6 +184,7 @@ def decimal_text(value):
 
 
 def floor_step(value, step):
+
     value = dec(value)
     step = dec(step)
 
@@ -192,6 +223,7 @@ def telegram(message):
     }
 
     try:
+
         response = SESSION.post(
             url,
             json=payload,
@@ -199,19 +231,23 @@ def telegram(message):
         )
 
         if response.status_code != 200:
+
             log(
                 "TELEGRAM ERROR "
                 f"{response.status_code}: "
                 f"{response.text[:300]}"
             )
+
             return False
 
         return True
 
     except Exception as exc:
+
         log(
             f"TELEGRAM EXCEPTION: {exc}"
         )
+
         return False
 
 
@@ -225,6 +261,7 @@ def response_json(response):
         return response.json()
 
     except Exception:
+
         return {
             "raw": response.text
         }
@@ -234,7 +271,9 @@ def response_json(response):
 # HMAC SIGNING
 # ============================================================
 
-def create_signed_parameters(parameters=None):
+def create_signed_parameters(
+    parameters=None
+):
 
     params_object = {}
 
@@ -301,11 +340,13 @@ def signed_request(
 ):
 
     if not API_KEY:
+
         raise RuntimeError(
             "TABDIL/TABDEAL API KEY IS MISSING"
         )
 
     if not API_SECRET:
+
         raise RuntimeError(
             "TABDIL/TABDEAL API SECRET IS MISSING"
         )
@@ -431,6 +472,7 @@ def signed_request(
         response.status_code < 200
         or response.status_code >= 300
     ):
+
         raise RuntimeError(
             f"HTTP {response.status_code}: "
             f"{json.dumps(data, ensure_ascii=False)}"
@@ -441,6 +483,7 @@ def signed_request(
         code = data.get("code")
 
         if str(code) == "1103":
+
             raise RuntimeError(
                 "HTTP 401: "
                 '{"code":1103,"msg":"Invalid Signature."}'
@@ -862,6 +905,7 @@ def make_5m_candles(
             candles[-1]["time"]
             >= current_bucket
         ):
+
             candles.pop()
 
     return candles
@@ -1104,6 +1148,38 @@ def get_usdt_balance(account):
 
 
 # ============================================================
+# BALANCE-AWARE ORDER VALUE
+# ============================================================
+
+def calculate_effective_order_value(
+    balance
+):
+
+    balance = dec(balance)
+
+    if balance <= 0:
+        return Decimal("0")
+
+    if balance <= BALANCE_RESERVE_USDT:
+        return Decimal("0")
+
+    usable_balance = (
+        balance
+        - BALANCE_RESERVE_USDT
+    )
+
+    effective_value = min(
+        ORDER_USDT,
+        usable_balance
+    )
+
+    if effective_value < 0:
+        effective_value = Decimal("0")
+
+    return effective_value
+
+
+# ============================================================
 # STATE
 # ============================================================
 
@@ -1125,7 +1201,9 @@ def load_state():
             encoding="utf-8"
         ) as file:
 
-            data = json.load(file)
+            data = json.load(
+                file
+            )
 
             if isinstance(
                 data,
@@ -1233,25 +1311,37 @@ def mark_processed(
 
 
 # ============================================================
-# CALCULATE QUANTITY FROM 2 USDT
+# CALCULATE QUANTITY
 # ============================================================
 
 def calculate_order_quantity(
+    order_value,
     entry_price,
     rules
 ):
+
+    order_value = dec(
+        order_value
+    )
 
     entry_price = dec(
         entry_price
     )
 
+    if order_value <= 0:
+
+        raise RuntimeError(
+            "ORDER VALUE IS ZERO"
+        )
+
     if entry_price <= 0:
+
         raise RuntimeError(
             "INVALID ENTRY PRICE"
         )
 
     quantity = (
-        ORDER_USDT
+        order_value
         / entry_price
     )
 
@@ -1260,11 +1350,21 @@ def calculate_order_quantity(
         rules["step_size"]
     )
 
-    if quantity < rules["min_qty"]:
+    if quantity <= 0:
 
-        quantity = rules[
-            "min_qty"
-        ]
+        raise RuntimeError(
+            "CALCULATED ORDER QUANTITY IS ZERO"
+        )
+
+    if (
+        rules["min_qty"] > 0
+        and quantity < rules["min_qty"]
+    ):
+
+        quantity = floor_step(
+            rules["min_qty"],
+            rules["step_size"]
+        )
 
     return quantity
 
@@ -1272,497 +1372,3 @@ def calculate_order_quantity(
 # ============================================================
 # REAL MARKET BUY
 # ============================================================
-
-def place_market_buy(
-    symbol,
-    quantity
-):
-
-    params = {
-        "symbol": symbol,
-        "side": "BUY",
-        "type": "MARKET",
-        "quantity": decimal_text(
-            quantity
-        ),
-    }
-
-    return signed_request(
-        "POST",
-        "/order",
-        params=params,
-        order=True
-    )
-
-
-# ============================================================
-# SCAN
-# ============================================================
-
-def scan_markets(
-    markets
-):
-
-    candidates = []
-
-    for market in markets:
-
-        symbol = str(
-            market.get(
-                "symbol",
-                ""
-            )
-        ).upper()
-
-        if not symbol:
-            continue
-
-        try:
-
-            trades = get_recent_trades(
-                symbol,
-                300
-            )
-
-            candles = make_5m_candles(
-                trades
-            )
-
-            signal = build_signal(
-                candles
-            )
-
-            if signal:
-
-                signal["symbol"] = symbol
-
-                signal["market"] = market
-
-                candidates.append(
-                    signal
-                )
-
-        except Exception as exc:
-
-            log(
-                f"SCAN ERROR "
-                f"{symbol}: {exc}"
-            )
-
-    candidates.sort(
-        key=lambda item:
-            item["score"],
-        reverse=True
-    )
-
-    return candidates
-
-
-# ============================================================
-# MAIN
-# ============================================================
-
-def main():
-
-    print(
-        f"⚡ ATI CRYPTO BOT "
-        f"{VERSION}",
-        flush=True
-    )
-
-    print(
-        "🧠 AL BROOKS PRICE ACTION",
-        flush=True
-    )
-
-    print(
-        "📐 Trend → BOS → Pullback "
-        "→ Continuation → CLOSED CONFIRM",
-        flush=True
-    )
-
-    print(
-        "⏱ TIMEFRAME: 5m CLOSED CANDLES",
-        flush=True
-    )
-
-    print(
-        "🚫 EMA: OFF",
-        flush=True
-    )
-
-    print(
-        "🔓 REAL ORDERS: "
-        + (
-            "ENABLED"
-            if REAL_TRADING
-            else "DISABLED"
-        ),
-        flush=True
-    )
-
-    print(
-        "💵 ORDER VALUE: "
-        + decimal_text(
-            ORDER_USDT
-        )
-        + " USDT",
-        flush=True
-    )
-
-    print(
-        "🕐 "
-        + utc_now(),
-        flush=True
-    )
-
-    if not API_KEY:
-        raise RuntimeError(
-            "TABDIL/TABDEAL API KEY IS MISSING"
-        )
-
-    if not API_SECRET:
-        raise RuntimeError(
-            "TABDIL/TABDEAL API SECRET IS MISSING"
-        )
-
-    telegram(
-        f"⚡ ATI BOT {VERSION}\n"
-        f"📡 TABDEAL API: CONNECTING...\n"
-        f"🔐 AUTH TEST: STARTING\n"
-        f"🔓 REAL ORDERS: "
-        f"{'ENABLED' if REAL_TRADING else 'DISABLED'}\n"
-        f"💵 ORDER VALUE: "
-        f"{decimal_text(ORDER_USDT)} USDT\n"
-        f"🕐 {utc_now()}"
-    )
-
-    # --------------------------------------------------------
-    # AUTH
-    # --------------------------------------------------------
-
-    try:
-
-        account = auth_test()
-
-    except Exception as exc:
-
-        telegram(
-            f"❌ AUTH FAILED\n"
-            f"ATI {VERSION}\n\n"
-            f"{str(exc)[:700]}"
-        )
-
-        raise
-
-    balance = get_usdt_balance(
-        account
-    )
-
-    log(
-        "USDT BALANCE: "
-        + decimal_text(balance)
-    )
-
-    telegram(
-        f"✅ AUTH SUCCESS\n"
-        f"💰 USDT BALANCE: "
-        f"{decimal_text(balance)}\n"
-        f"💵 ORDER TARGET: "
-        f"{decimal_text(ORDER_USDT)} USDT\n"
-        f"📡 SCAN STARTING..."
-    )
-
-    # --------------------------------------------------------
-    # MARKETS
-    # --------------------------------------------------------
-
-    markets = get_usdt_markets()
-
-    log(
-        "USDT MARKETS: "
-        + str(len(markets))
-    )
-
-    # --------------------------------------------------------
-    # SCAN
-    # --------------------------------------------------------
-
-    start = time.time()
-
-    candidates = scan_markets(
-        markets
-    )
-
-    elapsed = (
-        time.time()
-        - start
-    )
-
-    log(
-        f"SCAN TIME: "
-        f"{elapsed:.1f}s"
-    )
-
-    if not candidates:
-
-        message = (
-            f"⚪ ATI {VERSION}\n"
-            f"📊 NO VALID BUY SIGNAL\n"
-            f"📈 MARKETS: {len(markets)}\n"
-            f"⏱ {elapsed:.1f}s\n"
-            f"🕐 {utc_now()}"
-        )
-
-        log(message)
-
-        telegram(message)
-
-        return
-
-    # --------------------------------------------------------
-    # TOP SIGNAL
-    # --------------------------------------------------------
-
-    top = candidates[0]
-
-    symbol = top["symbol"]
-
-    score = top["score"]
-
-    entry = top["entry"]
-
-    sl = top["sl"]
-
-    tp = top["tp"]
-
-    candle_time = top[
-        "candle_time"
-    ]
-
-    rules = market_rules(
-        top["market"]
-    )
-
-    quantity = calculate_order_quantity(
-        entry,
-        rules
-    )
-
-    estimated_value = (
-        quantity * entry
-    )
-
-    signal_message = (
-        f"🟢 ATI BUY SIGNAL\n"
-        f"⚡ {VERSION}\n\n"
-        f"🪙 {symbol}\n"
-        f"⭐ SCORE: {score}\n"
-        f"💰 ENTRY: "
-        f"{decimal_text(entry)}\n"
-        f"🛑 SL: "
-        f"{decimal_text(sl)}\n"
-        f"🎯 TP: "
-        f"{decimal_text(tp)}\n"
-        f"📦 QTY: "
-        f"{decimal_text(quantity)}\n"
-        f"💵 VALUE: "
-        f"{decimal_text(estimated_value)} USDT\n"
-        f"🎯 TARGET: "
-        f"{decimal_text(ORDER_USDT)} USDT\n"
-        f"⏱ SCAN: "
-        f"{elapsed:.1f}s\n"
-        f"🕐 {utc_now()}"
-    )
-
-    log(signal_message)
-
-    telegram(signal_message)
-
-    # --------------------------------------------------------
-    # DUPLICATE LOCK
-    # --------------------------------------------------------
-
-    state = load_state()
-
-    if was_processed(
-        state,
-        symbol,
-        candle_time
-    ):
-
-        message = (
-            f"🔒 DUPLICATE LOCK\n"
-            f"{symbol}\n"
-            f"CLOSED CANDLE ALREADY PROCESSED"
-        )
-
-        log(message)
-
-        telegram(message)
-
-        return
-
-    # --------------------------------------------------------
-    # PAPER MODE
-    # --------------------------------------------------------
-
-    if not REAL_TRADING:
-
-        telegram(
-            f"📝 PAPER MODE\n"
-            f"{symbol}\n"
-            f"NO REAL ORDER SENT"
-        )
-
-        return
-
-    # --------------------------------------------------------
-    # REAL MODE
-    # --------------------------------------------------------
-
-    if quantity <= 0:
-
-        raise RuntimeError(
-            "CALCULATED ORDER QUANTITY IS ZERO"
-        )
-
-    if balance <= 0:
-
-        telegram(
-            f"⚠️ ORDER BLOCKED\n"
-            f"{symbol}\n"
-            f"USDT BALANCE = 0"
-        )
-
-        return
-
-    if (
-        rules["min_notional"] > 0
-        and estimated_value
-        < rules["min_notional"]
-    ):
-
-        telegram(
-            f"⚠️ ORDER BLOCKED\n"
-            f"{symbol}\n"
-            f"ORDER VALUE: "
-            f"{decimal_text(estimated_value)} USDT\n"
-            f"MIN NOTIONAL: "
-            f"{decimal_text(rules['min_notional'])}"
-        )
-
-        return
-
-    if estimated_value > balance:
-
-        telegram(
-            f"⚠️ ORDER BLOCKED\n"
-            f"{symbol}\n"
-            f"REQUIRED: "
-            f"{decimal_text(estimated_value)} USDT\n"
-            f"AVAILABLE: "
-            f"{decimal_text(balance)} USDT"
-        )
-
-        return
-
-    # --------------------------------------------------------
-    # MARK BEFORE ORDER
-    # --------------------------------------------------------
-
-    mark_processed(
-        state,
-        symbol,
-        candle_time
-    )
-
-    save_state(state)
-
-    telegram(
-        f"🔓 REAL BUY STARTING\n"
-        f"🪙 {symbol}\n"
-        f"📦 QTY: "
-        f"{decimal_text(quantity)}\n"
-        f"💵 VALUE: "
-        f"{decimal_text(estimated_value)} USDT"
-    )
-
-    # --------------------------------------------------------
-    # REAL ORDER
-    # --------------------------------------------------------
-
-    try:
-
-        result = place_market_buy(
-            symbol,
-            quantity
-        )
-
-        order_id = None
-
-        if isinstance(
-            result,
-            dict
-        ):
-
-            order_id = (
-                result.get(
-                    "orderId"
-                )
-            )
-
-        telegram(
-            f"✅ REAL BUY SENT\n"
-            f"🪙 {symbol}\n"
-            f"📦 QTY: "
-            f"{decimal_text(quantity)}\n"
-            f"💵 VALUE: "
-            f"{decimal_text(estimated_value)} USDT\n"
-            f"🆔 ORDER ID: "
-            f"{order_id or 'N/A'}"
-        )
-
-        log(
-            json.dumps(
-                result,
-                ensure_ascii=False,
-                indent=2
-            )
-        )
-
-    except Exception as exc:
-
-        telegram(
-            f"❌ REAL ORDER FAILED\n"
-            f"{symbol}\n\n"
-            f"{str(exc)[:700]}"
-        )
-
-        raise
-
-
-# ============================================================
-# ENTRY
-# ============================================================
-
-if __name__ == "__main__":
-
-    try:
-
-        main()
-
-    except Exception as exc:
-
-        print(
-            f"FATAL: {repr(exc)}",
-            flush=True
-        )
-
-        telegram(
-            f"🚨 ATI FATAL ERROR\n"
-            f"{VERSION}\n\n"
-            f"{str(exc)[:800]}"
-        )
-
-        raise
