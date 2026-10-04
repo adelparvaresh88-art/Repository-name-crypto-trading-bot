@@ -11,26 +11,33 @@ import requests
 
 
 # ============================================================
-# ATI CRYPTO BOT V40.2.51-REAL
+# ATI CRYPTO BOT V40.2.52-REAL
 # TABDEAL SPOT
 #
-# AUTH:
-# TABDIL -> TABDEAL fallback
-# SERVER TIME
-# recvWindow = 5000
-# HMAC SHA256
+# HEARTBEAT:
+#   RUN START
+#   AUTH
+#   SCAN
+#   RUN END
 #
 # STRATEGY:
-# Trend -> REAL BOS -> Pullback -> Continuation -> CLOSED
+#   TREND
+#      ↓
+#   BOS / NEAR BOS
+#      ↓
+#   PULLBACK
+#      ↓
+#   CONTINUATION
+#      ↓
+#   CLOSED CONFIRM
 #
 # EMA: OFF
-# TIMEFRAME: 5m CLOSED CANDLES
-# REAL ORDER: ENABLED
+# REAL TRADING: ENABLED
 # ORDER TARGET: 2 USDT
-# MAX REAL BUY PER RUN: 1
+# MAX REAL BUY: 1 PER RUN
 # ============================================================
 
-VERSION = "V40.2.51-REAL"
+VERSION = "V40.2.52-REAL"
 
 BASE = "https://api1.tabdeal.org"
 API_ROOT = f"{BASE}/r/api/v1"
@@ -39,9 +46,17 @@ ORDER_ROOT = f"{BASE}/api/v1"
 TIMEOUT = 15
 RECV_WINDOW = 5000
 
-SCAN_LIMIT = int(os.getenv("SCAN_LIMIT", "40"))
-MAX_WORKERS = int(os.getenv("MAX_WORKERS", "12"))
-MIN_SCORE = float(os.getenv("MIN_SCORE", "11"))
+SCAN_LIMIT = int(
+    os.getenv("SCAN_LIMIT", "40")
+)
+
+MAX_WORKERS = int(
+    os.getenv("MAX_WORKERS", "12")
+)
+
+MIN_SCORE = float(
+    os.getenv("MIN_SCORE", "10")
+)
 
 ORDER_USDT = Decimal(
     os.getenv("ORDER_USDT", "2")
@@ -63,7 +78,7 @@ BUY_LOCK = False
 
 
 # ============================================================
-# KEYS
+# API KEYS
 # ============================================================
 
 TABDIL_KEY = os.getenv(
@@ -87,17 +102,21 @@ TABDEAL_SECRET = os.getenv(
 ).strip()
 
 
-# IMPORTANT:
-# TABDIL is the first/primary pair.
+# TABDIL FIRST
 if TABDIL_KEY and TABDIL_SECRET:
+
     API_KEY = TABDIL_KEY
     API_SECRET = TABDIL_SECRET
     AUTH_PAIR = "TABDIL"
+
 elif TABDEAL_KEY and TABDEAL_SECRET:
+
     API_KEY = TABDEAL_KEY
     API_SECRET = TABDEAL_SECRET
     AUTH_PAIR = "TABDEAL"
+
 else:
+
     API_KEY = ""
     API_SECRET = ""
     AUTH_PAIR = "NONE"
@@ -120,36 +139,72 @@ TELEGRAM_CHAT_ID = os.getenv(
 
 def telegram(message):
 
-    print(message)
+    print(message, flush=True)
 
     if not TELEGRAM_BOT_TOKEN:
-        return
+        print(
+            "⚠️ TELEGRAM_BOT_TOKEN missing",
+            flush=True
+        )
+        return False
 
     if not TELEGRAM_CHAT_ID:
-        return
+        print(
+            "⚠️ TELEGRAM_CHAT_ID missing",
+            flush=True
+        )
+        return False
 
     try:
 
-        requests.post(
+        response = requests.post(
             "https://api.telegram.org/bot"
             f"{TELEGRAM_BOT_TOKEN}/sendMessage",
             data={
                 "chat_id": TELEGRAM_CHAT_ID,
                 "text": message,
+                "disable_web_page_preview": "true",
             },
             timeout=10,
         )
 
+        if response.status_code != 200:
+
+            print(
+                "⚠️ Telegram HTTP "
+                f"{response.status_code}: "
+                f"{response.text}",
+                flush=True
+            )
+
+            return False
+
+        data = response.json()
+
+        if not data.get("ok", False):
+
+            print(
+                "⚠️ Telegram rejected message: "
+                f"{data}",
+                flush=True
+            )
+
+            return False
+
+        return True
+
     except Exception as e:
 
         print(
-            "Telegram error:",
-            e
+            f"⚠️ Telegram ERROR: {e}",
+            flush=True
         )
+
+        return False
 
 
 # ============================================================
-# HELPERS
+# TIME
 # ============================================================
 
 def now_utc():
@@ -161,15 +216,22 @@ def now_utc():
     )
 
 
+# ============================================================
+# DECIMAL HELPERS
+# ============================================================
+
 def D(value, default="0"):
 
     try:
+
         return Decimal(str(value))
+
     except (
         InvalidOperation,
         ValueError,
         TypeError,
     ):
+
         return Decimal(default)
 
 
@@ -212,7 +274,7 @@ def floor_step(
 
 
 # ============================================================
-# PUBLIC REQUEST
+# PUBLIC API
 # ============================================================
 
 def public_get(
@@ -246,7 +308,10 @@ def get_server_time():
         "/api/v1/time"
     )
 
-    if isinstance(data, dict):
+    if isinstance(
+        data,
+        dict
+    ):
 
         for key in (
             "serverTime",
@@ -277,17 +342,8 @@ def get_server_time():
 # HMAC
 #
 # IMPORTANT:
-# Sign the EXACT query string.
-# Do NOT sort the parameters.
-#
-# Successful pattern:
-#
-# timestamp
-# recvWindow
-# optional order params
-#
-# urlencode()
-# HMAC SHA256
+# Do NOT sort parameters.
+# Keep insertion order.
 # ============================================================
 
 def sign_params(
@@ -320,17 +376,17 @@ def signed_request(
 ):
 
     if not API_KEY:
+
         raise RuntimeError(
             "API KEY missing"
         )
 
     if not API_SECRET:
+
         raise RuntimeError(
             "API SECRET missing"
         )
 
-    # IMPORTANT:
-    # Keep insertion order.
     data = {}
 
     data["timestamp"] = (
@@ -399,8 +455,11 @@ def signed_request(
         )
 
     try:
+
         return response.json()
+
     except Exception:
+
         return response.text
 
 
@@ -460,7 +519,7 @@ def get_free_usdt(
 
 
 # ============================================================
-# AUTH TEST
+# AUTH
 # ============================================================
 
 def auth_test():
@@ -603,13 +662,19 @@ def get_trades(
 
         return data or []
 
-    except Exception:
+    except Exception as e:
+
+        print(
+            f"Trade fetch error "
+            f"{symbol}: {e}",
+            flush=True
+        )
 
         return []
 
 
 # ============================================================
-# 5M CLOSED CANDLES
+# CANDLES
 # ============================================================
 
 def build_candles(
@@ -623,14 +688,19 @@ def build_candles(
         try:
 
             if "time" in trade:
+
                 ts = int(
                     trade["time"]
                 )
+
             elif "timestamp" in trade:
+
                 ts = int(
                     trade["timestamp"]
                 )
+
             else:
+
                 continue
 
             price = D(
@@ -702,7 +772,6 @@ def build_candles(
         )
     ]
 
-    # Remove current forming candle.
     current_bucket = (
         int(
             time.time() * 1000
@@ -730,6 +799,7 @@ def calculate_atr(
 ):
 
     if len(candles) < period + 1:
+
         return Decimal("0")
 
     trs = []
@@ -744,6 +814,7 @@ def calculate_atr(
 
         high = current["high"]
         low = current["low"]
+
         previous_close = (
             previous["close"]
         )
@@ -763,7 +834,9 @@ def calculate_atr(
         trs.append(tr)
 
     return (
-        sum(trs[-period:])
+        sum(
+            trs[-period:]
+        )
         / Decimal(period)
     )
 
@@ -785,6 +858,7 @@ def analyze(
     )
 
     if len(candles) < 30:
+
         return None
 
     current = candles[-1]
@@ -798,6 +872,7 @@ def analyze(
     )
 
     if atr <= 0:
+
         return None
 
     lookback = candles[
@@ -814,9 +889,9 @@ def analyze(
         for candle in lookback
     )
 
-    # --------------------------------------------------------
+    # ========================================================
     # TREND
-    # --------------------------------------------------------
+    # ========================================================
 
     recent = candles[-6:]
 
@@ -836,11 +911,12 @@ def analyze(
     )
 
     if not trend:
+
         return None
 
-    # --------------------------------------------------------
-    # REAL BOS / NEAR BOS
-    # --------------------------------------------------------
+    # ========================================================
+    # BOS
+    # ========================================================
 
     bos_level = swing_high
 
@@ -860,11 +936,12 @@ def analyze(
     )
 
     if not real_bos and not near_bos:
+
         return None
 
-    # --------------------------------------------------------
+    # ========================================================
     # PULLBACK
-    # --------------------------------------------------------
+    # ========================================================
 
     pullback_distance = (
         abs(
@@ -874,11 +951,12 @@ def analyze(
     )
 
     if pullback_distance > Decimal("0.80"):
+
         return None
 
-    # --------------------------------------------------------
+    # ========================================================
     # CLOSED SIGNAL BAR
-    # --------------------------------------------------------
+    # ========================================================
 
     candle_range = (
         current["high"]
@@ -886,6 +964,7 @@ def analyze(
     )
 
     if candle_range <= 0:
+
         return None
 
     close_position = (
@@ -904,18 +983,18 @@ def analyze(
         >= Decimal("0.55")
     )
 
-    # --------------------------------------------------------
+    # ========================================================
     # CONTINUATION
-    # --------------------------------------------------------
+    # ========================================================
 
     continuation = (
         current["close"]
         >= previous["close"]
     )
 
-    # --------------------------------------------------------
+    # ========================================================
     # CHASE
-    # --------------------------------------------------------
+    # ========================================================
 
     move_from_low = (
         price - swing_low
@@ -926,41 +1005,51 @@ def analyze(
         > Decimal("2.20")
     )
 
-    # --------------------------------------------------------
+    # ========================================================
     # SCORE
-    # --------------------------------------------------------
+    # ========================================================
 
     score = 0.0
 
     if trend:
+
         score += 3
 
     if real_bos:
+
         score += 4
+
     elif near_bos:
+
         score += 2
 
     if pullback_distance <= Decimal("0.80"):
+
         score += 2
 
     if signal_bar:
+
         score += 3
 
     if continuation:
+
         score += 2
 
     if chase:
+
         score -= 3
 
     if not real_bos:
+
         score -= 1
 
     if score < MIN_SCORE:
+
         return None
 
-    # --------------------------------------------------------
+    # ========================================================
     # RISK
-    # --------------------------------------------------------
+    # ========================================================
 
     entry = price
 
@@ -978,6 +1067,7 @@ def analyze(
     risk = entry - sl
 
     if risk <= 0:
+
         return None
 
     tp1 = (
@@ -1069,6 +1159,7 @@ def scan():
                 )
 
                 if result:
+
                     results.append(
                         result
                     )
@@ -1077,7 +1168,8 @@ def scan():
 
                 print(
                     "Scan error:",
-                    e
+                    e,
+                    flush=True
                 )
 
     results.sort(
@@ -1090,7 +1182,10 @@ def scan():
 
         telegram(
             "👀 NO BUY READY\n"
-            "هیچ سیگنال واجد شرایطی پیدا نشد."
+            "هیچ سیگنال واجد شرایطی "
+            "در این اسکن پیدا نشد.\n\n"
+            "💓 ATI ALIVE\n"
+            f"🕐 {now_utc()}"
         )
 
         return []
@@ -1162,7 +1257,6 @@ def get_market_limits(
         step_size = Decimal("0")
         min_notional = Decimal("0")
 
-        # MARKET_LOT_SIZE
         for item in filters:
 
             if str(
@@ -1195,7 +1289,6 @@ def get_market_limits(
 
                 break
 
-        # LOT_SIZE fallback
         if (
             min_qty <= 0
             or step_size <= 0
@@ -1233,7 +1326,6 @@ def get_market_limits(
 
                     break
 
-        # NOTIONAL
         for item in filters:
 
             filter_type = str(
@@ -1259,6 +1351,7 @@ def get_market_limits(
                 )
 
                 if min_notional > 0:
+
                     break
 
         return {
@@ -1276,7 +1369,7 @@ def get_market_limits(
 
 
 # ============================================================
-# PREPARE 2 USDT ORDER
+# PREPARE ORDER
 # ============================================================
 
 def prepare_market_buy(
@@ -1386,6 +1479,10 @@ def place_real_buy(
         "entry"
     ]
 
+    telegram(
+        "🔎 CHECKING MARKET LIMITS..."
+    )
+
     prepared = prepare_market_buy(
         symbol,
         entry
@@ -1410,10 +1507,6 @@ def place_real_buy(
         f"📐 stepSize: "
         f"{fmt(prepared['step_size'])}"
     )
-
-    # --------------------------------------------------------
-    # FINAL BALANCE
-    # --------------------------------------------------------
 
     account = get_account()
 
@@ -1459,10 +1552,6 @@ def place_real_buy(
         f"{free_usdt}"
     )
 
-    # --------------------------------------------------------
-    # REAL MARKET ORDER
-    # --------------------------------------------------------
-
     order = signed_request(
         "POST",
         "/api/v1/order",
@@ -1486,7 +1575,7 @@ def place_real_buy(
         )
 
     telegram(
-        "🟢 ATI REAL BUY ACCEPTED\n\n"
+        "🟢 REAL BUY ACCEPTED\n\n"
         f"🪙 {symbol}\n"
         f"📦 QTY: {fmt(qty)}\n"
         f"💵 TARGET: "
@@ -1505,11 +1594,24 @@ def place_real_buy(
 
 def main():
 
+    run_start = time.time()
+
+    # --------------------------------------------------------
+    # MANDATORY HEARTBEAT
+    # --------------------------------------------------------
+
+    telegram(
+        "💓 ATI ALIVE\n"
+        f"⚡ {VERSION}\n"
+        "🟢 NEW RUN STARTED\n"
+        f"🕐 {now_utc()}"
+    )
+
     telegram(
         "⚡ ATI BOT "
         f"{VERSION}\n"
         "🧠 REAL BOS / NEAR BOS → "
-        "PULLBACK → CLOSED CONFIRM\n"
+        "PULLBACK → CONTINUATION → CLOSED\n"
         "🚫 EMA: OFF\n"
         f"🔓 REAL TRADING: "
         f"{'ENABLED' if LIVE_TRADING else 'DISABLED'}\n"
@@ -1522,19 +1624,37 @@ def main():
 
     try:
 
+        # ====================================================
         # AUTH
+        # ====================================================
+
         auth_test()
 
+        # ====================================================
         # SCAN
+        # ====================================================
+
         signals = scan()
 
         if not signals:
+
+            telegram(
+                "💓 ATI RUN ALIVE\n"
+                "📡 SCAN FINISHED\n"
+                "👀 NO BUY\n"
+                f"🕐 {now_utc()}"
+            )
+
             return
+
+        # ====================================================
+        # BEST SIGNAL
+        # ====================================================
 
         signal = signals[0]
 
         telegram(
-            "🔥 BUY READY\n\n"
+            "🔥 BEST BUY READY\n\n"
             f"🪙 {signal['symbol']}\n"
             f"📊 SCORE: "
             f"{signal['score']:.0f}\n"
@@ -1552,6 +1672,10 @@ def main():
             f"{ORDER_USDT} USDT"
         )
 
+        # ====================================================
+        # REAL MODE
+        # ====================================================
+
         if not LIVE_TRADING:
 
             telegram(
@@ -1567,6 +1691,10 @@ def main():
 
         auth_test()
 
+        # ====================================================
+        # ONE REAL BUY
+        # ====================================================
+
         place_real_buy(
             signal
         )
@@ -1574,15 +1702,34 @@ def main():
     except Exception as e:
 
         message = (
-            f"🚨 ATI ERROR {VERSION}\n\n"
+            f"🚨 ATI ERROR "
+            f"{VERSION}\n\n"
             f"❌ {str(e)}\n\n"
             "🛑 REAL BUY NOT COMPLETED"
         )
 
         telegram(message)
 
-        print(message)
+        print(
+            message,
+            flush=True
+        )
+
+    finally:
+
+        elapsed = (
+            time.time()
+            - run_start
+        )
+
+        telegram(
+            "💓 ATI RUN END\n"
+            f"⚡ {VERSION}\n"
+            f"⏱ {elapsed:.1f}s\n"
+            f"🕐 {now_utc()}"
+        )
 
 
 if __name__ == "__main__":
+
     main()
