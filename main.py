@@ -10,11 +10,12 @@ import requests
 
 
 # ============================================================
-# ATI CRYPTO BOT V40.2.46-REAL
+# ATI CRYPTO BOT V40.2.47-REAL
 # TABDEAL SPOT
+# PRICE ACTION - BOS / PULLBACK / CONFIRMATION
 # ============================================================
 
-VERSION = "V40.2.46-REAL"
+VERSION = "V40.2.47-REAL"
 
 BASE = "https://api1.tabdeal.org"
 
@@ -27,9 +28,18 @@ RECV_WINDOW = 10000
 
 STATE_FILE = "ati_state.json"
 
+# Signal settings
+MIN_CANDLES = 20
+BOS_LOOKBACK = 8
+PULLBACK_TOLERANCE = Decimal("0.008")
+MAX_MOVE_5M = Decimal("0.035")
+MIN_BODY_RATIO = Decimal("0.45")
+MIN_CLOSE_POSITION = Decimal("0.55")
+MIN_SCORE = 7
+
 
 # ============================================================
-# API KEYS
+# API
 # ============================================================
 
 API_KEY = (
@@ -48,11 +58,13 @@ API_SECRET = (
 # ============================================================
 
 TELEGRAM_TOKEN = os.getenv(
-    "TELEGRAM_BOT_TOKEN", ""
+    "TELEGRAM_BOT_TOKEN",
+    ""
 ).strip()
 
 TELEGRAM_CHAT_ID = os.getenv(
-    "TELEGRAM_CHAT_ID", ""
+    "TELEGRAM_CHAT_ID",
+    ""
 ).strip()
 
 
@@ -114,7 +126,7 @@ SESSION.headers.update({
 
 
 # ============================================================
-# BASIC
+# HELPERS
 # ============================================================
 
 def log(message):
@@ -207,7 +219,8 @@ def telegram(message):
 
         if response.status_code != 200:
             log(
-                f"TELEGRAM ERROR: {response.text[:500]}"
+                f"TELEGRAM ERROR: "
+                f"{response.text[:500]}"
             )
             return False
 
@@ -234,23 +247,16 @@ def telegram_test():
 
     log("TELEGRAM TEST: STARTING")
 
-    ok = telegram(
+    return telegram(
         "🟢 ATI TELEGRAM TEST\n"
         f"⚡ {VERSION}\n"
         f"🕐 {utc_now()}\n"
         "✅ Telegram connection is working."
     )
 
-    log(
-        "TELEGRAM TEST: "
-        + ("SUCCESS" if ok else "FAILED")
-    )
-
-    return ok
-
 
 # ============================================================
-# HMAC SIGNING
+# SIGNED API
 # ============================================================
 
 def create_signed_parameters(parameters=None):
@@ -261,22 +267,10 @@ def create_signed_parameters(parameters=None):
 
         for key, value in parameters.items():
 
-            if key in (
-                "signature",
-                "timestamp",
-                "recvWindow"
-            ):
-                continue
-
             if value is None:
                 continue
 
-            value = str(value)
-
-            if not value.strip():
-                continue
-
-            params[key] = value
+            params[key] = str(value)
 
     params["timestamp"] = int(
         time.time() * 1000
@@ -315,8 +309,8 @@ def signed_request(
             "API SECRET MISSING"
         )
 
-    params, signature = create_signed_parameters(
-        params
+    params, signature = (
+        create_signed_parameters(params)
     )
 
     request_params = dict(params)
@@ -336,15 +330,9 @@ def signed_request(
 
     url = f"{root}{path}"
 
-    method = method.upper()
-
-    log(
-        f"REQUEST: {method} {url}"
-    )
-
     try:
 
-        if method == "GET":
+        if method.upper() == "GET":
 
             response = SESSION.get(
                 url,
@@ -353,7 +341,7 @@ def signed_request(
                 timeout=TIMEOUT
             )
 
-        elif method == "POST":
+        elif method.upper() == "POST":
 
             headers["Content-Type"] = (
                 "application/x-www-form-urlencoded"
@@ -366,7 +354,7 @@ def signed_request(
                 timeout=TIMEOUT
             )
 
-        elif method == "DELETE":
+        elif method.upper() == "DELETE":
 
             response = SESSION.delete(
                 url,
@@ -396,15 +384,18 @@ def signed_request(
     if not (
         200 <= response.status_code < 300
     ):
+
         raise RuntimeError(
             f"HTTP {response.status_code}: "
             f"{json.dumps(data, ensure_ascii=False)}"
         )
 
     if isinstance(data, dict):
+
         if str(data.get("code")) == "1103":
+
             raise RuntimeError(
-                "HTTP 401: Invalid Signature"
+                "INVALID SIGNATURE 1103"
             )
 
     return data
@@ -422,6 +413,7 @@ def public_request(
     url = f"{PUBLIC_ROOT}{path}"
 
     try:
+
         response = SESSION.get(
             url,
             params=params or {},
@@ -437,6 +429,7 @@ def public_request(
     data = response_json(response)
 
     if response.status_code != 200:
+
         raise RuntimeError(
             f"PUBLIC HTTP {response.status_code}: "
             f"{json.dumps(data, ensure_ascii=False)}"
@@ -453,14 +446,22 @@ def auth_test():
 
     log("AUTH TEST: STARTING")
 
-    account = signed_request(
+    data = signed_request(
         "GET",
         "/account"
     )
 
     log("AUTH TEST: SUCCESS")
 
-    return account
+    return data
+
+
+def get_account():
+
+    return signed_request(
+        "GET",
+        "/account"
+    )
 
 
 def get_usdt_balance(account):
@@ -468,16 +469,16 @@ def get_usdt_balance(account):
     if not isinstance(account, dict):
         return Decimal("0")
 
-    balances = (
-        account.get("balances")
-        or account.get("data")
-        or []
+    balances = account.get(
+        "balances",
+        []
     )
 
     if isinstance(balances, dict):
-        balances = (
-            balances.get("balances")
-            or []
+
+        balances = balances.get(
+            "balances",
+            []
         )
 
     if not isinstance(balances, list):
@@ -507,18 +508,12 @@ def get_usdt_balance(account):
     return Decimal("0")
 
 
-def get_account():
-    return signed_request(
-        "GET",
-        "/account"
-    )
-
-
 # ============================================================
 # EXCHANGE INFO
 # ============================================================
 
 def get_exchange_info():
+
     return public_request(
         "/exchangeInfo"
     )
@@ -555,14 +550,14 @@ def get_usdt_markets():
 
     markets = []
 
-    for item in raw_markets:
+    for market in raw_markets:
 
-        if not isinstance(item, dict):
+        if not isinstance(market, dict):
             continue
 
         symbol = str(
-            item.get("symbol")
-            or item.get("market")
+            market.get("symbol")
+            or market.get("market")
             or ""
         ).upper()
 
@@ -570,7 +565,10 @@ def get_usdt_markets():
             continue
 
         status = str(
-            item.get("status", "TRADING")
+            market.get(
+                "status",
+                "TRADING"
+            )
         ).upper()
 
         if status not in (
@@ -580,7 +578,7 @@ def get_usdt_markets():
         ):
             continue
 
-        markets.append(item)
+        markets.append(market)
 
     return markets
 
@@ -599,7 +597,6 @@ def market_rules(market):
     step_size = Decimal("0.000001")
     min_qty = Decimal("0")
     min_notional = Decimal("0")
-    tick_size = Decimal("0.00000001")
 
     for item in filters:
 
@@ -607,7 +604,10 @@ def market_rules(market):
             continue
 
         filter_type = str(
-            item.get("filterType", "")
+            item.get(
+                "filterType",
+                ""
+            )
         ).upper()
 
         if filter_type in (
@@ -644,26 +644,15 @@ def market_rules(market):
                 str(min_notional)
             )
 
-        elif filter_type == "PRICE_FILTER":
-
-            tick_size = dec(
-                item.get(
-                    "tickSize",
-                    tick_size
-                ),
-                str(tick_size)
-            )
-
     return {
         "step_size": step_size,
         "min_qty": min_qty,
         "min_notional": min_notional,
-        "tick_size": tick_size,
     }
 
 
 # ============================================================
-# TRADES
+# RECENT TRADES
 # ============================================================
 
 def get_recent_trades(
@@ -724,7 +713,10 @@ def parse_trade(item):
         or item.get("T")
     )
 
-    if price is None or timestamp is None:
+    if price is None:
+        return None
+
+    if timestamp is None:
         return None
 
     try:
@@ -741,7 +733,7 @@ def parse_trade(item):
 
 
 # ============================================================
-# 5 MIN CLOSED CANDLES
+# 5M CANDLES
 # ============================================================
 
 def make_5m_candles(trades):
@@ -787,11 +779,14 @@ def make_5m_candles(trades):
             )
 
             candle["close"] = price
+
             candle["volume"] += quantity
 
     candles = [
         buckets[key]
-        for key in sorted(buckets.keys())
+        for key in sorted(
+            buckets.keys()
+        )
     ]
 
     current_bucket = (
@@ -808,10 +803,11 @@ def make_5m_candles(trades):
 
 
 # ============================================================
-# PRICE ACTION
+# PRICE ACTION HELPERS
 # ============================================================
 
 def candle_range(candle):
+
     return (
         candle["high"]
         - candle["low"]
@@ -819,112 +815,263 @@ def candle_range(candle):
 
 
 def candle_body(candle):
+
     return abs(
         candle["close"]
         - candle["open"]
     )
 
 
-def is_bull(candle):
+def bull(candle):
+
     return (
         candle["close"]
         > candle["open"]
     )
 
 
+def close_position(candle):
+
+    rng = candle_range(candle)
+
+    if rng <= 0:
+        return Decimal("0.5")
+
+    return (
+        candle["close"]
+        - candle["low"]
+    ) / rng
+
+
+# ============================================================
+# SIGNAL ENGINE
+# ============================================================
+
 def build_signal(candles):
 
-    if len(candles) < 25:
+    if len(candles) < MIN_CANDLES:
         return None
 
-    c0 = candles[-1]
-    c1 = candles[-2]
-    c2 = candles[-3]
-    c3 = candles[-4]
+    current = candles[-1]
+    previous = candles[-2]
 
-    entry = c0["close"]
+    entry = current["close"]
 
     if entry <= 0:
         return None
 
-    previous_high = max(
+    # --------------------------------------------------------
+    # 1. RECENT TREND
+    # --------------------------------------------------------
+
+    trend_score = 0
+
+    if (
+        candles[-1]["close"]
+        > candles[-3]["close"]
+    ):
+        trend_score += 1
+
+    if (
+        candles[-3]["close"]
+        > candles[-5]["close"]
+    ):
+        trend_score += 1
+
+    if (
+        candles[-1]["low"]
+        >= candles[-4]["low"]
+    ):
+        trend_score += 1
+
+    trend_ok = (
+        trend_score >= 2
+    )
+
+    # --------------------------------------------------------
+    # 2. BOS
+    # --------------------------------------------------------
+
+    prior_start = -(
+        BOS_LOOKBACK + 1
+    )
+
+    prior_end = -1
+
+    previous_highs = [
         candle["high"]
-        for candle in candles[-11:-1]
+        for candle in candles[
+            prior_start:prior_end
+        ]
+    ]
+
+    if not previous_highs:
+        return None
+
+    bos_level = max(
+        previous_highs
     )
 
-    breakout = (
-        c0["close"]
-        > previous_high
+    current_bos = (
+        current["close"]
+        > bos_level
     )
 
-    rng = candle_range(c0)
+    previous_bos = (
+        previous["close"]
+        > bos_level
+    )
+
+    bos = (
+        current_bos
+        or previous_bos
+    )
+
+    if not bos:
+        return None
+
+    # --------------------------------------------------------
+    # 3. PULLBACK
+    # --------------------------------------------------------
+
+    if current_bos:
+
+        broken_level = bos_level
+
+    else:
+
+        broken_level = (
+            previous["close"]
+        )
+
+    pullback_limit = (
+        broken_level
+        * (
+            Decimal("1")
+            + PULLBACK_TOLERANCE
+        )
+    )
+
+    pullback = (
+        current["low"]
+        <= pullback_limit
+        and current["close"]
+        >= broken_level
+    )
+
+    # If price is still aggressively running,
+    # allow a continuation setup.
+    if not pullback:
+
+        continuation_pullback = (
+            current["close"]
+            > previous["high"]
+            and current["low"]
+            <= previous["high"]
+            * (
+                Decimal("1")
+                + PULLBACK_TOLERANCE
+            )
+        )
+
+        if not continuation_pullback:
+            return None
+
+        pullback = True
+
+    # --------------------------------------------------------
+    # 4. CLOSED CANDLE CONFIRMATION
+    # --------------------------------------------------------
+
+    rng = candle_range(current)
 
     if rng <= 0:
         return None
 
     body_ratio = (
-        candle_body(c0)
+        candle_body(current)
         / rng
     )
 
-    strong_bull = (
-        is_bull(c0)
-        and body_ratio >= Decimal("0.55")
+    position = close_position(
+        current
     )
 
-    continuation = (
-        c0["close"] > c1["close"]
-        and c1["close"] >= c2["close"]
+    strong_close = (
+        bull(current)
+        and body_ratio
+        >= MIN_BODY_RATIO
+        and position
+        >= MIN_CLOSE_POSITION
     )
 
-    higher_low = (
-        c0["low"] > c2["low"]
-        or c1["low"] >= c2["low"]
-    )
+    if not strong_close:
+        return None
 
-    move_5 = (
-        entry
-        / candles[-6]["close"]
+    # --------------------------------------------------------
+    # 5. RECENT MOVE FILTER
+    # --------------------------------------------------------
+
+    if len(candles) < 6:
+        return None
+
+    old_close = candles[-6]["close"]
+
+    if old_close <= 0:
+        return None
+
+    recent_move = (
+        entry / old_close
         - Decimal("1")
     )
 
-    if move_5 > Decimal("0.025"):
+    if recent_move > MAX_MOVE_5M:
         return None
+
+    # --------------------------------------------------------
+    # 6. SCORE
+    # --------------------------------------------------------
 
     score = 0
 
-    if breakout:
-        score += 4
+    if trend_ok:
+        score += 2
 
-    if strong_bull:
+    if bos:
         score += 3
 
-    if continuation:
+    if pullback:
         score += 2
 
-    if higher_low:
+    if strong_close:
         score += 2
 
-    if c0["close"] > c1["high"]:
-        score += 2
+    if current["close"] > previous["close"]:
+        score += 1
 
-    if not breakout:
+    if current["low"] >= previous["low"]:
+        score += 1
+
+    if score < MIN_SCORE:
         return None
 
-    if not strong_bull:
-        return None
+    # --------------------------------------------------------
+    # 7. STOP LOSS
+    # --------------------------------------------------------
 
-    if score < 9:
-        return None
+    recent_lows = [
+        candle["low"]
+        for candle in candles[-5:]
+    ]
 
     structure_low = min(
-        c0["low"],
-        c1["low"],
-        c2["low"],
-        c3["low"]
+        recent_lows
     )
 
-    risk = entry - structure_low
+    risk = (
+        entry
+        - structure_low
+    )
 
     if risk <= 0:
         return None
@@ -939,40 +1086,34 @@ def build_signal(candles):
 
     sl = entry - risk
 
-    tp = entry + (
-        risk * Decimal("2")
+    tp1 = (
+        entry
+        + risk
+        * Decimal("1.5")
     )
+
+    tp2 = (
+        entry
+        + risk
+        * Decimal("2")
+    )
+
+    # --------------------------------------------------------
+    # SIGNAL
+    # --------------------------------------------------------
 
     return {
         "signal": "BUY",
         "score": score,
         "entry": entry,
         "sl": sl,
-        "tp": tp,
-        "candle_time": c0["time"],
+        "tp1": tp1,
+        "tp2": tp2,
+        "candle_time": current["time"],
+        "bos_level": broken_level,
+        "body_ratio": body_ratio,
+        "recent_move": recent_move,
     }
-
-
-# ============================================================
-# BALANCE
-# ============================================================
-
-def calculate_effective_order_value(balance):
-
-    balance = dec(balance)
-
-    if balance <= BALANCE_RESERVE_USDT:
-        return Decimal("0")
-
-    usable = (
-        balance
-        - BALANCE_RESERVE_USDT
-    )
-
-    return min(
-        ORDER_USDT,
-        usable
-    )
 
 
 # ============================================================
@@ -981,10 +1122,14 @@ def calculate_effective_order_value(balance):
 
 def load_state():
 
-    try:
+    if not os.path.exists(
+        STATE_FILE
+    ):
+        return {
+            "processed": {}
+        }
 
-        if not os.path.exists(STATE_FILE):
-            return {}
+    try:
 
         with open(
             STATE_FILE,
@@ -995,6 +1140,10 @@ def load_state():
             data = json.load(file)
 
         if isinstance(data, dict):
+
+            if "processed" not in data:
+                data["processed"] = {}
+
             return data
 
     except Exception as exc:
@@ -1003,7 +1152,9 @@ def load_state():
             f"STATE LOAD ERROR: {exc}"
         )
 
-    return {}
+    return {
+        "processed": {}
+    }
 
 
 def save_state(state):
@@ -1048,17 +1199,15 @@ def was_processed(
     candle_time
 ):
 
-    processed = state.get(
-        "processed",
-        {}
-    )
-
     return (
         state_key(
             symbol,
             candle_time
         )
-        in processed
+        in state.get(
+            "processed",
+            {}
+        )
     )
 
 
@@ -1077,7 +1226,7 @@ def mark_processed(
     )
 
     state["processed"][key] = {
-        "processed_at": utc_now()
+        "time": utc_now()
     }
 
     keys = list(
@@ -1094,31 +1243,53 @@ def mark_processed(
 
 
 # ============================================================
-# QUANTITY
+# ORDER VALUE
 # ============================================================
 
-def calculate_order_quantity(
+def effective_order_value(balance):
+
+    balance = dec(balance)
+
+    usable = (
+        balance
+        - BALANCE_RESERVE_USDT
+    )
+
+    if usable <= 0:
+        return Decimal("0")
+
+    return min(
+        ORDER_USDT,
+        usable
+    )
+
+
+# ============================================================
+# ORDER QUANTITY
+# ============================================================
+
+def calculate_quantity(
     order_value,
-    entry_price,
+    price,
     rules
 ):
 
     order_value = dec(order_value)
-    entry_price = dec(entry_price)
+    price = dec(price)
 
     if order_value <= 0:
         raise RuntimeError(
             "ORDER VALUE IS ZERO"
         )
 
-    if entry_price <= 0:
+    if price <= 0:
         raise RuntimeError(
-            "INVALID ENTRY PRICE"
+            "INVALID PRICE"
         )
 
     quantity = (
         order_value
-        / entry_price
+        / price
     )
 
     quantity = floor_step(
@@ -1133,7 +1304,8 @@ def calculate_order_quantity(
 
     if (
         rules["min_qty"] > 0
-        and quantity < rules["min_qty"]
+        and quantity
+        < rules["min_qty"]
     ):
 
         raise RuntimeError(
@@ -1143,13 +1315,13 @@ def calculate_order_quantity(
         )
 
     actual_value = (
-        quantity
-        * entry_price
+        quantity * price
     )
 
     if (
         rules["min_notional"] > 0
-        and actual_value < rules["min_notional"]
+        and actual_value
+        < rules["min_notional"]
     ):
 
         raise RuntimeError(
@@ -1165,7 +1337,7 @@ def calculate_order_quantity(
 # REAL MARKET BUY
 # ============================================================
 
-def real_market_buy(
+def send_real_buy(
     symbol,
     quantity
 ):
@@ -1223,23 +1395,17 @@ def process_signal(
     ):
 
         log(
-            f"SKIP DUPLICATE: {symbol}"
+            f"DUPLICATE SIGNAL: {symbol}"
         )
 
         return False
 
-    # --------------------------------------------------------
-    # EFFECTIVE VALUE
-    # --------------------------------------------------------
-
-    effective_value = (
-        calculate_effective_order_value(
-            balance
-        )
+    available = effective_order_value(
+        balance
     )
 
     # --------------------------------------------------------
-    # IMMEDIATE SIGNAL TELEGRAM
+    # IMMEDIATE SIGNAL
     # --------------------------------------------------------
 
     telegram(
@@ -1247,40 +1413,43 @@ def process_signal(
         f"⚡ {VERSION}\n"
         f"🪙 {symbol}\n"
         f"⭐ SCORE: {signal['score']}\n"
+        f"📐 BOS: "
+        f"{decimal_text(signal['bos_level'])}\n"
         f"💰 ENTRY: "
         f"{decimal_text(signal['entry'])}\n"
         f"🛑 SL: "
         f"{decimal_text(signal['sl'])}\n"
-        f"🎯 TP: "
-        f"{decimal_text(signal['tp'])}\n"
+        f"🎯 TP1: "
+        f"{decimal_text(signal['tp1'])}\n"
+        f"🎯 TP2: "
+        f"{decimal_text(signal['tp2'])}\n"
         f"💰 BALANCE: "
         f"{decimal_text(balance)} USDT\n"
         f"📦 AVAILABLE: "
-        f"{decimal_text(effective_value)} USDT\n"
+        f"{decimal_text(available)} USDT\n"
         f"🕐 {utc_now()}"
     )
 
     # --------------------------------------------------------
-    # BALANCE CHECK
+    # BALANCE
     # --------------------------------------------------------
 
-    if effective_value <= 0:
+    if available <= 0:
 
         telegram(
             "⚠️ ORDER BLOCKED\n"
             f"🪙 {symbol}\n"
-            "❌ NO USABLE USDT\n"
+            "❌ USDT NOT AVAILABLE\n"
             f"💰 BALANCE: "
-            f"{decimal_text(balance)} USDT\n"
+            f"{decimal_text(balance)}\n"
             f"🔒 RESERVE: "
-            f"{decimal_text(BALANCE_RESERVE_USDT)} USDT\n"
-            f"🕐 {utc_now()}"
+            f"{decimal_text(BALANCE_RESERVE_USDT)}"
         )
 
         return False
 
     # --------------------------------------------------------
-    # MARKET RULES
+    # RULES
     # --------------------------------------------------------
 
     try:
@@ -1292,11 +1461,9 @@ def process_signal(
     except Exception as exc:
 
         telegram(
-            "❌ ORDER PRECHECK FAILED\n"
+            "❌ MARKET RULE ERROR\n"
             f"🪙 {symbol}\n"
-            f"❗ MARKET RULES ERROR: "
-            f"{str(exc)[:600]}\n"
-            f"🕐 {utc_now()}"
+            f"❗ {str(exc)[:700]}"
         )
 
         return False
@@ -1307,8 +1474,8 @@ def process_signal(
 
     try:
 
-        quantity = calculate_order_quantity(
-            effective_value,
+        quantity = calculate_quantity(
+            available,
             signal["entry"],
             rules
         )
@@ -1318,25 +1485,20 @@ def process_signal(
         telegram(
             "⚠️ ORDER BLOCKED\n"
             f"🪙 {symbol}\n"
-            f"❌ {str(exc)[:600]}\n"
+            f"❌ {str(exc)[:700]}\n"
             f"💰 BALANCE: "
             f"{decimal_text(balance)} USDT\n"
             f"📦 AVAILABLE: "
-            f"{decimal_text(effective_value)} USDT\n"
-            f"📐 STEP: "
-            f"{decimal_text(rules['step_size'])}\n"
+            f"{decimal_text(available)} USDT\n"
             f"📏 MIN QTY: "
             f"{decimal_text(rules['min_qty'])}\n"
             f"💵 MIN NOTIONAL: "
             f"{decimal_text(rules['min_notional'])} USDT\n"
-            f"🕐 {utc_now()}"
+            f"📐 STEP: "
+            f"{decimal_text(rules['step_size'])}"
         )
 
         return False
-
-    # --------------------------------------------------------
-    # ACTUAL VALUE
-    # --------------------------------------------------------
 
     actual_value = (
         quantity
@@ -1354,39 +1516,14 @@ def process_signal(
         f"{decimal_text(quantity)}\n"
         f"💵 VALUE: "
         f"{decimal_text(actual_value)} USDT\n"
-        f"💰 BALANCE: "
-        f"{decimal_text(balance)} USDT\n"
         f"📏 MIN QTY: "
         f"{decimal_text(rules['min_qty'])}\n"
         f"💵 MIN NOTIONAL: "
-        f"{decimal_text(rules['min_notional'])} USDT\n"
-        f"🕐 {utc_now()}"
+        f"{decimal_text(rules['min_notional'])} USDT"
     )
 
     # --------------------------------------------------------
-    # SIGNAL DETAILS
-    # --------------------------------------------------------
-
-    telegram(
-        "🟢 ATI BUY SIGNAL\n"
-        f"⚡ {VERSION}\n"
-        f"🪙 {symbol}\n"
-        f"⭐ SCORE: {signal['score']}\n"
-        f"💰 ENTRY: "
-        f"{decimal_text(signal['entry'])}\n"
-        f"🛑 SL: "
-        f"{decimal_text(signal['sl'])}\n"
-        f"🎯 TP: "
-        f"{decimal_text(signal['tp'])}\n"
-        f"📦 QTY: "
-        f"{decimal_text(quantity)}\n"
-        f"💵 VALUE: "
-        f"{decimal_text(actual_value)} USDT\n"
-        f"🕐 {utc_now()}"
-    )
-
-    # --------------------------------------------------------
-    # PAPER MODE
+    # PAPER
     # --------------------------------------------------------
 
     if not REAL_TRADING:
@@ -1394,8 +1531,7 @@ def process_signal(
         telegram(
             "🟡 PAPER MODE\n"
             f"🪙 {symbol}\n"
-            "🚫 REAL ORDER NOT SENT\n"
-            f"🕐 {utc_now()}"
+            "🚫 REAL ORDER NOT SENT"
         )
 
         mark_processed(
@@ -1409,26 +1545,22 @@ def process_signal(
         return False
 
     # --------------------------------------------------------
-    # REAL BUY STARTING
+    # REAL
     # --------------------------------------------------------
 
     telegram(
         "🔓 REAL BUY STARTING\n"
         f"🪙 {symbol}\n"
-        f"💵 VALUE: "
-        f"{decimal_text(actual_value)} USDT\n"
         f"📦 QTY: "
         f"{decimal_text(quantity)}\n"
+        f"💵 VALUE: "
+        f"{decimal_text(actual_value)} USDT\n"
         f"🕐 {utc_now()}"
     )
 
-    # --------------------------------------------------------
-    # REAL ORDER
-    # --------------------------------------------------------
-
     try:
 
-        result = real_market_buy(
+        result = send_real_buy(
             symbol,
             quantity
         )
@@ -1448,14 +1580,9 @@ def process_signal(
 
             executed_qty = (
                 result.get("executedQty")
-                or result.get("executed_quantity")
-                or "N/A"
-            )
-
-            quote_qty = (
-                result.get("cummulativeQuoteQty")
-                or result.get("quoteOrderQty")
-                or result.get("executedQuoteQty")
+                or result.get(
+                    "executed_quantity"
+                )
                 or "N/A"
             )
 
@@ -1464,7 +1591,6 @@ def process_signal(
             order_id = "N/A"
             status = "UNKNOWN"
             executed_qty = "N/A"
-            quote_qty = "N/A"
 
         mark_processed(
             state,
@@ -1481,8 +1607,8 @@ def process_signal(
             f"📊 STATUS: {status}\n"
             f"📦 EXECUTED QTY: "
             f"{executed_qty}\n"
-            f"💵 EXECUTED VALUE: "
-            f"{quote_qty}\n"
+            f"💵 REQUEST VALUE: "
+            f"{decimal_text(actual_value)} USDT\n"
             f"🕐 {utc_now()}"
         )
 
@@ -1493,18 +1619,18 @@ def process_signal(
         error = str(exc)
 
         log(
-            f"REAL BUY ERROR {symbol}: "
-            f"{error}"
+            f"REAL BUY FAILED: "
+            f"{symbol} | {error}"
         )
 
         telegram(
             "❌ REAL BUY FAILED\n"
             f"🪙 {symbol}\n"
-            f"❗ {error[:800]}\n"
-            f"💵 VALUE: "
-            f"{decimal_text(actual_value)} USDT\n"
+            f"❗ {error[:900]}\n"
             f"📦 QTY: "
             f"{decimal_text(quantity)}\n"
+            f"💵 VALUE: "
+            f"{decimal_text(actual_value)} USDT\n"
             f"🕐 {utc_now()}"
         )
 
@@ -1517,11 +1643,12 @@ def process_signal(
 
 def scan():
 
-    started = time.time()
+    start_time = time.time()
 
     telegram(
         "🔎 SCAN STARTING\n"
         f"⚡ {VERSION}\n"
+        "🧠 BOS → PULLBACK → CLOSED CONFIRM\n"
         "⏱ 5m CLOSED CANDLES\n"
         f"🕐 {utc_now()}"
     )
@@ -1545,30 +1672,28 @@ def scan():
         account
     )
 
-    log(
-        "USDT BALANCE: "
-        f"{decimal_text(balance)}"
-    )
-
     telegram(
         "💰 BALANCE\n"
         f"USDT FREE: "
         f"{decimal_text(balance)}\n"
-        f"🎯 ORDER TARGET: "
+        f"🎯 TARGET: "
         f"{decimal_text(ORDER_USDT)} USDT\n"
         f"🔒 RESERVE: "
-        f"{decimal_text(BALANCE_RESERVE_USDT)} USDT\n"
-        f"🕐 {utc_now()}"
+        f"{decimal_text(BALANCE_RESERVE_USDT)} USDT"
     )
 
     if balance <= 0:
 
         telegram(
             "⚠️ NO FREE USDT\n"
-            "REAL ORDER CANNOT BE SENT."
+            "SCAN STOPPED."
         )
 
         return
+
+    # --------------------------------------------------------
+    # MARKET LOOP
+    # --------------------------------------------------------
 
     for market in markets:
 
@@ -1604,7 +1729,9 @@ def scan():
                 attempts += 1
 
                 log(
-                    f"SIGNAL FOUND: {symbol}"
+                    f"SIGNAL FOUND: "
+                    f"{symbol} "
+                    f"score={signal['score']}"
                 )
 
                 success = process_signal(
@@ -1619,7 +1746,8 @@ def scan():
                     successful_orders += 1
 
                     log(
-                        f"ORDER SUCCESS: {symbol}"
+                        f"ORDER SUCCESS: "
+                        f"{symbol}"
                     )
 
                     break
@@ -1629,8 +1757,8 @@ def scan():
             error = str(exc)
 
             log(
-                f"SCAN ERROR {symbol}: "
-                f"{error}"
+                f"SCAN ERROR "
+                f"{symbol}: {error}"
             )
 
             telegram(
@@ -1660,7 +1788,7 @@ def scan():
 
     elapsed = (
         time.time()
-        - started
+        - start_time
     )
 
     telegram(
@@ -1670,15 +1798,15 @@ def scan():
         f"🎯 ATTEMPTS: {attempts}\n"
         f"✅ SUCCESSFUL ORDERS: "
         f"{successful_orders}\n"
-        f"⏱ {elapsed:.1f}s\n"
+        f"⏱ TIME: {elapsed:.1f}s\n"
         f"🕐 {utc_now()}"
     )
 
     log(
-        "SCAN FINISHED: "
-        f"checked={checked} "
-        f"signals={signals} "
-        f"attempts={attempts} "
+        "SCAN FINISHED | "
+        f"checked={checked} | "
+        f"signals={signals} | "
+        f"attempts={attempts} | "
         f"success={successful_orders}"
     )
 
@@ -1692,19 +1820,19 @@ def main():
     log("=" * 60)
 
     log(
-        f"⚡ ATI BOT {VERSION}"
+        f"⚡ ATI CRYPTO BOT {VERSION}"
     )
 
     log(
-        "🧠 AL BROOKS PRICE ACTION"
+        "🧠 PRICE ACTION"
     )
 
     log(
-        "📐 Trend → BOS → Pullback → Continuation"
+        "📐 BOS → PULLBACK → CLOSED CONFIRM"
     )
 
     log(
-        "⏱ TIMEFRAME: 5m CLOSED CANDLES"
+        "⏱ TIMEFRAME: 5m"
     )
 
     log(
@@ -1732,19 +1860,17 @@ def main():
     log("=" * 60)
 
     # --------------------------------------------------------
-    # TELEGRAM TEST
+    # TELEGRAM
     # --------------------------------------------------------
 
     telegram_test()
-
-    # --------------------------------------------------------
-    # START
-    # --------------------------------------------------------
 
     telegram(
         "⚡ ATI BOT STARTED\n"
         f"🔥 {VERSION}\n"
         "📡 TABDEAL API: CONNECTING...\n"
+        "🧠 BOS → PULLBACK → CLOSED CONFIRM\n"
+        "🚫 EMA: OFF\n"
         "🔓 REAL TRADING: "
         + (
             "ENABLED"
@@ -1758,30 +1884,25 @@ def main():
     )
 
     # --------------------------------------------------------
-    # API KEY CHECK
+    # API CHECK
     # --------------------------------------------------------
 
     if not API_KEY:
 
-        message = (
+        telegram(
             "❌ API KEY MISSING\n"
             "TABDIL_API_KEY / TABDEAL_API_KEY"
         )
-
-        log(message)
-        telegram(message)
 
         return
 
     if not API_SECRET:
 
-        message = (
+        telegram(
             "❌ API SECRET MISSING\n"
-            "TABDIL_API_SECRET / TABDEAL_API_SECRET"
+            "TABDIL_API_SECRET / "
+            "TABDEAL_API_SECRET"
         )
-
-        log(message)
-        telegram(message)
 
         return
 
@@ -1803,8 +1924,6 @@ def main():
             f"{decimal_text(balance)}\n"
             f"💵 ORDER TARGET: "
             f"{decimal_text(ORDER_USDT)} USDT\n"
-            f"🔒 RESERVE: "
-            f"{decimal_text(BALANCE_RESERVE_USDT)} USDT\n"
             "🔓 REAL TRADING: "
             + (
                 "ENABLED"
@@ -1824,7 +1943,7 @@ def main():
 
         telegram(
             "❌ AUTH FAILED\n"
-            f"❗ {error[:800]}\n"
+            f"❗ {error[:900]}\n"
             f"🕐 {utc_now()}"
         )
 
@@ -1870,7 +1989,7 @@ def main():
 
 
 # ============================================================
-# ENTRY POINT
+# ENTRY
 # ============================================================
 
 if __name__ == "__main__":
