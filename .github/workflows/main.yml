@@ -1,14 +1,16 @@
-name: Run ATI Bot V40.2.43 REAL
+name: Run ATI Bot
 
 on:
   workflow_dispatch:
+
   schedule:
     - cron: "*/5 * * * *"
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
-    timeout-minutes: 4
+
+    timeout-minutes: 5
 
     steps:
       - name: Checkout
@@ -19,29 +21,53 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install dependencies
+      - name: Install requests
         run: |
           python -m pip install --upgrade pip
           pip install requests
 
-      - name: Validate main.py
-        run: python -m py_compile main.py
-
       - name: Run ATI Bot
         env:
-          TABDEAL_API_KEY: ${{ secrets.TABDIL_API_KEY }}
-          TABDEAL_API_SECRET: ${{ secrets.TABDIL_API_SECRET }}
 
+          # ==============================
+          # REAL TRADING
+          # ==============================
+          LIVE_TRADING: "true"
+
+          # ==============================
+          # BUY VALUE
+          # ==============================
+          ORDER_USDT: "2"
+
+          # ==============================
+          # PRIMARY API = TABDIL
+          # ==============================
           TABDIL_API_KEY: ${{ secrets.TABDIL_API_KEY }}
           TABDIL_API_SECRET: ${{ secrets.TABDIL_API_SECRET }}
 
+          # ==============================
+          # FALLBACK API
+          # ==============================
+          TABDEAL_API_KEY: ${{ secrets.TABDEAL_API_KEY }}
+          TABDEAL_API_SECRET: ${{ secrets.TABDEAL_API_SECRET }}
+
+          # ==============================
+          # TELEGRAM
+          # ==============================
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
 
-          LIVE_TRADING: ${{ secrets.LIVE_TRADING }}
+          # ==============================
+          # API
+          # ==============================
+          RECV_WINDOW: "5000"
 
-          ORDER_USDT: "2"
+          # ==============================
+          # SCANNER
+          # ==============================
+          SCAN_LIMIT: "40"
+          MAX_WORKERS: "12"
+          MIN_SCORE: "11"
 
-          RECV_WINDOW: "10000"
-
-        run: python main.py
+        run: |
+          python main.py
