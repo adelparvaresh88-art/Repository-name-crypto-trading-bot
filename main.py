@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
 
-VERSION = "V40.2.55-REAL"
+VERSION = "V40.2.56-REAL"
 BASE = "https://api1.tabdeal.org"
 API_ROOT = f"{BASE}/r/api/v1"
 ORDER_ROOT = f"{BASE}/api/v1"
@@ -30,7 +30,7 @@ TG_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TG_CHAT = os.getenv("TELEGRAM_CHAT_ID", "")
 
 session = requests.Session()
-session.headers.update({"User-Agent": "ATI-Crypto-Bot/40.2.41"})
+session.headers.update({"User-Agent": f"ATI/{VERSION}"})
 
 
 def now_text():
@@ -63,23 +63,52 @@ def public_get(path, params=None):
     return r.json()
 
 
-def server_time():
+SERVER_OFFSET_MS = 0
+
+
+def server_time_sync():
+    global SERVER_OFFSET_MS
     data = public_get("/time")
-    return int(data.get("serverTime", int(time.time() * 1000)))
+    server_ms = int(data.get("serverTime", int(time.time() * 1000)))
+    SERVER_OFFSET_MS = server_ms - int(time.time() * 1000)
+    print(f"🕐 SERVER OFFSET: {SERVER_OFFSET_MS} ms", flush=True)
+    return server_ms
 
 
-def signed_request(method, path, params=None):
+def signed_params(extra=None):
     if not API_KEY or not API_SECRET:
         raise RuntimeError("TABDEAL_API_KEY / TABDEAL_API_SECRET missing")
 
-    p = dict(params or {})
-    # Official Tabdeal signing: query-string parameters + timestamp, HMAC-SHA256.
-    p["timestamp"] = server_time()
-    p["recvWindow"] = RECV_WINDOW
-    query = "&".join(f"{k}={p[k]}" for k in p)
-    sig = hmac.new(API_SECRET.encode(), query.encode(), hashlib.sha256).hexdigest()
-    p["signature"] = sig
-    headers = {"X-MBX-APIKEY": API_KEY}
+    params = {}
+    if extra:
+        for key, value in extra.items():
+            if key in {"signature", "timestamp", "recvWindow"}:
+                continue
+            if value is None:
+                continue
+            if isinstance(value, str) and value.strip() == "":
+                continue
+            params[key] = value
+
+    # Tabdeal-compatible Postman-style signing: integer timestamp + raw query.
+    params["timestamp"] = int(time.time() * 1000) + int(SERVER_OFFSET_MS)
+    params["recvWindow"] = RECV_WINDOW
+    raw_query = "&".join(f"{key}={value}" for key, value in params.items())
+    signature = hmac.new(
+        API_SECRET.encode("utf-8"),
+        raw_query.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    params["signature"] = signature
+    return params
+
+
+def signed_request(method, path, params=None):
+    p = signed_params(params)
+    headers = {
+        "X-MBX-APIKEY": API_KEY,
+        "Content-Type": "application/x-www-form-urlencoded",
+    }
 
     if method.upper() == "GET":
         r = session.get(f"{API_ROOT}{path}", params=p, headers=headers, timeout=TIMEOUT)
@@ -102,6 +131,8 @@ def signed_request(method, path, params=None):
 
 
 def auth_test():
+    # Refresh server offset immediately before private authentication.
+    server_time_sync()
     account = signed_request("GET", "/account")
     if not isinstance(account, dict):
         raise RuntimeError("Invalid account response")
@@ -398,6 +429,7 @@ def main():
     print("📐 Trend → BOS → Pullback → Continuation → CLOSED CONFIRM")
     print("⏱ TIMEFRAME: 5m CLOSED CANDLES")
     print("🚫 EMA: OFF")
+    print("🔐 AUTH: RAW HMAC + SERVER OFFSET")
     print(f"🔓 REAL ORDERS: {'ENABLED' if LIVE_TRADING else 'DISABLED'}")
     print(f"📦 ORDER_QTY: {ORDER_QTY}")
     print(f"🔎 FULL SCAN: {'ON' if FULL_SCAN else 'OFF'}")
@@ -408,6 +440,7 @@ def main():
         f"📡 TABDEAL API: CONNECTING...\n"
         f"🔓 REAL ORDERS: {'ENABLED' if LIVE_TRADING else 'DISABLED'}\n"
         f"📦 ORDER_QTY: {ORDER_QTY}\n"
+        f"🔐 AUTH: RAW HMAC + SERVER OFFSET\n"
         f"🔎 FULL USDT SCAN: {'ON' if FULL_SCAN else 'OFF'}\n"
         f"📊 SCAN STARTING...\n"
         f"🕐 {now_text()}"
