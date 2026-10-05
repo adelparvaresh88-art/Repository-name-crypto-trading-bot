@@ -10,12 +10,12 @@ import requests
 
 
 # ============================================================
-# ATI CRYPTO BOT V40.2.57-REAL
+# ATI CRYPTO BOT V40.2.58-REAL
 # TABDEAL SPOT
-# HMAC AUTH FIX
+# AUTH FIX + BEST BUY FILTER
 # ============================================================
 
-VERSION = "V40.2.57-REAL"
+VERSION = "V40.2.58-REAL"
 
 BASE = "https://api1.tabdeal.org"
 API_ROOT = f"{BASE}/r/api/v1"
@@ -27,9 +27,16 @@ RECV_WINDOW = 5000
 SCAN_UNIVERSE = 40
 MIN_CANDLES = 30
 
-# ============================================================
-# ENV
-# ============================================================
+ORDER_VALUE = Decimal(
+    os.getenv("ORDER_QTY", "2")
+)
+
+LIVE_TRADING = (
+    os.getenv(
+        "LIVE_TRADING",
+        "false"
+    ).lower() == "true"
+)
 
 API_KEY = (
     os.getenv("TABDIL_API_KEY")
@@ -45,24 +52,23 @@ API_SECRET = (
     or ""
 ).strip()
 
-TG_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-TG_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+TG_TOKEN = os.getenv(
+    "TELEGRAM_BOT_TOKEN",
+    ""
+).strip()
 
-LIVE_TRADING = (
-    os.getenv("LIVE_TRADING", "false").strip().lower() == "true"
-)
-
-ORDER_VALUE = Decimal(
-    os.getenv("ORDER_QTY", "2")
-)
+TG_CHAT_ID = os.getenv(
+    "TELEGRAM_CHAT_ID",
+    ""
+).strip()
 
 session = requests.Session()
 
 session.headers.update({
-    "User-Agent": f"ATI-Crypto-Bot/{VERSION}",
+    "User-Agent":
+        f"ATI-Crypto-Bot/{VERSION}",
     "Accept": "application/json",
 })
-
 
 SERVER_OFFSET_MS = 0
 
@@ -72,7 +78,10 @@ SERVER_OFFSET_MS = 0
 # ============================================================
 
 def utc_now():
-    return datetime.now(timezone.utc).strftime(
+
+    return datetime.now(
+        timezone.utc
+    ).strftime(
         "%Y-%m-%d %H:%M:%S UTC"
     )
 
@@ -81,47 +90,50 @@ def utc_now():
 # TELEGRAM
 # ============================================================
 
-def send_telegram(message):
+def telegram(message):
 
-    print(message, flush=True)
+    print(
+        message,
+        flush=True
+    )
 
     if not TG_TOKEN or not TG_CHAT_ID:
         return
 
     try:
 
-        url = (
-            f"https://api.telegram.org/"
-            f"bot{TG_TOKEN}/sendMessage"
-        )
-
         requests.post(
-            url,
+            f"https://api.telegram.org/"
+            f"bot{TG_TOKEN}/sendMessage",
+
             data={
                 "chat_id": TG_CHAT_ID,
                 "text": message,
             },
+
             timeout=10,
         )
 
     except Exception as exc:
 
         print(
-            f"TELEGRAM ERROR: {exc}",
+            "TELEGRAM ERROR:",
+            exc,
             flush=True
         )
 
 
 # ============================================================
-# PUBLIC REQUEST
+# PUBLIC GET
 # ============================================================
 
-def public_get(path, params=None):
-
-    url = f"{BASE}{path}"
+def public_get(
+    path,
+    params=None
+):
 
     response = session.get(
-        url,
+        f"{BASE}{path}",
         params=params or {},
         timeout=TIMEOUT,
     )
@@ -130,7 +142,7 @@ def public_get(path, params=None):
 
         raise RuntimeError(
             f"HTTP {response.status_code}: "
-            f"{response.text[:700]}"
+            f"{response.text[:800]}"
         )
 
     return response.json()
@@ -157,23 +169,20 @@ def sync_server_time():
     )
 
     SERVER_OFFSET_MS = (
-        server_time - local_time
+        server_time
+        - local_time
     )
 
     return server_time
 
 
 # ============================================================
-# HMAC SIGNING
+# HMAC
 # ============================================================
 
-def build_signed_params(extra=None):
-
-    if not API_SECRET:
-
-        raise RuntimeError(
-            "API SECRET IS EMPTY"
-        )
+def build_signed_params(
+    extra=None
+):
 
     timestamp = (
         int(time.time() * 1000)
@@ -191,51 +200,56 @@ def build_signed_params(extra=None):
 
             params[key] = str(value)
 
-    params["timestamp"] = str(timestamp)
-    params["recvWindow"] = str(RECV_WINDOW)
+    params["timestamp"] = str(
+        timestamp
+    )
 
-    # IMPORTANT:
-    # Signature is generated ONLY from parameters
-    # BEFORE adding signature itself.
+    params["recvWindow"] = str(
+        RECV_WINDOW
+    )
 
-    query_string = urlencode(
+    query = urlencode(
         params,
         doseq=True
     )
 
     signature = hmac.new(
-        API_SECRET.encode("utf-8"),
-        query_string.encode("utf-8"),
+        API_SECRET.encode(
+            "utf-8"
+        ),
+        query.encode(
+            "utf-8"
+        ),
         hashlib.sha256,
     ).hexdigest()
 
-    signed = dict(params)
-    signed["signature"] = signature
+    params["signature"] = signature
 
-    return signed
+    return params
 
 
 # ============================================================
 # SIGNED GET
 # ============================================================
 
-def signed_get(path, extra=None):
+def signed_get(
+    path,
+    extra=None
+):
 
     params = build_signed_params(
         extra
     )
 
-    headers = {
-        "X-MBX-APIKEY": API_KEY,
-        "Content-Type": "application/x-www-form-urlencoded",
-    }
-
-    url = f"{BASE}{path}"
-
     response = session.get(
-        url,
+        f"{BASE}{path}",
         params=params,
-        headers=headers,
+
+        headers={
+            "X-MBX-APIKEY":
+                API_KEY,
+        },
+
         timeout=TIMEOUT,
     )
 
@@ -253,24 +267,27 @@ def signed_get(path, extra=None):
 # SIGNED POST
 # ============================================================
 
-def signed_post(path, extra=None):
+def signed_post(
+    path,
+    extra=None
+):
 
     params = build_signed_params(
         extra
     )
 
-    headers = {
-        "X-MBX-APIKEY": API_KEY,
-        "Content-Type":
-            "application/x-www-form-urlencoded",
-    }
-
-    url = f"{BASE}{path}"
-
     response = session.post(
-        url,
+        f"{BASE}{path}",
         data=params,
-        headers=headers,
+
+        headers={
+            "X-MBX-APIKEY":
+                API_KEY,
+
+            "Content-Type":
+                "application/x-www-form-urlencoded",
+        },
+
         timeout=TIMEOUT,
     )
 
@@ -285,28 +302,20 @@ def signed_post(path, extra=None):
 
 
 # ============================================================
-# AUTH CHECK
+# AUTH
 # ============================================================
 
 def auth_check():
 
     if not API_KEY:
-
         raise RuntimeError(
             "TABDIL_API_KEY is EMPTY"
         )
 
     if not API_SECRET:
-
         raise RuntimeError(
             "TABDIL_API_SECRET is EMPTY"
         )
-
-    send_telegram(
-        "🔐 AUTH TEST\n"
-        "🔑 PAIR: TABDIL\n"
-        f"🕐 {utc_now()}"
-    )
 
     sync_server_time()
 
@@ -315,7 +324,10 @@ def auth_check():
     )
 
     can_trade = bool(
-        account.get("canTrade", False)
+        account.get(
+            "canTrade",
+            False
+        )
     )
 
     balances = account.get(
@@ -327,32 +339,25 @@ def auth_check():
 
     for balance in balances:
 
-        if balance.get("asset") == "USDT":
+        if balance.get(
+            "asset"
+        ) == "USDT":
 
-            try:
-                usdt_free = Decimal(
-                    str(
-                        balance.get(
-                            "free",
-                            "0"
-                        )
+            usdt_free = Decimal(
+                str(
+                    balance.get(
+                        "free",
+                        "0"
                     )
                 )
-            except Exception:
-                usdt_free = Decimal("0")
+            )
 
             break
 
-    send_telegram(
-        "✅ AUTH SUCCESS\n"
-        "🔑 PAIR: TABDIL\n"
-        f"🔓 canTrade={can_trade}\n"
-        f"💰 USDT FREE: {usdt_free}\n"
-        f"⏱ SERVER OFFSET: "
-        f"{SERVER_OFFSET_MS} ms"
+    return (
+        can_trade,
+        usdt_free
     )
-
-    return can_trade, usdt_free
 
 
 # ============================================================
@@ -365,7 +370,10 @@ def get_markets():
         "/r/api/v1/exchangeInfo"
     )
 
-    if isinstance(data, dict):
+    if isinstance(
+        data,
+        dict
+    ):
 
         markets = (
             data.get("symbols")
@@ -387,21 +395,23 @@ def get_markets():
         ):
             continue
 
-        symbol = market.get(
-            "symbol"
-        )
-
-        if not symbol:
-            continue
-
         if market.get(
             "status"
         ) != "TRADING":
+
             continue
 
         if market.get(
             "quoteAsset"
         ) != "USDT":
+
+            continue
+
+        symbol = market.get(
+            "symbol"
+        )
+
+        if not symbol:
             continue
 
         result.append(
@@ -426,7 +436,7 @@ def get_klines(
             "symbol": symbol,
             "interval": "5m",
             "limit": limit,
-        },
+        }
     )
 
     if not isinstance(
@@ -467,10 +477,12 @@ def get_klines(
 
 
 # ============================================================
-# FILTERS
+# MARKET FILTERS
 # ============================================================
 
-def get_filters(market):
+def get_filters(
+    market
+):
 
     result = {
 
@@ -516,15 +528,27 @@ def get_filters(market):
                 )
             )
 
-            if min_qty > result["minQty"]:
-                result["minQty"] = min_qty
+            if min_qty > result[
+                "minQty"
+            ]:
+
+                result[
+                    "minQty"
+                ] = min_qty
 
             if step > 0:
-                result["stepSize"] = step
 
-        elif filter_type == "MIN_NOTIONAL":
+                result[
+                    "stepSize"
+                ] = step
 
-            result["minNotional"] = Decimal(
+        elif filter_type == (
+            "MIN_NOTIONAL"
+        ):
+
+            result[
+                "minNotional"
+            ] = Decimal(
                 str(
                     f.get(
                         "minNotional",
@@ -536,33 +560,38 @@ def get_filters(market):
     return result
 
 
-def round_quantity(
-    quantity,
+# ============================================================
+# QUANTITY ROUNDING
+# ============================================================
+
+def round_down(
+    value,
     step
 ):
 
     if step <= 0:
-        return quantity
+        return value
 
     return (
-        quantity / step
+        value / step
     ).to_integral_value(
         rounding=ROUND_DOWN
     ) * step
 
 
 # ============================================================
-# PRICE ACTION
+# PRICE ACTION SIGNAL
 # ============================================================
 
-def find_signal(candles):
+def calculate_signal(
+    candles
+):
 
     if len(candles) < MIN_CANDLES:
-
         return None
 
-    # Last candle may still be open.
-    # Therefore remove it.
+    # Last candle is ignored:
+    # it may still be forming.
     closed = candles[:-1]
 
     if len(closed) < 15:
@@ -571,24 +600,34 @@ def find_signal(candles):
     current = closed[-1]
     previous = closed[-2]
 
-    previous_range = closed[-10:-3]
+    structure = closed[
+        -10:-3
+    ]
 
-    if not previous_range:
+    if not structure:
         return None
 
     previous_high = max(
         x["high"]
-        for x in previous_range
+        for x in structure
     )
 
+    previous_low = min(
+        x["low"]
+        for x in structure
+    )
+
+    # REAL BOS
     bos = (
         current["close"]
         > previous_high
     )
 
+    # Pullback toward BOS level
     pullback = (
         previous["low"]
-        <= previous_high
+        <=
+        previous_high
         * Decimal("1.008")
     )
 
@@ -599,7 +638,8 @@ def find_signal(candles):
 
     candle_range = (
         current["high"]
-        - current["low"]
+        -
+        current["low"]
     )
 
     if candle_range <= 0:
@@ -607,7 +647,8 @@ def find_signal(candles):
 
     close_position = (
         current["close"]
-        - current["low"]
+        -
+        current["low"]
     ) / candle_range
 
     strong_close = (
@@ -617,7 +658,8 @@ def find_signal(candles):
 
     continuation = (
         current["close"]
-        > previous["close"]
+        >
+        previous["close"]
     )
 
     if not (
@@ -638,72 +680,186 @@ def find_signal(candles):
 
     sl = (
         recent_low
-        * Decimal("0.997")
+        *
+        Decimal("0.997")
     )
 
     risk = (
-        entry - sl
+        entry
+        -
+        sl
     )
 
     if risk <= 0:
         return None
 
+    risk_percent = (
+        risk / entry
+    ) * Decimal("100")
+
+    # Don't accept extremely wide stops.
+    if risk_percent > Decimal("5"):
+        return None
+
     tp1 = (
         entry
-        + risk * Decimal("1.5")
+        +
+        risk * Decimal("1.5")
     )
 
     tp2 = (
         entry
-        + risk * Decimal("2.5")
+        +
+        risk * Decimal("2.5")
     )
 
     pressure = (
         (
             current["close"]
-            - current["open"]
+            -
+            current["open"]
         )
-        / candle_range
+        /
+        candle_range
     ) * Decimal("100")
+
+    score = Decimal("0")
+
+    if bos:
+        score += Decimal("6")
+
+    if pullback:
+        score += Decimal("3")
+
+    if strong_close:
+        score += Decimal("3")
+
+    if continuation:
+        score += Decimal("3")
+
+    # Bonus for strong pressure
+    if pressure >= Decimal("70"):
+        score += Decimal("2")
+
+    elif pressure >= Decimal("60"):
+        score += Decimal("1")
 
     return {
 
-        "entry": entry,
-        "sl": sl,
-        "tp1": tp1,
-        "tp2": tp2,
-        "pressure": pressure,
+        "entry":
+            entry,
+
+        "sl":
+            sl,
+
+        "tp1":
+            tp1,
+
+        "tp2":
+            tp2,
+
+        "risk":
+            risk,
+
+        "risk_percent":
+            risk_percent,
+
+        "pressure":
+            pressure,
+
+        "score":
+            score,
     }
 
 
 # ============================================================
-# REAL BUY
+# FINAL CANDIDATE RANKING
 # ============================================================
 
-def place_real_buy(
-    market,
-    signal
+def rank_candidate(
+    candidate
 ):
 
-    symbol = market["symbol"]
+    signal = candidate["signal"]
+
+    score = signal[
+        "score"
+    ]
+
+    pressure = signal[
+        "pressure"
+    ]
+
+    risk = signal[
+        "risk_percent"
+    ]
+
+    # Prefer high score,
+    # strong pressure,
+    # smaller risk.
+    ranking = (
+        score * Decimal("10")
+        +
+        pressure / Decimal("10")
+        -
+        risk * Decimal("2")
+    )
+
+    return ranking
+
+
+# ============================================================
+# BUY VALIDATION
+# ============================================================
+
+def validate_buy(
+    market,
+    signal,
+    usdt_free
+):
+
+    symbol = market[
+        "symbol"
+    ]
 
     filters = get_filters(
         market
     )
 
-    entry = signal["entry"]
+    entry = signal[
+        "entry"
+    ]
 
     if entry <= 0:
+
         raise RuntimeError(
-            "Invalid entry price"
+            "INVALID ENTRY"
+        )
+
+    # Never spend the entire balance.
+    max_spend = (
+        usdt_free
+        * Decimal("0.90")
+    )
+
+    target = min(
+        ORDER_VALUE,
+        max_spend
+    )
+
+    if target <= 0:
+
+        raise RuntimeError(
+            "NO USDT AVAILABLE"
         )
 
     quantity = (
-        ORDER_VALUE
-        / entry
+        target
+        /
+        entry
     )
 
-    quantity = round_quantity(
+    quantity = round_down(
         quantity,
         filters["stepSize"]
     )
@@ -711,10 +867,17 @@ def place_real_buy(
     if quantity <= 0:
 
         raise RuntimeError(
-            f"{symbol}: quantity became zero"
+            f"{symbol}: "
+            "quantity became zero"
         )
 
-    if quantity < filters["minQty"]:
+    if (
+        filters["minQty"] > 0
+        and
+        quantity
+        <
+        filters["minQty"]
+    ):
 
         raise RuntimeError(
             f"{symbol}: quantity "
@@ -723,13 +886,17 @@ def place_real_buy(
         )
 
     notional = (
-        quantity * entry
+        quantity
+        *
+        entry
     )
 
     if (
         filters["minNotional"] > 0
         and
-        notional < filters["minNotional"]
+        notional
+        <
+        filters["minNotional"]
     ):
 
         raise RuntimeError(
@@ -738,12 +905,52 @@ def place_real_buy(
             f"{filters['minNotional']}"
         )
 
-    send_telegram(
-        "🟠 REAL BUY PREPARED\n"
+    if notional > max_spend:
+
+        raise RuntimeError(
+            "ORDER EXCEEDS SAFE BALANCE"
+        )
+
+    return (
+        quantity,
+        notional,
+        filters
+    )
+
+
+# ============================================================
+# REAL BUY
+# ============================================================
+
+def real_buy(
+    market,
+    signal,
+    usdt_free
+):
+
+    symbol = market[
+        "symbol"
+    ]
+
+    (
+        quantity,
+        notional,
+        filters
+    ) = validate_buy(
+        market,
+        signal,
+        usdt_free
+    )
+
+    telegram(
+        "🟠 BUY VALIDATED\n"
         f"💎 {symbol}\n"
-        f"💵 VALUE: {ORDER_VALUE} USDT\n"
+        f"💵 VALUE: {notional} USDT\n"
         f"📦 QTY: {quantity}\n"
-        f"💰 PRICE: {entry}"
+        f"💰 ENTRY: {signal['entry']}\n"
+        f"🛑 SL: {signal['sl']}\n"
+        f"🎯 TP1: {signal['tp1']}\n"
+        f"🎯 TP2: {signal['tp2']}"
     )
 
     order = signed_post(
@@ -763,10 +970,14 @@ def place_real_buy(
                     quantity,
                     "f"
                 ),
-        },
+        }
     )
 
-    return order, quantity
+    return (
+        order,
+        quantity,
+        notional
+    )
 
 
 # ============================================================
@@ -775,57 +986,75 @@ def place_real_buy(
 
 def main():
 
-    send_telegram(
-        f"⚡ ATI BOT {VERSION}\n"
-        "🧠 BOS → PULLBACK → CLOSED CONFIRM\n"
+    telegram(
+        f"⚡ ATI CRYPTO BOT "
+        f"{VERSION}\n"
+        "🧠 BEST BUY ENGINE\n"
+        "📐 BOS → PULLBACK → "
+        "CLOSED CONFIRM\n"
         "🚫 EMA: OFF\n"
         f"🔓 REAL TRADING: "
         f"{'ENABLED' if LIVE_TRADING else 'DISABLED'}\n"
-        f"💵 ORDER VALUE: "
+        f"💵 TARGET: "
         f"{ORDER_VALUE} USDT\n"
         f"🕐 {utc_now()}"
     )
 
-    # --------------------------------------------------------
+    # ========================================================
     # AUTH
-    # --------------------------------------------------------
+    # ========================================================
+
+    telegram(
+        "🔐 AUTH CHECK "
+        "BEFORE REAL BUY..."
+    )
 
     try:
 
-        can_trade, usdt = auth_check()
+        can_trade, usdt_free = (
+            auth_check()
+        )
+
+        telegram(
+            "✅ AUTH SUCCESS\n"
+            "🔑 PAIR: TABDIL\n"
+            f"🔓 canTrade={can_trade}\n"
+            f"💰 USDT FREE: "
+            f"{usdt_free}\n"
+            f"⏱ SERVER OFFSET: "
+            f"{SERVER_OFFSET_MS} ms"
+        )
 
     except Exception as exc:
 
-        send_telegram(
-            f"🚨 ATI AUTH FAILED "
-            f"{VERSION}\n\n"
-            f"❌ {exc}\n\n"
-            "🛑 NO ORDER THIS RUN"
+        telegram(
+            "🚨 AUTH FAILED\n"
+            f"❌ {exc}\n"
+            "🛑 NO BUY"
         )
 
         return
 
     if not can_trade:
 
-        send_telegram(
-            "🛑 TABDEAL API:\n"
-            "canTrade=false\n\n"
+        telegram(
+            "🛑 canTrade=false\n"
             "NO REAL ORDER"
         )
 
         return
 
-    # --------------------------------------------------------
-    # MARKET SCAN
-    # --------------------------------------------------------
+    if usdt_free <= 0:
 
-    send_telegram(
-        "🔎 SCAN STARTING\n"
-        f"📊 MAX MARKETS: "
-        f"{SCAN_UNIVERSE}\n"
-        "⏱ TIMEFRAME: 5m\n"
-        "🕯 CLOSED CANDLES ONLY"
-    )
+        telegram(
+            "🛑 USDT BALANCE IS ZERO"
+        )
+
+        return
+
+    # ========================================================
+    # MARKETS
+    # ========================================================
 
     try:
 
@@ -833,7 +1062,7 @@ def main():
 
     except Exception as exc:
 
-        send_telegram(
+        telegram(
             "🚨 MARKET ERROR\n"
             f"❌ {exc}"
         )
@@ -843,6 +1072,17 @@ def main():
     markets = markets[
         :SCAN_UNIVERSE
     ]
+
+    telegram(
+        "🔎 SCAN STARTING\n"
+        f"📊 MARKETS: "
+        f"{len(markets)}\n"
+        "⏱ 5m CLOSED CANDLES"
+    )
+
+    # ========================================================
+    # SCAN
+    # ========================================================
 
     candidates = []
 
@@ -859,29 +1099,37 @@ def main():
                 40
             )
 
-            result = find_signal(
-                candles
+            signal = (
+                calculate_signal(
+                    candles
+                )
             )
 
-            if result:
+            if signal:
 
-                candidates.append(
-                    (
+                candidates.append({
+
+                    "market":
                         market,
-                        result
-                    )
-                )
+
+                    "signal":
+                        signal,
+
+                    "symbol":
+                        symbol,
+                })
 
         except Exception:
+
             continue
 
-    # --------------------------------------------------------
-    # NO SIGNAL
-    # --------------------------------------------------------
+    # ========================================================
+    # NO CANDIDATE
+    # ========================================================
 
     if not candidates:
 
-        send_telegram(
+        telegram(
             "💓 ATI RUN ALIVE\n"
             "📡 SCAN FINISHED\n"
             "👀 NO BUY\n"
@@ -890,22 +1138,45 @@ def main():
 
         return
 
-    # Strongest pressure first.
+    # ========================================================
+    # RANK
+    # ========================================================
+
+    for candidate in candidates:
+
+        candidate[
+            "ranking"
+        ] = rank_candidate(
+            candidate
+        )
+
     candidates.sort(
-        key=lambda item:
-            item[1]["pressure"],
+        key=lambda x:
+            x["ranking"],
         reverse=True
     )
 
-    market, signal = candidates[0]
+    best = candidates[0]
 
-    symbol = market[
+    market = best[
+        "market"
+    ]
+
+    signal = best[
+        "signal"
+    ]
+
+    symbol = best[
         "symbol"
     ]
 
-    signal_message = (
-        "🚨 BUY CANDIDATE\n"
+    telegram(
+        "🔥 ATI BEST BUY\n"
         f"💎 {symbol}\n"
+        f"🏆 SCORE: "
+        f"{signal['score']}\n"
+        f"📊 RANK: "
+        f"{best['ranking']:.2f}\n"
         f"💵 ENTRY: "
         f"{signal['entry']}\n"
         f"🛑 SL: "
@@ -914,39 +1185,51 @@ def main():
         f"{signal['tp1']}\n"
         f"🎯 TP2: "
         f"{signal['tp2']}\n"
+        f"📉 RISK: "
+        f"{signal['risk_percent']:.2f}%\n"
         f"💪 PRESSURE: "
-        f"{signal['pressure']:.2f}%"
+        f"{signal['pressure']:.2f}%\n"
+        f"👀 TOTAL CANDIDATES: "
+        f"{len(candidates)}"
     )
 
-    # --------------------------------------------------------
+    # ========================================================
     # PAPER
-    # --------------------------------------------------------
+    # ========================================================
 
     if not LIVE_TRADING:
 
-        send_telegram(
-            signal_message
-            + "\n\n"
+        telegram(
             "🟡 PAPER MODE\n"
-            "LIVE_TRADING=false"
+            "LIVE_TRADING=false\n"
+            "🛑 NO REAL BUY"
         )
 
         return
 
-    # --------------------------------------------------------
+    # ========================================================
     # REAL BUY
-    # --------------------------------------------------------
+    # ========================================================
 
     try:
 
-        order, quantity = place_real_buy(
+        (
+            order,
+            quantity,
+            notional
+        ) = real_buy(
             market,
-            signal
+            signal,
+            usdt_free
         )
 
         order_id = (
-            order.get("orderId")
-            or order.get("id")
+            order.get(
+                "orderId"
+            )
+            or order.get(
+                "id"
+            )
             or "N/A"
         )
 
@@ -955,19 +1238,22 @@ def main():
             "N/A"
         )
 
-        send_telegram(
-            signal_message
-            + "\n\n"
+        telegram(
             "🟢 REAL BUY SUCCESS\n"
+            f"💎 {symbol}\n"
+            f"💵 VALUE: "
+            f"{notional} USDT\n"
             f"📦 QTY: {quantity}\n"
-            f"🆔 ORDER ID: {order_id}\n"
-            f"📌 STATUS: {status}"
+            f"🆔 ORDER ID: "
+            f"{order_id}\n"
+            f"📌 STATUS: "
+            f"{status}"
         )
 
     except Exception as exc:
 
-        send_telegram(
-            f"🚨 REAL BUY FAILED\n"
+        telegram(
+            "🚨 REAL BUY FAILED\n"
             f"💎 {symbol}\n"
             f"❌ {exc}\n"
             "🛑 NO RETRY THIS RUN"
@@ -975,7 +1261,7 @@ def main():
 
 
 # ============================================================
-# ENTRY
+# START
 # ============================================================
 
 if __name__ == "__main__":
@@ -986,8 +1272,9 @@ if __name__ == "__main__":
 
     except Exception as exc:
 
-        send_telegram(
-            f"🚨 ATI FATAL ERROR\n"
+        telegram(
+            "🚨 ATI FATAL ERROR\n"
             f"⚡ {VERSION}\n"
-            f"❌ {type(exc).__name__}: {exc}"
+            f"❌ {type(exc).__name__}: "
+            f"{exc}"
         )
