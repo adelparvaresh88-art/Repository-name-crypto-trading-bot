@@ -10,22 +10,29 @@ import requests
 
 
 # ============================================================
-# ATI CRYPTO BOT V40.2.58-REAL
+# ATI CRYPTO BOT V40.2.59-REAL
 # TABDEAL SPOT
-# AUTH FIX + BEST BUY FILTER
+# AUTH PRESERVED + SMART BEST BUY ENGINE
 # ============================================================
 
-VERSION = "V40.2.58-REAL"
+VERSION = "V40.2.59-REAL"
 
 BASE = "https://api1.tabdeal.org"
 API_ROOT = f"{BASE}/r/api/v1"
 ORDER_ROOT = f"{BASE}/api/v1"
 
 TIMEOUT = 15
-RECV_WINDOW = 5000
+RECV_WINDOW = int(
+    os.getenv("RECV_WINDOW", "5000")
+)
 
-SCAN_UNIVERSE = 40
-MIN_CANDLES = 30
+SCAN_UNIVERSE = int(
+    os.getenv("SCAN_UNIVERSE", "40")
+)
+
+MIN_CANDLES = int(
+    os.getenv("MIN_CANDLES", "30")
+)
 
 ORDER_VALUE = Decimal(
     os.getenv("ORDER_QTY", "2")
@@ -78,12 +85,19 @@ SERVER_OFFSET_MS = 0
 # ============================================================
 
 def utc_now():
-
     return datetime.now(
         timezone.utc
     ).strftime(
         "%Y-%m-%d %H:%M:%S UTC"
     )
+
+
+# ============================================================
+# DECIMAL SAFE
+# ============================================================
+
+def D(value):
+    return Decimal(str(value))
 
 
 # ============================================================
@@ -214,12 +228,8 @@ def build_signed_params(
     )
 
     signature = hmac.new(
-        API_SECRET.encode(
-            "utf-8"
-        ),
-        query.encode(
-            "utf-8"
-        ),
+        API_SECRET.encode("utf-8"),
+        query.encode("utf-8"),
         hashlib.sha256,
     ).hexdigest()
 
@@ -317,6 +327,8 @@ def auth_check():
             "TABDIL_API_SECRET is EMPTY"
         )
 
+    # IMPORTANT:
+    # Keep the working AUTH sequence unchanged.
     sync_server_time()
 
     account = signed_get(
@@ -398,13 +410,11 @@ def get_markets():
         if market.get(
             "status"
         ) != "TRADING":
-
             continue
 
         if market.get(
             "quoteAsset"
         ) != "USDT":
-
             continue
 
         symbol = market.get(
@@ -452,26 +462,32 @@ def get_klines(
         if len(row) < 6:
             continue
 
-        candles.append({
+        try:
 
-            "open":
-                Decimal(str(row[1])),
+            candles.append({
 
-            "high":
-                Decimal(str(row[2])),
+                "open":
+                    D(row[1]),
 
-            "low":
-                Decimal(str(row[3])),
+                "high":
+                    D(row[2]),
 
-            "close":
-                Decimal(str(row[4])),
+                "low":
+                    D(row[3]),
 
-            "volume":
-                Decimal(str(row[5])),
+                "close":
+                    D(row[4]),
 
-            "time":
-                int(row[0]),
-        })
+                "volume":
+                    D(row[5]),
+
+                "time":
+                    int(row[0]),
+            })
+
+        except Exception:
+
+            continue
 
     return candles
 
@@ -510,21 +526,17 @@ def get_filters(
             "MARKET_LOT_SIZE",
         ):
 
-            min_qty = Decimal(
-                str(
-                    f.get(
-                        "minQty",
-                        "0"
-                    )
+            min_qty = D(
+                f.get(
+                    "minQty",
+                    "0"
                 )
             )
 
-            step = Decimal(
-                str(
-                    f.get(
-                        "stepSize",
-                        "0"
-                    )
+            step = D(
+                f.get(
+                    "stepSize",
+                    "0"
                 )
             )
 
@@ -548,12 +560,10 @@ def get_filters(
 
             result[
                 "minNotional"
-            ] = Decimal(
-                str(
-                    f.get(
-                        "minNotional",
-                        "0"
-                    )
+            ] = D(
+                f.get(
+                    "minNotional",
+                    "0"
                 )
             )
 
@@ -580,7 +590,20 @@ def round_down(
 
 
 # ============================================================
-# PRICE ACTION SIGNAL
+# PRICE ACTION ENGINE
+#
+# A = REAL BOS
+# B = NEAR BOS
+#
+# Both require:
+#   Pullback
+#   Bullish candle
+#   Closed candle
+#   Strong close
+#   Continuation
+#
+# No EMA.
+# No open-candle BUY.
 # ============================================================
 
 def calculate_signal(
@@ -590,21 +613,23 @@ def calculate_signal(
     if len(candles) < MIN_CANDLES:
         return None
 
-    # Last candle is ignored:
-    # it may still be forming.
+    # Last candle may still be forming.
+    # NEVER use it for a real BUY.
     closed = candles[:-1]
 
-    if len(closed) < 15:
+    if len(closed) < 20:
         return None
 
     current = closed[-1]
     previous = closed[-2]
 
-    structure = closed[
-        -10:-3
-    ]
+    # --------------------------------------------------------
+    # STRUCTURE
+    # --------------------------------------------------------
 
-    if not structure:
+    structure = closed[-12:-3]
+
+    if len(structure) < 5:
         return None
 
     previous_high = max(
@@ -617,24 +642,42 @@ def calculate_signal(
         for x in structure
     )
 
-    # REAL BOS
-    bos = (
-        current["close"]
-        > previous_high
+    if previous_high <= 0:
+        return None
+
+    # --------------------------------------------------------
+    # BOS DISTANCE
+    # --------------------------------------------------------
+
+    bos_distance = (
+        (
+            current["close"]
+            /
+            previous_high
+        )
+        -
+        Decimal("1")
+    ) * Decimal("100")
+
+    # REAL BOS:
+    # Close at least 0.05% above structure high.
+    real_bos = (
+        bos_distance
+        >= Decimal("0.05")
     )
 
-    # Pullback toward BOS level
-    pullback = (
-        previous["low"]
-        <=
-        previous_high
-        * Decimal("1.008")
+    # NEAR BOS:
+    # Close can be up to 0.25% below
+    # the structure high, but must reclaim
+    # enough momentum through the candle.
+    near_bos = (
+        bos_distance
+        >= Decimal("-0.25")
     )
 
-    bullish = (
-        current["close"]
-        > current["open"]
-    )
+    # --------------------------------------------------------
+    # CANDLE
+    # --------------------------------------------------------
 
     candle_range = (
         current["high"]
@@ -644,6 +687,12 @@ def calculate_signal(
 
     if candle_range <= 0:
         return None
+
+    bullish = (
+        current["close"]
+        >
+        current["open"]
+    )
 
     close_position = (
         current["close"]
@@ -662,20 +711,105 @@ def calculate_signal(
         previous["close"]
     )
 
-    if not (
-        bos
-        and pullback
-        and bullish
-        and strong_close
-        and continuation
-    ):
+    # --------------------------------------------------------
+    # PULLBACK
+    # --------------------------------------------------------
+
+    pullback_tolerance = Decimal(
+        "0.80"
+    )
+
+    pullback = (
+        previous["low"]
+        <=
+        previous_high
+        *
+        (
+            Decimal("1")
+            +
+            pullback_tolerance
+            / Decimal("100")
+        )
+    )
+
+    # Current candle must not be excessively far
+    # above the structure level.
+    chase_limit = Decimal(
+        "2.20"
+    )
+
+    chase_distance = (
+        (
+            current["close"]
+            /
+            previous_high
+        )
+        -
+        Decimal("1")
+    ) * Decimal("100")
+
+    not_chasing = (
+        chase_distance
+        <= chase_limit
+    )
+
+    # --------------------------------------------------------
+    # PRESSURE
+    # --------------------------------------------------------
+
+    pressure = (
+        (
+            current["close"]
+            -
+            current["open"]
+        )
+        /
+        candle_range
+    ) * Decimal("100")
+
+    # --------------------------------------------------------
+    # BASE REQUIREMENTS
+    # --------------------------------------------------------
+
+    if not bullish:
         return None
 
-    entry = current["close"]
+    if not strong_close:
+        return None
+
+    if not continuation:
+        return None
+
+    if not pullback:
+        return None
+
+    if not not_chasing:
+        return None
+
+    # Must at least be near BOS.
+    if not near_bos:
+        return None
+
+    # --------------------------------------------------------
+    # SETUP LEVEL
+    # --------------------------------------------------------
+
+    if real_bos:
+        setup = "A-REAL-BOS"
+    else:
+        setup = "B-NEAR-BOS"
+
+    # --------------------------------------------------------
+    # STOP
+    # --------------------------------------------------------
+
+    recent_lows = [
+        x["low"]
+        for x in closed[-6:]
+    ]
 
     recent_low = min(
-        x["low"]
-        for x in closed[-5:]
+        recent_lows
     )
 
     sl = (
@@ -683,6 +817,8 @@ def calculate_signal(
         *
         Decimal("0.997")
     )
+
+    entry = current["close"]
 
     risk = (
         entry
@@ -694,12 +830,22 @@ def calculate_signal(
         return None
 
     risk_percent = (
-        risk / entry
+        risk
+        /
+        entry
     ) * Decimal("100")
 
-    # Don't accept extremely wide stops.
+    # Hard risk ceiling.
     if risk_percent > Decimal("5"):
         return None
+
+    # Avoid absurdly tight stops.
+    if risk_percent < Decimal("0.10"):
+        return None
+
+    # --------------------------------------------------------
+    # TAKE PROFITS
+    # --------------------------------------------------------
 
     tp1 = (
         entry
@@ -713,36 +859,56 @@ def calculate_signal(
         risk * Decimal("2.5")
     )
 
-    pressure = (
-        (
-            current["close"]
-            -
-            current["open"]
-        )
-        /
-        candle_range
-    ) * Decimal("100")
+    # --------------------------------------------------------
+    # SCORE
+    # --------------------------------------------------------
 
     score = Decimal("0")
 
-    if bos:
+    # Structure
+    if real_bos:
         score += Decimal("6")
+    else:
+        score += Decimal("4")
 
-    if pullback:
-        score += Decimal("3")
+    # Pullback
+    score += Decimal("3")
 
-    if strong_close:
-        score += Decimal("3")
+    # Closed confirmation
+    score += Decimal("3")
 
-    if continuation:
-        score += Decimal("3")
+    # Continuation
+    score += Decimal("3")
 
-    # Bonus for strong pressure
+    # Strong pressure
     if pressure >= Decimal("70"):
         score += Decimal("2")
 
     elif pressure >= Decimal("60"):
         score += Decimal("1")
+
+    # Extra quality bonuses
+    if chase_distance <= Decimal("0.80"):
+        score += Decimal("1")
+
+    if close_position >= Decimal("0.70"):
+        score += Decimal("1")
+
+    # --------------------------------------------------------
+    # MINIMUM SCORE
+    # --------------------------------------------------------
+
+    # Real BOS can pass with 15+.
+    # Near BOS needs 13+.
+    if real_bos:
+
+        if score < Decimal("15"):
+            return None
+
+    else:
+
+        if score < Decimal("13"):
+            return None
 
     return {
 
@@ -769,18 +935,32 @@ def calculate_signal(
 
         "score":
             score,
+
+        "setup":
+            setup,
+
+        "bos_distance":
+            bos_distance,
+
+        "chase_distance":
+            chase_distance,
+
+        "close_position":
+            close_position,
     }
 
 
 # ============================================================
-# FINAL CANDIDATE RANKING
+# CANDIDATE RANKING
 # ============================================================
 
 def rank_candidate(
     candidate
 ):
 
-    signal = candidate["signal"]
+    signal = candidate[
+        "signal"
+    ]
 
     score = signal[
         "score"
@@ -794,13 +974,26 @@ def rank_candidate(
         "risk_percent"
     ]
 
-    # Prefer high score,
-    # strong pressure,
-    # smaller risk.
+    bos_distance = signal[
+        "bos_distance"
+    ]
+
+    # Strong preference for REAL BOS.
+    setup_bonus = Decimal("0")
+
+    if signal["setup"] == "A-REAL-BOS":
+        setup_bonus = Decimal("8")
+    else:
+        setup_bonus = Decimal("0")
+
     ranking = (
         score * Decimal("10")
         +
         pressure / Decimal("10")
+        +
+        bos_distance
+        +
+        setup_bonus
         -
         risk * Decimal("2")
     )
@@ -836,10 +1029,11 @@ def validate_buy(
             "INVALID ENTRY"
         )
 
-    # Never spend the entire balance.
+    # Never spend the complete balance.
     max_spend = (
         usdt_free
-        * Decimal("0.90")
+        *
+        Decimal("0.90")
     )
 
     target = min(
@@ -945,12 +1139,15 @@ def real_buy(
     telegram(
         "🟠 BUY VALIDATED\n"
         f"💎 {symbol}\n"
+        f"🧠 {signal['setup']}\n"
+        f"🏆 SCORE: {signal['score']}\n"
         f"💵 VALUE: {notional} USDT\n"
         f"📦 QTY: {quantity}\n"
         f"💰 ENTRY: {signal['entry']}\n"
         f"🛑 SL: {signal['sl']}\n"
         f"🎯 TP1: {signal['tp1']}\n"
-        f"🎯 TP2: {signal['tp2']}"
+        f"🎯 TP2: {signal['tp2']}\n"
+        "⚠️ REAL MARKET BUY"
     )
 
     order = signed_post(
@@ -989,9 +1186,11 @@ def main():
     telegram(
         f"⚡ ATI CRYPTO BOT "
         f"{VERSION}\n"
-        "🧠 BEST BUY ENGINE\n"
-        "📐 BOS → PULLBACK → "
-        "CLOSED CONFIRM\n"
+        "🧠 SMART BEST BUY ENGINE\n"
+        "📐 REAL BOS / NEAR BOS\n"
+        "→ PULLBACK\n"
+        "→ CONTINUATION\n"
+        "→ CLOSED CONFIRM\n"
         "🚫 EMA: OFF\n"
         f"🔓 REAL TRADING: "
         f"{'ENABLED' if LIVE_TRADING else 'DISABLED'}\n"
@@ -1069,6 +1268,7 @@ def main():
 
         return
 
+    # Deterministic universe.
     markets = markets[
         :SCAN_UNIVERSE
     ]
@@ -1077,7 +1277,8 @@ def main():
         "🔎 SCAN STARTING\n"
         f"📊 MARKETS: "
         f"{len(markets)}\n"
-        "⏱ 5m CLOSED CANDLES"
+        "⏱ 5m CLOSED CANDLES\n"
+        "🧠 A=REAL BOS / B=NEAR BOS"
     )
 
     # ========================================================
@@ -1085,6 +1286,8 @@ def main():
     # ========================================================
 
     candidates = []
+
+    errors = 0
 
     for market in markets:
 
@@ -1121,6 +1324,7 @@ def main():
 
         except Exception:
 
+            errors += 1
             continue
 
     # ========================================================
@@ -1133,13 +1337,14 @@ def main():
             "💓 ATI RUN ALIVE\n"
             "📡 SCAN FINISHED\n"
             "👀 NO BUY\n"
+            f"⚠️ SCAN ERRORS: {errors}\n"
             f"🕐 {utc_now()}"
         )
 
         return
 
     # ========================================================
-    # RANK
+    # RANK ALL
     # ========================================================
 
     for candidate in candidates:
@@ -1156,6 +1361,7 @@ def main():
         reverse=True
     )
 
+    # Only ONE best candidate.
     best = candidates[0]
 
     market = best[
@@ -1170,13 +1376,21 @@ def main():
         "symbol"
     ]
 
+    # ========================================================
+    # BEST BUY
+    # ========================================================
+
     telegram(
         "🔥 ATI BEST BUY\n"
         f"💎 {symbol}\n"
+        f"🧠 SETUP: "
+        f"{signal['setup']}\n"
         f"🏆 SCORE: "
         f"{signal['score']}\n"
         f"📊 RANK: "
         f"{best['ranking']:.2f}\n"
+        f"📈 BOS DISTANCE: "
+        f"{signal['bos_distance']:.3f}%\n"
         f"💵 ENTRY: "
         f"{signal['entry']}\n"
         f"🛑 SL: "
@@ -1189,7 +1403,7 @@ def main():
         f"{signal['risk_percent']:.2f}%\n"
         f"💪 PRESSURE: "
         f"{signal['pressure']:.2f}%\n"
-        f"👀 TOTAL CANDIDATES: "
+        f"👀 CANDIDATES: "
         f"{len(candidates)}"
     )
 
@@ -1241,6 +1455,7 @@ def main():
         telegram(
             "🟢 REAL BUY SUCCESS\n"
             f"💎 {symbol}\n"
+            f"🧠 {signal['setup']}\n"
             f"💵 VALUE: "
             f"{notional} USDT\n"
             f"📦 QTY: {quantity}\n"
