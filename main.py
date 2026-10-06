@@ -45,10 +45,6 @@ LIVE_TRADING = (
     in ("1", "true", "yes", "on")
 )
 
-# ============================================================
-# AUTO EXIT
-# ============================================================
-
 TP_PERCENT = Decimal(
     os.getenv("TP_PERCENT", "2.0")
 )
@@ -64,10 +60,6 @@ CHECK_INTERVAL = int(
 MAX_HOLD_MINUTES = int(
     os.getenv("MAX_HOLD_MINUTES", "300")
 )
-
-# ============================================================
-# BUY SETTINGS
-# ============================================================
 
 SCAN_UNIVERSE = int(
     os.getenv("SCAN_UNIVERSE", "25")
@@ -96,7 +88,6 @@ SERVER_OFFSET_MS = 0
 # ============================================================
 
 def now_ms():
-
     return (
         int(time.time() * 1000)
         + SERVER_OFFSET_MS
@@ -104,7 +95,6 @@ def now_ms():
 
 
 def utc_now():
-
     return datetime.now(
         timezone.utc
     ).strftime(
@@ -129,25 +119,20 @@ def telegram(text):
     ).strip()
 
     if not token or not chat_id:
-
         print(
             text,
             flush=True
         )
-
         return False
 
     try:
-
         r = requests.post(
             f"https://api.telegram.org/"
             f"bot{token}/sendMessage",
-
             data={
                 "chat_id": chat_id,
                 "text": text,
             },
-
             timeout=15,
         )
 
@@ -177,7 +162,6 @@ def telegram(text):
 def json_response(r):
 
     try:
-
         return r.json()
 
     except Exception:
@@ -198,11 +182,8 @@ def public_get(
 ):
 
     if path.startswith("http"):
-
         url = path
-
     else:
-
         url = BASE + path
 
     r = session.get(
@@ -214,7 +195,6 @@ def public_get(
     data = json_response(r)
 
     if not r.ok:
-
         raise RuntimeError(
             f"HTTP {r.status_code}: {data}"
         )
@@ -248,7 +228,7 @@ def sync_server_time():
     )
 
     print(
-        f"🕐 SERVER OFFSET: "
+        f"SERVER OFFSET: "
         f"{SERVER_OFFSET_MS} ms",
         flush=True,
     )
@@ -288,13 +268,8 @@ def load_credentials():
             "API KEY/SECRET NOT FOUND"
         )
 
-    os.environ[
-        "API_KEY"
-    ] = key
-
-    os.environ[
-        "API_SECRET"
-    ] = secret
+    os.environ["API_KEY"] = key
+    os.environ["API_SECRET"] = secret
 
 
 # ============================================================
@@ -309,9 +284,7 @@ def sign_params(params):
         os.environ[
             "API_SECRET"
         ].encode(),
-
         query.encode(),
-
         hashlib.sha256,
     ).hexdigest()
 
@@ -337,8 +310,6 @@ def signed_request(
     )
 
     params["timestamp"] = now_ms()
-
-    # recvWindow helps prevent timestamp problems
     params["recvWindow"] = 5000
 
     query = sign_params(
@@ -451,9 +422,7 @@ def exchange_info():
     )
 
 
-def normalize_symbol(
-    value
-):
+def normalize_symbol(value):
 
     return str(
         value or ""
@@ -469,14 +438,12 @@ def market_list(info):
         info,
         list
     ):
-
         raw = info
 
     elif isinstance(
         info,
         dict
     ):
-
         raw = (
             info.get("symbols")
             or info.get("markets")
@@ -485,7 +452,6 @@ def market_list(info):
         )
 
     else:
-
         raw = []
 
     result = []
@@ -496,7 +462,6 @@ def market_list(info):
             market,
             dict
         ):
-
             continue
 
         symbol = (
@@ -506,7 +471,6 @@ def market_list(info):
         )
 
         if not symbol:
-
             continue
 
         symbol = normalize_symbol(
@@ -516,7 +480,6 @@ def market_list(info):
         if not symbol.endswith(
             "USDT"
         ):
-
             continue
 
         status = str(
@@ -531,7 +494,6 @@ def market_list(info):
             "ACTIVE",
             "ENABLED",
         ):
-
             continue
 
         result.append(
@@ -541,9 +503,7 @@ def market_list(info):
     return result
 
 
-def market_symbol(
-    market
-):
+def market_symbol(market):
 
     return normalize_symbol(
         market.get("symbol")
@@ -556,9 +516,7 @@ def market_symbol(
 # MARKET FILTERS
 # ============================================================
 
-def step_from_market(
-    market
-):
+def step_from_market(market):
 
     filters = (
         market.get(
@@ -593,15 +551,10 @@ def step_from_market(
                 if f.get(key):
 
                     try:
-
                         return Decimal(
-                            str(
-                                f[key]
-                            )
+                            str(f[key])
                         )
-
                     except Exception:
-
                         pass
 
     return Decimal(
@@ -609,9 +562,7 @@ def step_from_market(
     )
 
 
-def min_qty_from_market(
-    market
-):
+def min_qty_from_market(market):
 
     filters = (
         market.get(
@@ -645,15 +596,10 @@ def min_qty_from_market(
                 if f.get(key):
 
                     try:
-
                         return Decimal(
-                            str(
-                                f[key]
-                            )
+                            str(f[key])
                         )
-
                     except Exception:
-
                         pass
 
     return Decimal("0")
@@ -665,7 +611,6 @@ def floor_step(
 ):
 
     if step <= 0:
-
         return value
 
     return (
@@ -678,9 +623,7 @@ def floor_step(
     )
 
 
-def fmt_decimal(
-    value
-):
+def fmt_decimal(value):
 
     text = format(
         value,
@@ -702,14 +645,11 @@ def fmt_decimal(
 # PRICE
 # ============================================================
 
-def recent_trades(
-    symbol
-):
+def recent_trades(symbol):
 
     return public_get(
         PUBLIC_ROOT
         + "/trades",
-
         {
             "symbol": symbol,
             "limit": 100,
@@ -717,22 +657,18 @@ def recent_trades(
     )
 
 
-def trade_rows(
-    data
-):
+def trade_rows(data):
 
     if isinstance(
         data,
         list
     ):
-
         return data
 
     if isinstance(
         data,
         dict
     ):
-
         return (
             data.get("data")
             or data.get("trades")
@@ -742,14 +678,10 @@ def trade_rows(
     return []
 
 
-def current_price(
-    symbol
-):
+def current_price(symbol):
 
     rows = trade_rows(
-        recent_trades(
-            symbol
-        )
+        recent_trades(symbol)
     )
 
     if not rows:
@@ -771,9 +703,7 @@ def current_price(
 # CANDLES
 # ============================================================
 
-def make_candles(
-    rows
-):
+def make_candles(rows):
 
     buckets = {}
 
@@ -858,16 +788,12 @@ def make_candles(
 # SIGNAL
 # ============================================================
 
-def signal(
-    candles
-):
+def signal(candles):
 
     if len(candles) < MIN_CANDLES:
-
         return None
 
     last = candles[-1]
-
     previous = candles[-2]
 
     lookback = candles[-7:-1]
@@ -878,16 +804,12 @@ def signal(
     )
 
     score = 0
-
     reasons = []
 
     if last["c"] > recent_high:
 
         score += 4
-
-        reasons.append(
-            "BOS"
-        )
+        reasons.append("BOS")
 
     elif (
         last["c"]
@@ -896,10 +818,7 @@ def signal(
     ):
 
         score += 2
-
-        reasons.append(
-            "NEAR_BOS"
-        )
+        reasons.append("NEAR_BOS")
 
     else:
 
@@ -908,10 +827,7 @@ def signal(
     if last["c"] > previous["c"]:
 
         score += 1
-
-        reasons.append(
-            "UP"
-        )
+        reasons.append("UP")
 
     candle_range = (
         last["h"]
@@ -931,7 +847,6 @@ def signal(
     ):
 
         score += 2
-
         reasons.append(
             "STRONG_CLOSE"
         )
@@ -939,10 +854,7 @@ def signal(
     if last["c"] > last["o"]:
 
         score += 1
-
-        reasons.append(
-            "GREEN"
-        )
+        reasons.append("GREEN")
 
     move = (
         (
@@ -955,17 +867,14 @@ def signal(
     if move > Decimal("0.15"):
 
         score += 1
-
         reasons.append(
             "MOMENTUM"
         )
 
     if move > Decimal("2.2"):
-
         return None
 
     if score < MIN_SCORE:
-
         return None
 
     return {
@@ -998,7 +907,6 @@ def build_quantity(
     )
 
     if quantity < min_qty:
-
         quantity = min_qty
 
     return quantity
@@ -1076,9 +984,7 @@ def get_order(
 # MY TRADES
 # ============================================================
 
-def get_my_trades(
-    symbol
-):
+def get_my_trades(symbol):
 
     return signed_request(
         "GET",
@@ -1091,12 +997,10 @@ def get_my_trades(
 
 
 # ============================================================
-# ACTUAL FILLED PRICE
+# FILLED PRICE
 # ============================================================
 
-def filled_price(
-    order
-):
+def filled_price(order):
 
     executed = Decimal(
         str(
@@ -1120,17 +1024,13 @@ def filled_price(
     )
 
     if executed <= 0:
-
         return Decimal("0")
 
-    return (
-        quote
-        / executed
-    )
+    return quote / executed
 
 
 # ============================================================
-# RECOVER ENTRY FROM RECENT BUY TRADES
+# RECOVER ENTRY
 # ============================================================
 
 def recover_entry_price(
@@ -1147,27 +1047,29 @@ def recover_entry_price(
     except Exception as e:
 
         print(
-            f"⚠️ MY TRADES {symbol}: {e}",
+            f"MY TRADES {symbol}: {e}",
             flush=True
         )
 
         return Decimal("0")
+
+    if isinstance(
+        trades,
+        dict
+    ):
+
+        trades = (
+            trades.get("data")
+            or trades.get("trades")
+            or []
+        )
 
     if not isinstance(
         trades,
         list
     ):
 
-        if isinstance(
-            trades,
-            dict
-        ):
-
-            trades = (
-                trades.get("data")
-                or trades.get("trades")
-                or []
-            )
+        return Decimal("0")
 
     buys = []
 
@@ -1177,7 +1079,6 @@ def recover_entry_price(
             trade,
             dict
         ):
-
             continue
 
         side = str(
@@ -1188,7 +1089,6 @@ def recover_entry_price(
         ).upper()
 
         if side != "BUY":
-
             continue
 
         try:
@@ -1228,10 +1128,7 @@ def recover_entry_price(
 
             continue
 
-        if (
-            qty > 0
-            and price > 0
-        ):
+        if qty > 0 and price > 0:
 
             buys.append(
                 (
@@ -1242,7 +1139,6 @@ def recover_entry_price(
             )
 
     if not buys:
-
         return Decimal("0")
 
     buys.sort(
@@ -1258,7 +1154,6 @@ def recover_entry_price(
     for _, qty, price in buys:
 
         if remaining <= 0:
-
             break
 
         use_qty = min(
@@ -1269,14 +1164,12 @@ def recover_entry_price(
         total_qty += use_qty
 
         total_cost += (
-            use_qty
-            * price
+            use_qty * price
         )
 
         remaining -= use_qty
 
     if total_qty <= 0:
-
         return Decimal("0")
 
     return (
@@ -1311,9 +1204,7 @@ def find_existing_position(
             "USDT"
         ):
 
-            asset = symbol[
-                :-4
-            ]
+            asset = symbol[:-4]
 
             market_map[
                 asset
@@ -1355,10 +1246,7 @@ def find_existing_position(
             )
         )
 
-        total = (
-            free
-            + locked
-        )
+        total = free + locked
 
         if total <= 0:
             continue
@@ -1380,7 +1268,6 @@ def find_existing_position(
 
             continue
 
-        # Ignore extremely tiny dust.
         if (
             total * price
             < Decimal("0.20")
@@ -1418,7 +1305,7 @@ def find_existing_position(
 
 
 # ============================================================
-# SELL POSITION
+# EXIT
 # ============================================================
 
 def execute_exit(
@@ -1437,13 +1324,18 @@ def execute_exit(
         "🚨 EXIT TRIGGERED\n"
         f"🪙 {symbol}\n"
         f"📌 REASON: {reason}\n"
-        f"📦 QTY: {fmt_decimal(quantity)}"
+        f"📦 QTY: "
+        f"{fmt_decimal(quantity)}"
     )
 
-    print(
-        "🚀 SENDING REAL MARKET SELL",
-        flush=True
-    )
+    if not LIVE_TRADING:
+
+        telegram(
+            "🟡 PAPER EXIT ONLY\n"
+            "🚫 REAL SELL NOT SENT"
+        )
+
+        return
 
     try:
 
@@ -1526,7 +1418,7 @@ def execute_exit(
 
 
 # ============================================================
-# MANAGE EXISTING POSITION
+# MANAGE POSITION
 # ============================================================
 
 def manage_existing_position(
@@ -1572,476 +1464,4 @@ def manage_existing_position(
         f"🪙 {symbol}\n"
         f"📦 QTY: {quantity}\n"
         f"📥 ENTRY: {entry_price}\n"
-        f"💵 CURRENT: {current}\n"
-        f"🎯 TP: {tp_price}\n"
-        f"🛑 SL: {sl_price}"
-    )
-
-    # --------------------------------------------------------
-    # IMMEDIATE EXIT CHECK
-    # --------------------------------------------------------
-
-    if current >= tp_price:
-
-        execute_exit(
-            symbol,
-            quantity,
-            "TAKE_PROFIT"
-        )
-
-        return True
-
-    if current <= sl_price:
-
-        execute_exit(
-            symbol,
-            quantity,
-            "STOP_LOSS"
-        )
-
-        return True
-
-    telegram(
-        "🛡 AUTO EXIT MONITORING\n"
-        f"🪙 {symbol}\n"
-        f"🎯 TP: {tp_price}\n"
-        f"🛑 SL: {sl_price}\n"
-        f"👀 CURRENT: {current}"
-    )
-
-    started = time.time()
-
-    while True:
-
-        if (
-            time.time()
-            - started
-            >= MAX_HOLD_MINUTES * 60
-        ):
-
-            execute_exit(
-                symbol,
-                quantity,
-                "MAX_HOLD_TIME"
-            )
-
-            return True
-
-        try:
-
-            price = current_price(
-                symbol
-            )
-
-            print(
-                f"👀 {symbol} "
-                f"PRICE={price} "
-                f"TP={tp_price} "
-                f"SL={sl_price}",
-                flush=True
-            )
-
-            if price >= tp_price:
-
-                execute_exit(
-                    symbol,
-                    quantity,
-                    "TAKE_PROFIT"
-                )
-
-                return True
-
-            if price <= sl_price:
-
-                execute_exit(
-                    symbol,
-                    quantity,
-                    "STOP_LOSS"
-                )
-
-                return True
-
-        except Exception as e:
-
-            print(
-                f"⚠️ EXIT CHECK: {e}",
-                flush=True
-            )
-
-            telegram(
-                "⚠️ EXIT CHECK ERROR\n"
-                f"🪙 {symbol}\n"
-                f"❌ {e}"
-            )
-
-        time.sleep(
-            CHECK_INTERVAL
-        )
-
-
-# ============================================================
-# MAIN
-# ============================================================
-
-def main():
-
-    print(
-        f"⚡ ATI BOT {VERSION}",
-        flush=True
-    )
-
-    print(
-        "📡 TABDEAL SPOT",
-        flush=True
-    )
-
-    print(
-        f"🔓 LIVE TRADING: "
-        f"{LIVE_TRADING}",
-        flush=True
-    )
-
-    print(
-        f"💵 ORDER: "
-        f"{ORDER_VALUE} USDT",
-        flush=True
-    )
-
-    telegram(
-        "💓 ATI ALIVE\n"
-        f"⚡ {VERSION}\n"
-        "📡 TABDEAL SPOT\n"
-        f"🔓 LIVE: {LIVE_TRADING}\n"
-        f"💵 ORDER: {ORDER_VALUE} USDT\n"
-        f"🎯 TP: +{TP_PERCENT}%\n"
-        f"🛑 SL: -{SL_PERCENT}%\n"
-        "🛡 EXIT FIRST"
-    )
-
-    load_credentials()
-
-    sync_server_time()
-
-    account = auth_check()
-
-    telegram(
-        "✅ AUTH SUCCESS\n"
-        f"🔓 canTrade="
-        f"{account.get('canTrade')}"
-    )
-
-    # ========================================================
-    # MARKET INFORMATION
-    # ========================================================
-
-    info = exchange_info()
-
-    markets = market_list(
-        info
-    )
-
-    telegram(
-        f"📊 MARKETS: {len(markets)}"
-    )
-
-    # ========================================================
-    # IMPORTANT:
-    # FIND EXISTING POSITION BEFORE USDT CHECK
-    # ========================================================
-
-    position = find_existing_position(
-        account,
-        markets
-    )
-
-    if position:
-
-        telegram(
-            "🚨 EXISTING POSITION DETECTED\n"
-            f"🪙 {position['symbol']}\n"
-            f"📦 QTY: "
-            f"{position['quantity']}\n"
-            f"📥 ENTRY: "
-            f"{position['entry_price']}\n"
-            f"💵 CURRENT: "
-            f"{position['current_price']}\n"
-            "🔍 CHECKING TP / SL..."
-        )
-
-        # EXIT HAS PRIORITY
-        manage_existing_position(
-            position
-        )
-
-        # DO NOT BUY AGAIN IN SAME RUN
-        return
-
-    # ========================================================
-    # NO EXISTING POSITION
-    # NOW CHECK USDT BALANCE
-    # ========================================================
-
-    balance = Decimal("0")
-
-    for b in account.get(
-        "balances",
-        []
-    ):
-
-        if str(
-            b.get(
-                "asset",
-                ""
-            )
-        ).upper() == "USDT":
-
-            balance = Decimal(
-                str(
-                    b.get(
-                        "free",
-                        "0"
-                    )
-                )
-            )
-
-            break
-
-    telegram(
-        "💰 USDT BALANCE\n"
-        f"FREE: {balance}\n"
-        f"REQUIRED: {ORDER_VALUE}"
-    )
-
-    if balance < ORDER_VALUE:
-
-        telegram(
-            "❌ USDT BALANCE TOO LOW\n"
-            f"💰 FREE: {balance}\n"
-            f"💵 REQUIRED: {ORDER_VALUE}\n"
-            "🟢 NO OPEN POSITION FOUND"
-        )
-
-        return
-
-    # ========================================================
-    # SCAN FOR NEW BUY
-    # ========================================================
-
-    telegram(
-        f"🔎 SCANNING: "
-        f"{min(SCAN_UNIVERSE, len(markets))}"
-    )
-
-    candidates = []
-
-    for market in markets[
-        :SCAN_UNIVERSE
-    ]:
-
-        symbol = market_symbol(
-            market
-        )
-
-        try:
-
-            rows = trade_rows(
-                recent_trades(
-                    symbol
-                )
-            )
-
-            candles = make_candles(
-                rows
-            )
-
-            result = signal(
-                candles
-            )
-
-            if result:
-
-                result[
-                    "symbol"
-                ] = symbol
-
-                result[
-                    "market"
-                ] = market
-
-                candidates.append(
-                    result
-                )
-
-        except Exception as e:
-
-            print(
-                f"⚠️ {symbol}: {e}",
-                flush=True
-            )
-
-    if not candidates:
-
-        telegram(
-            "🔎 SCAN FINISHED\n"
-            "⚪ NO BUY\n"
-            f"🕐 {utc_now()}"
-        )
-
-        return
-
-    candidates.sort(
-        key=lambda x:
-            x["score"],
-        reverse=True
-    )
-
-    best = candidates[0]
-
-    symbol = best[
-        "symbol"
-    ]
-
-    price = best[
-        "price"
-    ]
-
-    market = best[
-        "market"
-    ]
-
-    quantity = build_quantity(
-        market,
-        price
-    )
-
-    notional = (
-        quantity * price
-    )
-
-    telegram(
-        "🎯 BUY CANDIDATE\n"
-        f"🪙 {symbol}\n"
-        f"💵 PRICE: {price}\n"
-        f"📦 QTY: "
-        f"{fmt_decimal(quantity)}\n"
-        f"💰 NOTIONAL: "
-        f"{notional:.8f}\n"
-        f"⭐ SCORE: "
-        f"{best['score']}\n"
-        f"🧠 "
-        f"{', '.join(best['reasons'])}"
-    )
-
-    if not LIVE_TRADING:
-
-        telegram(
-            "🟡 PAPER ONLY\n"
-            "🚫 REAL ORDER NOT SENT"
-        )
-
-        return
-
-    if notional > balance:
-
-        raise RuntimeError(
-            "Order exceeds balance"
-        )
-
-    # ========================================================
-    # REAL BUY
-    # ========================================================
-
-    telegram(
-        "🚀 REAL MARKET BUY\n"
-        f"🪙 {symbol}\n"
-        f"📦 QTY: "
-        f"{fmt_decimal(quantity)}"
-    )
-
-    order = place_market_buy(
-        symbol,
-        quantity
-    )
-
-    order_id = order.get(
-        "orderId"
-    )
-
-    telegram(
-        "✅ BUY ACCEPTED\n"
-        f"🪙 {symbol}\n"
-        f"🆔 {order_id}\n"
-        f"📌 STATUS: "
-        f"{order.get('status')}"
-    )
-
-    # ========================================================
-    # VERIFY BUY
-    # ========================================================
-
-    time.sleep(1)
-
-    final_order = get_order(
-        symbol,
-        order_id
-    )
-
-    status = final_order.get(
-        "status",
-        "UNKNOWN"
-    )
-
-    executed_qty = Decimal(
-        str(
-            final_order.get(
-                "executedQty",
-                "0"
-            )
-        )
-    )
-
-    entry_price = filled_price(
-        final_order
-    )
-
-    telegram(
-        "🧾 BUY RESULT\n"
-        f"🪙 {symbol}\n"
-        f"🆔 {order_id}\n"
-        f"📌 STATUS: {status}\n"
-        f"📦 EXECUTED: {executed_qty}\n"
-        f"💵 AVG ENTRY: {entry_price}"
-    )
-
-    if status != "FILLED":
-
-        telegram(
-            "⚠️ BUY IS NOT FILLED\n"
-            "🛑 AUTO EXIT NOT STARTED"
-        )
-
-        return
-
-    if executed_qty <= 0:
-
-        raise RuntimeError(
-            "BUY filled but executedQty is zero"
-        )
-
-    # ========================================================
-    # START AUTO EXIT IMMEDIATELY
-    # ========================================================
-
-    telegram(
-        "🛡 AUTO EXIT STARTED\n"
-        f"🪙 {symbol}\n"
-        f"📥 ENTRY: {entry_price}\n"
-        f"🎯 TP: +{TP_PERCENT}%\n"
-        f"🛑 SL: -{SL_PERCENT}%"
-    )
-
-    manage_existing_position(
-        {
-            "symbol": symbol,
-            "market": market,
-            "quantity
+        f"💵 CURRENT: {
