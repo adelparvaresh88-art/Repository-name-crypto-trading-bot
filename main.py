@@ -1,10 +1,14 @@
 # ============================================================
-# ATI CRYPTO BOT V40.2.63-REAL-EXIT
+# ATI CRYPTO BOT V40.2.64-REAL-EXIT-FIX
 # TABDEAL SPOT
 #
 # REAL BUY
 # REAL SELL
 # AUTO TP / SL
+#
+# IMPORTANT:
+# EXIT CHECK IS BEFORE USDT BUY BALANCE CHECK
+#
 # TP = +2%
 # SL = -1%
 # NO EMA
@@ -15,14 +19,14 @@ import os
 import time
 import hmac
 import hashlib
-from decimal import Decimal, InvalidOperation, ROUND_DOWN
+from decimal import Decimal, ROUND_DOWN
 from datetime import datetime, timezone
 from urllib.parse import urlencode
 
 import requests
 
 
-VERSION = "V40.2.63-REAL-EXIT"
+VERSION = "V40.2.64-REAL-EXIT-FIX"
 
 BASE = "https://api1.tabdeal.org"
 PUBLIC_ROOT = BASE + "/r/api/v1"
@@ -30,7 +34,9 @@ TRADE_ROOT = BASE + "/api/v1"
 
 TIMEOUT = 15
 
-ORDER_VALUE = Decimal(os.getenv("ORDER_QTY", "2"))
+ORDER_VALUE = Decimal(
+    os.getenv("ORDER_QTY", "2")
+)
 
 LIVE_TRADING = (
     os.getenv("LIVE_TRADING", "false")
@@ -331,6 +337,9 @@ def signed_request(
     )
 
     params["timestamp"] = now_ms()
+
+    # recvWindow helps prevent timestamp problems
+    params["recvWindow"] = 5000
 
     query = sign_params(
         params
@@ -690,7 +699,7 @@ def fmt_decimal(
 
 
 # ============================================================
-# TRADES / PRICE
+# PRICE
 # ============================================================
 
 def recent_trades(
@@ -1064,6 +1073,24 @@ def get_order(
 
 
 # ============================================================
+# MY TRADES
+# ============================================================
+
+def get_my_trades(
+    symbol
+):
+
+    return signed_request(
+        "GET",
+        "/myTrades",
+        {
+            "symbol": symbol,
+            "limit": 50,
+        }
+    )
+
+
+# ============================================================
 # ACTUAL FILLED PRICE
 # ============================================================
 
@@ -1103,85 +1130,245 @@ def filled_price(
 
 
 # ============================================================
-# AUTO EXIT MANAGER
+# RECOVER ENTRY FROM RECENT BUY TRADES
 # ============================================================
 
-def manage_position(
+def recover_entry_price(
     symbol,
-    market,
-    executed_qty,
-    entry_price
+    asset_qty
 ):
 
-    if executed_qty <= 0:
+    try:
 
-        raise RuntimeError(
-            "No executed quantity"
+        trades = get_my_trades(
+            symbol
         )
 
-    tp_price = (
-        entry_price
-        * (
-            Decimal("1")
-            + TP_PERCENT
-            / Decimal("100")
-        )
-    )
+    except Exception as e:
 
-    sl_price = (
-        entry_price
-        * (
-            Decimal("1")
-            - SL_PERCENT
-            / Decimal("100")
-        )
-    )
-
-    started = time.time()
-
-    telegram(
-        "🛡 AUTO EXIT ACTIVE\n"
-        f"🪙 {symbol}\n"
-        f"📥 ENTRY: {entry_price}\n"
-        f"🎯 TP: {tp_price}\n"
-        f"🛑 SL: {sl_price}\n"
-        f"📦 QTY: "
-        f"{fmt_decimal(executed_qty)}"
-    )
-
-    print(
-        "🛡 AUTO EXIT ACTIVE",
-        flush=True
-    )
-
-    print(
-        f"🎯 TP = {tp_price}",
-        flush=True
-    )
-
-    print(
-        f"🛑 SL = {sl_price}",
-        flush=True
-    )
-
-    while True:
-
-        elapsed = (
-            time.time()
-            - started
+        print(
+            f"⚠️ MY TRADES {symbol}: {e}",
+            flush=True
         )
 
-        if (
-            elapsed
-            >= MAX_HOLD_MINUTES
-            * 60
+        return Decimal("0")
+
+    if not isinstance(
+        trades,
+        list
+    ):
+
+        if isinstance(
+            trades,
+            dict
         ):
 
-            reason = (
-                "MAX_HOLD_TIME"
+            trades = (
+                trades.get("data")
+                or trades.get("trades")
+                or []
             )
 
+    buys = []
+
+    for trade in trades:
+
+        if not isinstance(
+            trade,
+            dict
+        ):
+
+            continue
+
+        side = str(
+            trade.get(
+                "side",
+                ""
+            )
+        ).upper()
+
+        if side != "BUY":
+
+            continue
+
+        try:
+
+            qty = Decimal(
+                str(
+                    trade.get(
+                        "qty",
+                        trade.get(
+                            "quantity",
+                            "0"
+                        )
+                    )
+                )
+            )
+
+            price = Decimal(
+                str(
+                    trade.get(
+                        "price",
+                        "0"
+                    )
+                )
+            )
+
+            trade_time = int(
+                trade.get(
+                    "time",
+                    trade.get(
+                        "timestamp",
+                        0
+                    )
+                )
+            )
+
+        except Exception:
+
+            continue
+
+        if (
+            qty > 0
+            and price > 0
+        ):
+
+            buys.append(
+                (
+                    trade_time,
+                    qty,
+                    price
+                )
+            )
+
+    if not buys:
+
+        return Decimal("0")
+
+    buys.sort(
+        key=lambda x: x[0],
+        reverse=True
+    )
+
+    remaining = asset_qty
+
+    total_cost = Decimal("0")
+    total_qty = Decimal("0")
+
+    for _, qty, price in buys:
+
+        if remaining <= 0:
+
             break
+
+        use_qty = min(
+            remaining,
+            qty
+        )
+
+        total_qty += use_qty
+
+        total_cost += (
+            use_qty
+            * price
+        )
+
+        remaining -= use_qty
+
+    if total_qty <= 0:
+
+        return Decimal("0")
+
+    return (
+        total_cost
+        / total_qty
+    )
+
+
+# ============================================================
+# FIND EXISTING POSITION
+# ============================================================
+
+def find_existing_position(
+    account,
+    markets
+):
+
+    balances = account.get(
+        "balances",
+        []
+    )
+
+    market_map = {}
+
+    for market in markets:
+
+        symbol = market_symbol(
+            market
+        )
+
+        if symbol.endswith(
+            "USDT"
+        ):
+
+            asset = symbol[
+                :-4
+            ]
+
+            market_map[
+                asset
+            ] = (
+                symbol,
+                market
+            )
+
+    for balance in balances:
+
+        asset = str(
+            balance.get(
+                "asset",
+                ""
+            )
+        ).upper()
+
+        if not asset:
+            continue
+
+        if asset == "USDT":
+            continue
+
+        free = Decimal(
+            str(
+                balance.get(
+                    "free",
+                    "0"
+                )
+            )
+        )
+
+        locked = Decimal(
+            str(
+                balance.get(
+                    "locked",
+                    "0"
+                )
+            )
+        )
+
+        total = (
+            free
+            + locked
+        )
+
+        if total <= 0:
+            continue
+
+        if asset not in market_map:
+            continue
+
+        symbol, market = market_map[
+            asset
+        ]
 
         try:
 
@@ -1189,48 +1376,69 @@ def manage_position(
                 symbol
             )
 
-            print(
-                f"👀 {symbol} "
-                f"PRICE={price} "
-                f"TP={tp_price} "
-                f"SL={sl_price}",
-                flush=True
+        except Exception:
+
+            continue
+
+        # Ignore extremely tiny dust.
+        if (
+            total * price
+            < Decimal("0.20")
+        ):
+
+            continue
+
+        entry = recover_entry_price(
+            symbol,
+            total
+        )
+
+        if entry <= 0:
+
+            telegram(
+                "⚠️ OPEN ASSET FOUND\n"
+                f"🪙 {symbol}\n"
+                f"📦 QTY: {total}\n"
+                "❌ ENTRY PRICE NOT FOUND\n"
+                "🛑 NO SELL SENT"
             )
 
-            if price >= tp_price:
+            continue
 
-                reason = "TAKE_PROFIT"
+        return {
+            "symbol": symbol,
+            "market": market,
+            "quantity": free,
+            "total_quantity": total,
+            "entry_price": entry,
+            "current_price": price,
+        }
 
-                break
+    return None
 
-            if price <= sl_price:
 
-                reason = "STOP_LOSS"
+# ============================================================
+# SELL POSITION
+# ============================================================
 
-                break
+def execute_exit(
+    symbol,
+    quantity,
+    reason
+):
 
-        except Exception as e:
+    if quantity <= 0:
 
-            print(
-                f"⚠️ EXIT CHECK: {e}",
-                flush=True
-            )
-
-        time.sleep(
-            CHECK_INTERVAL
+        raise RuntimeError(
+            "SELL quantity is zero"
         )
 
     telegram(
         "🚨 EXIT TRIGGERED\n"
         f"🪙 {symbol}\n"
         f"📌 REASON: {reason}\n"
-        f"📦 QTY: "
-        f"{fmt_decimal(executed_qty)}"
+        f"📦 QTY: {fmt_decimal(quantity)}"
     )
-
-    # --------------------------------------------------------
-    # SELL
-    # --------------------------------------------------------
 
     print(
         "🚀 SENDING REAL MARKET SELL",
@@ -1239,11 +1447,9 @@ def manage_position(
 
     try:
 
-        sell_order = (
-            place_market_sell(
-                symbol,
-                executed_qty
-            )
+        sell_order = place_market_sell(
+            symbol,
+            quantity
         )
 
     except Exception as e:
@@ -1252,7 +1458,7 @@ def manage_position(
             "🚨 REAL SELL FAILED\n"
             f"🪙 {symbol}\n"
             f"📦 QTY: "
-            f"{fmt_decimal(executed_qty)}\n"
+            f"{fmt_decimal(quantity)}\n"
             f"❌ {e}"
         )
 
@@ -1281,27 +1487,21 @@ def manage_position(
                 sell_id
             )
 
-            sell_status = (
-                final_sell.get(
-                    "status",
-                    "UNKNOWN"
-                )
+            sell_status = final_sell.get(
+                "status",
+                "UNKNOWN"
             )
 
-            sell_qty = (
+            sell_qty = final_sell.get(
+                "executedQty",
+                "0"
+            )
+
+            sell_quote = final_sell.get(
+                "cummulativeQuoteQty",
                 final_sell.get(
-                    "executedQty",
+                    "cumulativeQuoteQty",
                     "0"
-                )
-            )
-
-            sell_quote = (
-                final_sell.get(
-                    "cummulativeQuoteQty",
-                    final_sell.get(
-                        "cumulativeQuoteQty",
-                        "0"
-                    )
                 )
             )
 
@@ -1309,12 +1509,9 @@ def manage_position(
                 "🧾 SELL RESULT\n"
                 f"🪙 {symbol}\n"
                 f"🆔 {sell_id}\n"
-                f"📌 STATUS: "
-                f"{sell_status}\n"
-                f"📦 EXECUTED: "
-                f"{sell_qty}\n"
-                f"💵 QUOTE: "
-                f"{sell_quote}\n"
+                f"📌 STATUS: {sell_status}\n"
+                f"📦 EXECUTED: {sell_qty}\n"
+                f"💵 QUOTE: {sell_quote}\n"
                 f"📌 REASON: {reason}"
             )
 
@@ -1326,6 +1523,160 @@ def manage_position(
                 f"🆔 {sell_id}\n"
                 f"❌ {e}"
             )
+
+
+# ============================================================
+# MANAGE EXISTING POSITION
+# ============================================================
+
+def manage_existing_position(
+    position
+):
+
+    symbol = position[
+        "symbol"
+    ]
+
+    quantity = position[
+        "quantity"
+    ]
+
+    entry_price = position[
+        "entry_price"
+    ]
+
+    tp_price = (
+        entry_price
+        * (
+            Decimal("1")
+            + TP_PERCENT
+            / Decimal("100")
+        )
+    )
+
+    sl_price = (
+        entry_price
+        * (
+            Decimal("1")
+            - SL_PERCENT
+            / Decimal("100")
+        )
+    )
+
+    current = position[
+        "current_price"
+    ]
+
+    telegram(
+        "🟢 EXISTING POSITION FOUND\n"
+        f"🪙 {symbol}\n"
+        f"📦 QTY: {quantity}\n"
+        f"📥 ENTRY: {entry_price}\n"
+        f"💵 CURRENT: {current}\n"
+        f"🎯 TP: {tp_price}\n"
+        f"🛑 SL: {sl_price}"
+    )
+
+    # --------------------------------------------------------
+    # IMMEDIATE EXIT CHECK
+    # --------------------------------------------------------
+
+    if current >= tp_price:
+
+        execute_exit(
+            symbol,
+            quantity,
+            "TAKE_PROFIT"
+        )
+
+        return True
+
+    if current <= sl_price:
+
+        execute_exit(
+            symbol,
+            quantity,
+            "STOP_LOSS"
+        )
+
+        return True
+
+    telegram(
+        "🛡 AUTO EXIT MONITORING\n"
+        f"🪙 {symbol}\n"
+        f"🎯 TP: {tp_price}\n"
+        f"🛑 SL: {sl_price}\n"
+        f"👀 CURRENT: {current}"
+    )
+
+    started = time.time()
+
+    while True:
+
+        if (
+            time.time()
+            - started
+            >= MAX_HOLD_MINUTES * 60
+        ):
+
+            execute_exit(
+                symbol,
+                quantity,
+                "MAX_HOLD_TIME"
+            )
+
+            return True
+
+        try:
+
+            price = current_price(
+                symbol
+            )
+
+            print(
+                f"👀 {symbol} "
+                f"PRICE={price} "
+                f"TP={tp_price} "
+                f"SL={sl_price}",
+                flush=True
+            )
+
+            if price >= tp_price:
+
+                execute_exit(
+                    symbol,
+                    quantity,
+                    "TAKE_PROFIT"
+                )
+
+                return True
+
+            if price <= sl_price:
+
+                execute_exit(
+                    symbol,
+                    quantity,
+                    "STOP_LOSS"
+                )
+
+                return True
+
+        except Exception as e:
+
+            print(
+                f"⚠️ EXIT CHECK: {e}",
+                flush=True
+            )
+
+            telegram(
+                "⚠️ EXIT CHECK ERROR\n"
+                f"🪙 {symbol}\n"
+                f"❌ {e}"
+            )
+
+        time.sleep(
+            CHECK_INTERVAL
+        )
 
 
 # ============================================================
@@ -1363,7 +1714,8 @@ def main():
         f"🔓 LIVE: {LIVE_TRADING}\n"
         f"💵 ORDER: {ORDER_VALUE} USDT\n"
         f"🎯 TP: +{TP_PERCENT}%\n"
-        f"🛑 SL: -{SL_PERCENT}%"
+        f"🛑 SL: -{SL_PERCENT}%\n"
+        "🛡 EXIT FIRST"
     )
 
     load_credentials()
@@ -1371,6 +1723,63 @@ def main():
     sync_server_time()
 
     account = auth_check()
+
+    telegram(
+        "✅ AUTH SUCCESS\n"
+        f"🔓 canTrade="
+        f"{account.get('canTrade')}"
+    )
+
+    # ========================================================
+    # MARKET INFORMATION
+    # ========================================================
+
+    info = exchange_info()
+
+    markets = market_list(
+        info
+    )
+
+    telegram(
+        f"📊 MARKETS: {len(markets)}"
+    )
+
+    # ========================================================
+    # IMPORTANT:
+    # FIND EXISTING POSITION BEFORE USDT CHECK
+    # ========================================================
+
+    position = find_existing_position(
+        account,
+        markets
+    )
+
+    if position:
+
+        telegram(
+            "🚨 EXISTING POSITION DETECTED\n"
+            f"🪙 {position['symbol']}\n"
+            f"📦 QTY: "
+            f"{position['quantity']}\n"
+            f"📥 ENTRY: "
+            f"{position['entry_price']}\n"
+            f"💵 CURRENT: "
+            f"{position['current_price']}\n"
+            "🔍 CHECKING TP / SL..."
+        )
+
+        # EXIT HAS PRIORITY
+        manage_existing_position(
+            position
+        )
+
+        # DO NOT BUY AGAIN IN SAME RUN
+        return
+
+    # ========================================================
+    # NO EXISTING POSITION
+    # NOW CHECK USDT BALANCE
+    # ========================================================
 
     balance = Decimal("0")
 
@@ -1398,10 +1807,9 @@ def main():
             break
 
     telegram(
-        "✅ AUTH SUCCESS\n"
-        f"🔓 canTrade="
-        f"{account.get('canTrade')}\n"
-        f"💰 USDT FREE: {balance}"
+        "💰 USDT BALANCE\n"
+        f"FREE: {balance}\n"
+        f"REQUIRED: {ORDER_VALUE}"
     )
 
     if balance < ORDER_VALUE:
@@ -1409,19 +1817,17 @@ def main():
         telegram(
             "❌ USDT BALANCE TOO LOW\n"
             f"💰 FREE: {balance}\n"
-            f"💵 REQUIRED: {ORDER_VALUE}"
+            f"💵 REQUIRED: {ORDER_VALUE}\n"
+            "🟢 NO OPEN POSITION FOUND"
         )
 
         return
 
-    info = exchange_info()
-
-    markets = market_list(
-        info
-    )
+    # ========================================================
+    # SCAN FOR NEW BUY
+    # ========================================================
 
     telegram(
-        f"📊 MARKETS: {len(markets)}\n"
         f"🔎 SCANNING: "
         f"{min(SCAN_UNIVERSE, len(markets))}"
     )
@@ -1562,7 +1968,7 @@ def main():
     )
 
     telegram(
-        "✅ ORDER ACCEPTED\n"
+        "✅ BUY ACCEPTED\n"
         f"🪙 {symbol}\n"
         f"🆔 {order_id}\n"
         f"📌 STATUS: "
@@ -1603,10 +2009,8 @@ def main():
         f"🪙 {symbol}\n"
         f"🆔 {order_id}\n"
         f"📌 STATUS: {status}\n"
-        f"📦 EXECUTED: "
-        f"{executed_qty}\n"
-        f"💵 AVG ENTRY: "
-        f"{entry_price}"
+        f"📦 EXECUTED: {executed_qty}\n"
+        f"💵 AVG ENTRY: {entry_price}"
     )
 
     if status != "FILLED":
@@ -1625,41 +2029,19 @@ def main():
         )
 
     # ========================================================
-    # START AUTO EXIT
+    # START AUTO EXIT IMMEDIATELY
     # ========================================================
 
-    manage_position(
-        symbol,
-        market,
-        executed_qty,
-        entry_price
+    telegram(
+        "🛡 AUTO EXIT STARTED\n"
+        f"🪙 {symbol}\n"
+        f"📥 ENTRY: {entry_price}\n"
+        f"🎯 TP: +{TP_PERCENT}%\n"
+        f"🛑 SL: -{SL_PERCENT}%"
     )
 
-
-# ============================================================
-# ENTRY
-# ============================================================
-
-if __name__ == "__main__":
-
-    try:
-
-        main()
-
-    except Exception as e:
-
-        error = (
-            "🚨 ATI BOT ERROR\n"
-            f"⚡ {VERSION}\n"
-            f"❌ {e}\n"
-            f"🕐 {utc_now()}"
-        )
-
-        print(
-            error,
-            flush=True
-        )
-
-        telegram(error)
-
-        raise
+    manage_existing_position(
+        {
+            "symbol": symbol,
+            "market": market,
+            "quantity
