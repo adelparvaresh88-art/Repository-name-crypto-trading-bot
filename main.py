@@ -1,926 +1,206 @@
-# ============================================================
-# ATI CRYPTO BOT V40.2.64-REAL-EXIT-FIX
-# TABDEAL SPOT
-#
-# REAL BUY
-# REAL SELL
-# AUTO TP / SL
-#
-# IMPORTANT:
-# EXIT CHECK IS BEFORE USDT BUY BALANCE CHECK
-#
-# TP = +2%
-# SL = -1%
-# NO EMA
-# 5m CLOSED CANDLE
-# ============================================================
-
-import os
-import time
-import hmac
-import hashlib
+import os, time, hmac, hashlib
 from decimal import Decimal, ROUND_DOWN
 from datetime import datetime, timezone
 from urllib.parse import urlencode
-
 import requests
 
-
-VERSION = "V40.2.64-REAL-EXIT-FIX"
+VERSION = "V40.2.65-REAL-EXIT-FIX"
 
 BASE = "https://api1.tabdeal.org"
 PUBLIC_ROOT = BASE + "/r/api/v1"
 TRADE_ROOT = BASE + "/api/v1"
 
-TIMEOUT = 15
-
-ORDER_VALUE = Decimal(
-    os.getenv("ORDER_QTY", "2")
+ORDER_VALUE = Decimal(os.getenv("ORDER_QTY", "2"))
+LIVE_TRADING = os.getenv("LIVE_TRADING", "false").lower() in (
+    "1", "true", "yes", "on"
 )
 
-LIVE_TRADING = (
-    os.getenv("LIVE_TRADING", "false")
-    .strip()
-    .lower()
-    in ("1", "true", "yes", "on")
-)
+TP_PCT = Decimal("0.02")
+SL_PCT = Decimal("0.01")
 
-TP_PERCENT = Decimal(
-    os.getenv("TP_PERCENT", "2.0")
-)
+POLL_SECONDS = 10
+MAX_HOLD_MINUTES = 300
 
-SL_PERCENT = Decimal(
-    os.getenv("SL_PERCENT", "1.0")
-)
-
-CHECK_INTERVAL = int(
-    os.getenv("EXIT_CHECK_SECONDS", "10")
-)
-
-MAX_HOLD_MINUTES = int(
-    os.getenv("MAX_HOLD_MINUTES", "300")
-)
-
-SCAN_UNIVERSE = int(
-    os.getenv("SCAN_UNIVERSE", "25")
-)
-
+SCAN_UNIVERSE = 25
 MIN_CANDLES = 12
-
-MIN_SCORE = int(
-    os.getenv("MIN_SCORE", "7")
-)
+MIN_SCORE = 7
+RECV_WINDOW = 5000
 
 session = requests.Session()
-
-session.headers.update(
-    {
-        "User-Agent":
-            "ATI-Crypto-Bot/" + VERSION
-    }
-)
-
-SERVER_OFFSET_MS = 0
+server_offset_ms = 0
 
 
-# ============================================================
-# TIME
-# ============================================================
-
-def now_ms():
-    return (
-        int(time.time() * 1000)
-        + SERVER_OFFSET_MS
-    )
+def now_utc():
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
 
-def utc_now():
-    return datetime.now(
-        timezone.utc
-    ).strftime(
-        "%Y-%m-%d %H:%M:%S UTC"
-    )
+def telegram(msg):
+    token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+    chat = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 
-
-# ============================================================
-# TELEGRAM
-# ============================================================
-
-def telegram(text):
-
-    token = os.getenv(
-        "TELEGRAM_BOT_TOKEN",
-        ""
-    ).strip()
-
-    chat_id = os.getenv(
-        "TELEGRAM_CHAT_ID",
-        ""
-    ).strip()
-
-    if not token or not chat_id:
-        print(
-            text,
-            flush=True
-        )
-        return False
+    if not token or not chat:
+        return
 
     try:
-        r = requests.post(
-            f"https://api.telegram.org/"
-            f"bot{token}/sendMessage",
+        requests.post(
+            f"https://api.telegram.org/bot{token}/sendMessage",
             data={
-                "chat_id": chat_id,
-                "text": text,
+                "chat_id": chat,
+                "text": msg
             },
-            timeout=15,
+            timeout=15
         )
-
-        print(
-            "TELEGRAM:",
-            r.status_code,
-            flush=True,
-        )
-
-        return r.ok
-
-    except Exception as e:
-
-        print(
-            "TELEGRAM ERROR:",
-            repr(e),
-            flush=True,
-        )
-
-        return False
-
-
-# ============================================================
-# JSON
-# ============================================================
-
-def json_response(r):
-
-    try:
-        return r.json()
-
     except Exception:
-
-        return {
-            "_http": r.status_code,
-            "_text": r.text[:500],
-        }
+        pass
 
 
-# ============================================================
-# PUBLIC GET
-# ============================================================
-
-def public_get(
-    path,
-    params=None,
-):
-
-    if path.startswith("http"):
-        url = path
-    else:
-        url = BASE + path
-
+def public_get(path, params=None):
     r = session.get(
-        url,
+        PUBLIC_ROOT + path,
         params=params or {},
-        timeout=TIMEOUT,
+        timeout=20
     )
+    r.raise_for_status()
+    return r.json()
 
-    data = json_response(r)
 
-    if not r.ok:
-        raise RuntimeError(
-            f"HTTP {r.status_code}: {data}"
+def sync_time():
+    global server_offset_ms
+
+    data = public_get("/time")
+
+    server_ms = int(
+        data.get(
+            "serverTime",
+            int(time.time() * 1000)
         )
-
-    return data
-
-
-# ============================================================
-# SERVER TIME
-# ============================================================
-
-def sync_server_time():
-
-    global SERVER_OFFSET_MS
-
-    data = public_get(
-        PUBLIC_ROOT + "/time"
     )
 
-    server_time = int(
-        data["serverTime"]
+    server_offset_ms = server_ms - int(time.time() * 1000)
+
+
+def timestamp_ms():
+    return int(time.time() * 1000) + server_offset_ms
+
+
+def credentials():
+    key = (
+        os.getenv("TABDIL_API_KEY")
+        or os.getenv("TABDEAL_API_KEY")
     )
 
-    local_time = int(
-        time.time() * 1000
+    secret = (
+        os.getenv("TABDIL_API_SECRET")
+        or os.getenv("TABDEAL_API_SECRET")
     )
-
-    SERVER_OFFSET_MS = (
-        server_time
-        - local_time
-    )
-
-    print(
-        f"SERVER OFFSET: "
-        f"{SERVER_OFFSET_MS} ms",
-        flush=True,
-    )
-
-
-# ============================================================
-# CREDENTIALS
-# ============================================================
-
-def load_credentials():
-
-    key = os.getenv(
-        "TABDIL_API_KEY",
-        ""
-    ).strip()
-
-    secret = os.getenv(
-        "TABDIL_API_SECRET",
-        ""
-    ).strip()
 
     if not key or not secret:
+        raise RuntimeError("API credentials missing")
 
-        key = os.getenv(
-            "TABDEAL_API_KEY",
-            ""
-        ).strip()
-
-        secret = os.getenv(
-            "TABDEAL_API_SECRET",
-            ""
-        ).strip()
-
-    if not key or not secret:
-
-        raise RuntimeError(
-            "API KEY/SECRET NOT FOUND"
-        )
-
-    os.environ["API_KEY"] = key
-    os.environ["API_SECRET"] = secret
+    return key, secret
 
 
-# ============================================================
-# SIGN
-# ============================================================
+def signed_request(method, path, params=None):
+    key, secret = credentials()
 
-def sign_params(params):
+    p = dict(params or {})
 
-    query = urlencode(params)
+    p["timestamp"] = timestamp_ms()
+    p["recvWindow"] = RECV_WINDOW
+
+    query = urlencode(p)
 
     signature = hmac.new(
-        os.environ[
-            "API_SECRET"
-        ].encode(),
+        secret.encode(),
         query.encode(),
-        hashlib.sha256,
+        hashlib.sha256
     ).hexdigest()
 
-    return (
-        query
-        + "&signature="
-        + signature
-    )
-
-
-# ============================================================
-# SIGNED REQUEST
-# ============================================================
-
-def signed_request(
-    method,
-    path,
-    params=None,
-):
-
-    params = dict(
-        params or {}
-    )
-
-    params["timestamp"] = now_ms()
-    params["recvWindow"] = 5000
-
-    query = sign_params(
-        params
-    )
+    headers = {
+        "X-MBX-APIKEY": key
+    }
 
     url = (
         TRADE_ROOT
         + path
+        + "?"
+        + query
+        + "&signature="
+        + signature
     )
 
-    headers = {
-        "X-MBX-APIKEY":
-            os.environ[
-                "API_KEY"
-            ]
-    }
+    r = session.request(
+        method,
+        url,
+        headers=headers,
+        timeout=20
+    )
 
-    method = method.upper()
-
-    if method == "GET":
-
-        r = session.get(
-            url + "?" + query,
-            headers=headers,
-            timeout=TIMEOUT,
-        )
-
-    elif method == "POST":
-
-        r = session.post(
-            url,
-            headers={
-                **headers,
-                "Content-Type":
-                    "application/"
-                    "x-www-form-urlencoded",
-            },
-            data=query,
-            timeout=TIMEOUT,
-        )
-
-    elif method == "DELETE":
-
-        r = session.delete(
-            url + "?" + query,
-            headers=headers,
-            timeout=TIMEOUT,
-        )
-
-    else:
-
-        raise ValueError(
-            "Unsupported HTTP method"
-        )
-
-    data = json_response(r)
-
-    if not r.ok:
-
+    if r.status_code >= 400:
         raise RuntimeError(
-            f"HTTP {r.status_code}: {data}"
+            f"HTTP {r.status_code}: {r.text}"
         )
 
-    if (
-        isinstance(data, dict)
-        and data.get("code")
-        not in (None, 0)
-    ):
+    return r.json()
 
-        raise RuntimeError(
-            f"API ERROR: {data}"
-        )
-
-    return data
-
-
-# ============================================================
-# AUTH
-# ============================================================
 
 def auth_check():
-
-    data = signed_request(
+    account = signed_request(
         "GET",
-        "/account",
+        "/account"
     )
 
-    if not data.get(
-        "canTrade",
-        False,
-    ):
+    if not account.get("canTrade", False):
+        raise RuntimeError("canTrade=False")
 
-        raise RuntimeError(
-            "canTrade is not true"
-        )
-
-    return data
+    return account
 
 
-# ============================================================
-# MARKET INFO
-# ============================================================
+def balances(account):
+    result = {}
 
-def exchange_info():
-
-    return public_get(
-        PUBLIC_ROOT
-        + "/exchangeInfo"
-    )
-
-
-def normalize_symbol(value):
-
-    return str(
-        value or ""
-    ).replace(
-        "_",
-        ""
-    ).upper()
-
-
-def market_list(info):
-
-    if isinstance(
-        info,
-        list
-    ):
-        raw = info
-
-    elif isinstance(
-        info,
-        dict
-    ):
-        raw = (
-            info.get("symbols")
-            or info.get("markets")
-            or info.get("data")
-            or []
-        )
-
-    else:
-        raw = []
-
-    result = []
-
-    for market in raw:
-
-        if not isinstance(
-            market,
-            dict
-        ):
-            continue
-
-        symbol = (
-            market.get("symbol")
-            or market.get("market")
-            or market.get("name")
-        )
-
-        if not symbol:
-            continue
-
-        symbol = normalize_symbol(
-            symbol
-        )
-
-        if not symbol.endswith(
-            "USDT"
-        ):
-            continue
-
-        status = str(
-            market.get(
-                "status",
-                "TRADING"
+    for b in account.get("balances", []):
+        try:
+            result[b["asset"]] = Decimal(
+                str(b.get("free", "0"))
             )
-        ).upper()
-
-        if status not in (
-            "TRADING",
-            "ACTIVE",
-            "ENABLED",
-        ):
-            continue
-
-        result.append(
-            market
-        )
+        except Exception:
+            pass
 
     return result
 
 
-def market_symbol(market):
+def exchange_info():
+    return public_get("/exchangeInfo")
 
-    return normalize_symbol(
-        market.get("symbol")
-        or market.get("market")
-        or market.get("name")
-    )
 
+def symbol_info(info, symbol):
+    for s in info.get("symbols", []):
+        if s.get("symbol") == symbol:
+            return s
 
-# ============================================================
-# MARKET FILTERS
-# ============================================================
+    return None
 
-def step_from_market(market):
 
-    filters = (
-        market.get(
-            "filters"
-        )
-        or []
-    )
-
-    for f in filters:
-
-        ft = str(
-            f.get(
-                "filterType",
-                f.get(
-                    "type",
-                    ""
-                )
-            )
-        ).upper()
-
-        if ft in (
-            "LOT_SIZE",
-            "MARKET_LOT_SIZE",
-        ):
-
-            for key in (
-                "stepSize",
-                "step",
-                "quantityStep",
-            ):
-
-                if f.get(key):
-
-                    try:
-                        return Decimal(
-                            str(f[key])
-                        )
-                    except Exception:
-                        pass
-
-    return Decimal(
-        "0.00000001"
-    )
-
-
-def min_qty_from_market(market):
-
-    filters = (
-        market.get(
-            "filters"
-        )
-        or []
-    )
-
-    for f in filters:
-
-        ft = str(
-            f.get(
-                "filterType",
-                f.get(
-                    "type",
-                    ""
-                )
-            )
-        ).upper()
-
-        if ft in (
-            "LOT_SIZE",
-            "MARKET_LOT_SIZE",
-        ):
-
-            for key in (
-                "minQty",
-                "minQuantity",
-            ):
-
-                if f.get(key):
-
-                    try:
-                        return Decimal(
-                            str(f[key])
-                        )
-                    except Exception:
-                        pass
-
-    return Decimal("0")
-
-
-def floor_step(
-    value,
-    step
-):
-
-    if step <= 0:
-        return value
-
-    return (
-        (
-            value / step
-        ).to_integral_value(
-            rounding=ROUND_DOWN
-        )
-        * step
-    )
-
-
-def fmt_decimal(value):
-
-    text = format(
-        value,
-        "f"
-    )
-
-    if "." in text:
-
-        text = (
-            text
-            .rstrip("0")
-            .rstrip(".")
-        )
-
-    return text
-
-
-# ============================================================
-# PRICE
-# ============================================================
-
-def recent_trades(symbol):
-
-    return public_get(
-        PUBLIC_ROOT
-        + "/trades",
-        {
-            "symbol": symbol,
-            "limit": 100,
-        },
-    )
-
-
-def trade_rows(data):
-
-    if isinstance(
-        data,
-        list
-    ):
-        return data
-
-    if isinstance(
-        data,
-        dict
-    ):
-        return (
-            data.get("data")
-            or data.get("trades")
-            or []
-        )
-
-    return []
-
-
-def current_price(symbol):
-
-    rows = trade_rows(
-        recent_trades(symbol)
-    )
-
-    if not rows:
-
-        raise RuntimeError(
-            f"No trades for {symbol}"
-        )
-
-    last = rows[-1]
-
-    return Decimal(
-        str(
-            last["price"]
-        )
-    )
-
-
-# ============================================================
-# CANDLES
-# ============================================================
-
-def make_candles(rows):
-
-    buckets = {}
-
-    for trade in rows:
-
-        try:
-
-            price = Decimal(
-                str(
-                    trade["price"]
-                )
-            )
-
-            trade_time = int(
-                trade.get(
-                    "time",
-                    trade.get(
-                        "timestamp"
-                    )
-                )
-            )
-
-        except Exception:
-
-            continue
-
-        bucket = (
-            trade_time
-            // 300000
-        ) * 300000
-
-        if bucket not in buckets:
-
-            buckets[bucket] = {
-                "t": bucket,
-                "o": price,
-                "h": price,
-                "l": price,
-                "c": price,
-            }
-
-        candle = buckets[
-            bucket
-        ]
-
-        candle["h"] = max(
-            candle["h"],
-            price
-        )
-
-        candle["l"] = min(
-            candle["l"],
-            price
-        )
-
-        candle["c"] = price
-
-    candles = [
-        buckets[k]
-        for k in sorted(
-            buckets
-        )
-    ]
-
-    current_bucket = (
-        int(
-            time.time()
-            * 1000
-        )
-        // 300000
-    ) * 300000
-
-    return [
-        c
-        for c in candles
-        if c["t"]
-        < current_bucket
-    ]
-
-
-# ============================================================
-# SIGNAL
-# ============================================================
-
-def signal(candles):
-
-    if len(candles) < MIN_CANDLES:
-        return None
-
-    last = candles[-1]
-    previous = candles[-2]
-
-    lookback = candles[-7:-1]
-
-    recent_high = max(
-        c["h"]
-        for c in lookback
-    )
-
-    score = 0
-    reasons = []
-
-    if last["c"] > recent_high:
-
-        score += 4
-        reasons.append("BOS")
-
-    elif (
-        last["c"]
-        >= recent_high
-        * Decimal("0.998")
-    ):
-
-        score += 2
-        reasons.append("NEAR_BOS")
-
-    else:
-
-        return None
-
-    if last["c"] > previous["c"]:
-
-        score += 1
-        reasons.append("UP")
-
-    candle_range = (
-        last["h"]
-        - last["l"]
-    )
-
-    body = abs(
-        last["c"]
-        - last["o"]
-    )
-
-    if (
-        candle_range > 0
-        and
-        body / candle_range
-        >= Decimal("0.55")
-    ):
-
-        score += 2
-        reasons.append(
-            "STRONG_CLOSE"
-        )
-
-    if last["c"] > last["o"]:
-
-        score += 1
-        reasons.append("GREEN")
-
-    move = (
-        (
-            last["c"]
-            / previous["c"]
-        )
-        - 1
-    ) * 100
-
-    if move > Decimal("0.15"):
-
-        score += 1
-        reasons.append(
-            "MOMENTUM"
-        )
-
-    if move > Decimal("2.2"):
-        return None
-
-    if score < MIN_SCORE:
-        return None
-
+def filters_for(symbol_data):
     return {
-        "price": last["c"],
-        "score": score,
-        "reasons": reasons,
+        f.get("filterType"): f
+        for f in symbol_data.get("filters", [])
     }
 
 
-# ============================================================
-# QUANTITY
-# ============================================================
+def round_qty(qty, step):
+    if step <= 0:
+        return qty
 
-def build_quantity(
-    market,
-    price
-):
-
-    step = step_from_market(
-        market
-    )
-
-    min_qty = min_qty_from_market(
-        market
-    )
-
-    quantity = floor_step(
-        ORDER_VALUE / price,
-        step
-    )
-
-    if quantity < min_qty:
-        quantity = min_qty
-
-    return quantity
+    return (
+        qty / step
+    ).to_integral_value(
+        rounding=ROUND_DOWN
+    ) * step
 
 
-# ============================================================
-# BUY
-# ============================================================
-
-def place_market_buy(
-    symbol,
-    quantity
-):
-
+def market_buy(symbol, qty):
     return signed_request(
         "POST",
         "/order",
@@ -928,23 +208,12 @@ def place_market_buy(
             "symbol": symbol,
             "side": "BUY",
             "type": "MARKET",
-            "quantity":
-                fmt_decimal(
-                    quantity
-                ),
+            "quantity": format(qty, "f")
         }
     )
 
 
-# ============================================================
-# SELL
-# ============================================================
-
-def place_market_sell(
-    symbol,
-    quantity
-):
-
+def market_sell(symbol, qty):
     return signed_request(
         "POST",
         "/order",
@@ -952,516 +221,501 @@ def place_market_sell(
             "symbol": symbol,
             "side": "SELL",
             "type": "MARKET",
-            "quantity":
-                fmt_decimal(
-                    quantity
-                ),
+            "quantity": format(qty, "f")
         }
     )
 
 
-# ============================================================
-# ORDER
-# ============================================================
-
-def get_order(
-    symbol,
-    order_id
-):
-
+def order_status(symbol, order_id):
     return signed_request(
         "GET",
         "/order",
         {
             "symbol": symbol,
-            "orderId":
-                int(order_id),
+            "orderId": order_id
         }
     )
 
 
-# ============================================================
-# MY TRADES
-# ============================================================
+def price(symbol):
+    data = public_get(
+        "/ticker/price",
+        {"symbol": symbol}
+    )
 
-def get_my_trades(symbol):
+    return Decimal(str(data["price"]))
 
+
+def my_trades(symbol, limit=20):
     return signed_request(
         "GET",
         "/myTrades",
         {
             "symbol": symbol,
-            "limit": 50,
+            "limit": limit
         }
     )
 
 
-# ============================================================
-# FILLED PRICE
-# ============================================================
+def filled_entry(symbol):
+    try:
+        trades = my_trades(symbol, 50)
 
-def filled_price(order):
+        buys = [
+            t for t in trades
+            if t.get("isBuyer") is True
+        ]
 
-    executed = Decimal(
+        if not buys:
+            return None
+
+        buys.sort(
+            key=lambda x: int(
+                x.get("time", 0)
+            )
+        )
+
+        trade = buys[-1]
+
+        return Decimal(
+            str(trade["price"])
+        )
+
+    except Exception:
+        return None
+
+
+def find_existing_position(info):
+    account = auth_check()
+
+    balances_data = balances(account)
+
+    candidates = []
+
+    for asset, qty in balances_data.items():
+
+        if asset == "USDT":
+            continue
+
+        if qty <= 0:
+            continue
+
+        symbol = asset + "USDT"
+
+        symbol_data = symbol_info(
+            info,
+            symbol
+        )
+
+        if not symbol_data:
+            continue
+
+        if symbol_data.get("status") != "TRADING":
+            continue
+
+        entry = filled_entry(symbol)
+
+        if entry is None:
+            continue
+
+        try:
+            current = price(symbol)
+        except Exception:
+            continue
+
+        candidates.append(
+            {
+                "symbol": symbol,
+                "quantity": qty,
+                "entry_price": entry,
+                "current_price": current
+            }
+        )
+
+    if not candidates:
+        return None
+
+    candidates.sort(
+        key=lambda x: x["quantity"],
+        reverse=True
+    )
+
+    return candidates[0]
+
+
+def manage_position(position):
+    symbol = position["symbol"]
+    quantity = position["quantity"]
+    entry = position["entry_price"]
+
+    tp = entry * (Decimal("1") + TP_PCT)
+    sl = entry * (Decimal("1") - SL_PCT)
+
+    start_time = time.time()
+
+    telegram(
+        "🚨 EXISTING POSITION DETECTED\n"
+        f"🪙 {symbol}\n"
+        f"📦 QTY: {quantity}\n"
+        f"📥 ENTRY: {entry}\n"
+        f"💵 CURRENT: {position['current_price']}\n"
+        f"🎯 TP: {tp}\n"
+        f"🛑 SL: {sl}\n"
+        "🔍 CHECKING TP / SL..."
+    )
+
+    while (
+        time.time() - start_time
+        < MAX_HOLD_MINUTES * 60
+    ):
+
+        try:
+            current = price(symbol)
+
+            if current >= tp or current <= sl:
+
+                if current >= tp:
+                    reason = "TP HIT ✅"
+                else:
+                    reason = "SL HIT 🛑"
+
+                telegram(
+                    f"🚨 {reason}\n"
+                    f"🪙 {symbol}\n"
+                    f"💵 PRICE: {current}\n"
+                    f"📦 SELL QTY: {quantity}"
+                )
+
+                if not LIVE_TRADING:
+                    telegram(
+                        "🔒 LIVE TRADING OFF\n"
+                        "❌ NO SELL SENT"
+                    )
+                    return
+
+                result = market_sell(
+                    symbol,
+                    quantity
+                )
+
+                order_id = result.get(
+                    "orderId"
+                )
+
+                telegram(
+                    "✅ SELL SENT\n"
+                    f"🪙 {symbol}\n"
+                    f"🆔 ORDER: {order_id}"
+                )
+
+                return
+
+            time.sleep(POLL_SECONDS)
+
+        except Exception as e:
+
+            telegram(
+                "⚠️ EXIT CHECK ERROR\n"
+                f"🪙 {symbol}\n"
+                f"❌ {e}"
+            )
+
+            time.sleep(POLL_SECONDS)
+
+    try:
+        final_price = price(symbol)
+    except Exception:
+        final_price = "UNKNOWN"
+
+    telegram(
+        "⏰ MAX HOLD REACHED\n"
+        f"🪙 {symbol}\n"
+        f"💵 CURRENT: {final_price}"
+    )
+
+
+def candle_signal(symbol):
+    try:
+        data = public_get(
+            "/klines",
+            {
+                "symbol": symbol,
+                "interval": "5m",
+                "limit": MIN_CANDLES + 2
+            }
+        )
+
+        if len(data) < MIN_CANDLES + 1:
+            return None
+
+        closed = data[:-1]
+
+        previous = closed[-2]
+        last = closed[-1]
+
+        previous_high = Decimal(
+            str(previous[2])
+        )
+
+        open_price = Decimal(
+            str(last[1])
+        )
+
+        high = Decimal(
+            str(last[2])
+        )
+
+        close = Decimal(
+            str(last[4])
+        )
+
+        if close <= open_price:
+            return None
+
+        broke = close > previous_high
+
+        near = (
+            close
+            > previous_high
+            * (Decimal("1") - Decimal("0.0025"))
+        )
+
+        if not (broke or near):
+            return None
+
+        if broke:
+            score = 8
+            reason = "BOS"
+        else:
+            score = 7
+            reason = "NEAR BOS"
+
+        return {
+            "symbol": symbol,
+            "score": score,
+            "price": close,
+            "reason": reason
+        }
+
+    except Exception:
+        return None
+
+
+def scan(info):
+    symbols = []
+
+    for s in info.get("symbols", []):
+
+        if (
+            s.get("status") == "TRADING"
+            and s.get("quoteAsset") == "USDT"
+        ):
+            symbols.append(
+                s["symbol"]
+            )
+
+    symbols = symbols[:SCAN_UNIVERSE]
+
+    best = None
+
+    for symbol in symbols:
+
+        signal = candle_signal(symbol)
+
+        if not signal:
+            continue
+
+        if signal["score"] < MIN_SCORE:
+            continue
+
+        if (
+            best is None
+            or signal["score"] > best["score"]
+        ):
+            best = signal
+
+    return best
+
+
+def buy_position(signal, info):
+    symbol = signal["symbol"]
+
+    symbol_data = symbol_info(
+        info,
+        symbol
+    )
+
+    if not symbol_data:
+        raise RuntimeError(
+            f"Symbol info not found: {symbol}"
+        )
+
+    filters = filters_for(
+        symbol_data
+    )
+
+    lot_filter = filters.get(
+        "LOT_SIZE",
+        {}
+    )
+
+    step = Decimal(
         str(
-            order.get(
-                "executedQty",
+            lot_filter.get(
+                "stepSize",
+                "0.00000001"
+            )
+        )
+    )
+
+    min_qty = Decimal(
+        str(
+            lot_filter.get(
+                "minQty",
                 "0"
             )
         )
     )
 
-    quote = Decimal(
-        str(
-            order.get(
-                "cummulativeQuoteQty",
-                order.get(
-                    "cumulativeQuoteQty",
-                    "0"
-                )
-            )
-        )
+    quantity = round_qty(
+        ORDER_VALUE / signal["price"],
+        step
     )
 
-    if executed <= 0:
-        return Decimal("0")
-
-    return quote / executed
-
-
-# ============================================================
-# RECOVER ENTRY
-# ============================================================
-
-def recover_entry_price(
-    symbol,
-    asset_qty
-):
-
-    try:
-
-        trades = get_my_trades(
-            symbol
-        )
-
-    except Exception as e:
-
-        print(
-            f"MY TRADES {symbol}: {e}",
-            flush=True
-        )
-
-        return Decimal("0")
-
-    if isinstance(
-        trades,
-        dict
-    ):
-
-        trades = (
-            trades.get("data")
-            or trades.get("trades")
-            or []
-        )
-
-    if not isinstance(
-        trades,
-        list
-    ):
-
-        return Decimal("0")
-
-    buys = []
-
-    for trade in trades:
-
-        if not isinstance(
-            trade,
-            dict
-        ):
-            continue
-
-        side = str(
-            trade.get(
-                "side",
-                ""
-            )
-        ).upper()
-
-        if side != "BUY":
-            continue
-
-        try:
-
-            qty = Decimal(
-                str(
-                    trade.get(
-                        "qty",
-                        trade.get(
-                            "quantity",
-                            "0"
-                        )
-                    )
-                )
-            )
-
-            price = Decimal(
-                str(
-                    trade.get(
-                        "price",
-                        "0"
-                    )
-                )
-            )
-
-            trade_time = int(
-                trade.get(
-                    "time",
-                    trade.get(
-                        "timestamp",
-                        0
-                    )
-                )
-            )
-
-        except Exception:
-
-            continue
-
-        if qty > 0 and price > 0:
-
-            buys.append(
-                (
-                    trade_time,
-                    qty,
-                    price
-                )
-            )
-
-    if not buys:
-        return Decimal("0")
-
-    buys.sort(
-        key=lambda x: x[0],
-        reverse=True
-    )
-
-    remaining = asset_qty
-
-    total_cost = Decimal("0")
-    total_qty = Decimal("0")
-
-    for _, qty, price in buys:
-
-        if remaining <= 0:
-            break
-
-        use_qty = min(
-            remaining,
-            qty
-        )
-
-        total_qty += use_qty
-
-        total_cost += (
-            use_qty * price
-        )
-
-        remaining -= use_qty
-
-    if total_qty <= 0:
-        return Decimal("0")
-
-    return (
-        total_cost
-        / total_qty
-    )
-
-
-# ============================================================
-# FIND EXISTING POSITION
-# ============================================================
-
-def find_existing_position(
-    account,
-    markets
-):
-
-    balances = account.get(
-        "balances",
-        []
-    )
-
-    market_map = {}
-
-    for market in markets:
-
-        symbol = market_symbol(
-            market
-        )
-
-        if symbol.endswith(
-            "USDT"
-        ):
-
-            asset = symbol[:-4]
-
-            market_map[
-                asset
-            ] = (
-                symbol,
-                market
-            )
-
-    for balance in balances:
-
-        asset = str(
-            balance.get(
-                "asset",
-                ""
-            )
-        ).upper()
-
-        if not asset:
-            continue
-
-        if asset == "USDT":
-            continue
-
-        free = Decimal(
-            str(
-                balance.get(
-                    "free",
-                    "0"
-                )
-            )
-        )
-
-        locked = Decimal(
-            str(
-                balance.get(
-                    "locked",
-                    "0"
-                )
-            )
-        )
-
-        total = free + locked
-
-        if total <= 0:
-            continue
-
-        if asset not in market_map:
-            continue
-
-        symbol, market = market_map[
-            asset
-        ]
-
-        try:
-
-            price = current_price(
-                symbol
-            )
-
-        except Exception:
-
-            continue
-
-        if (
-            total * price
-            < Decimal("0.20")
-        ):
-
-            continue
-
-        entry = recover_entry_price(
-            symbol,
-            total
-        )
-
-        if entry <= 0:
-
-            telegram(
-                "⚠️ OPEN ASSET FOUND\n"
-                f"🪙 {symbol}\n"
-                f"📦 QTY: {total}\n"
-                "❌ ENTRY PRICE NOT FOUND\n"
-                "🛑 NO SELL SENT"
-            )
-
-            continue
-
-        return {
-            "symbol": symbol,
-            "market": market,
-            "quantity": free,
-            "total_quantity": total,
-            "entry_price": entry,
-            "current_price": price,
-        }
-
-    return None
-
-
-# ============================================================
-# EXIT
-# ============================================================
-
-def execute_exit(
-    symbol,
-    quantity,
-    reason
-):
-
-    if quantity <= 0:
-
+    if quantity < min_qty:
         raise RuntimeError(
-            "SELL quantity is zero"
+            f"Quantity below minQty: "
+            f"{quantity} < {min_qty}"
         )
 
     telegram(
-        "🚨 EXIT TRIGGERED\n"
+        "🚨 BUY SIGNAL\n"
         f"🪙 {symbol}\n"
-        f"📌 REASON: {reason}\n"
-        f"📦 QTY: "
-        f"{fmt_decimal(quantity)}"
+        f"📊 {signal['reason']}\n"
+        f"💵 PRICE: {signal['price']}\n"
+        f"⭐ SCORE: {signal['score']}\n"
+        f"📦 QTY: {quantity}\n"
+        f"🔓 LIVE: {LIVE_TRADING}"
     )
 
     if not LIVE_TRADING:
 
         telegram(
-            "🟡 PAPER EXIT ONLY\n"
-            "🚫 REAL SELL NOT SENT"
+            "🔒 LIVE TRADING OFF\n"
+            "❌ NO BUY SENT"
         )
 
         return
 
-    try:
+    order = market_buy(
+        symbol,
+        quantity
+    )
 
-        sell_order = place_market_sell(
-            symbol,
-            quantity
+    telegram(
+        "✅ BUY SENT\n"
+        f"🪙 {symbol}\n"
+        f"🆔 ORDER: {order.get('orderId')}"
+    )
+
+    time.sleep(2)
+
+    entry = (
+        filled_entry(symbol)
+        or signal["price"]
+    )
+
+    current = price(symbol)
+
+    position = {
+        "symbol": symbol,
+        "quantity": quantity,
+        "entry_price": entry,
+        "current_price": current
+    }
+
+    manage_position(position)
+
+
+def main():
+
+    telegram(
+        f"💓 ATI ALIVE\n"
+        f"⚡ {VERSION}\n"
+        "📡 TABDEAL SPOT\n"
+        f"🔓 LIVE: {LIVE_TRADING}\n"
+        f"💵 ORDER: {ORDER_VALUE} USDT\n"
+        "🎯 TP: +2.0%\n"
+        "🛑 SL: -1.0%"
+    )
+
+    sync_time()
+
+    account = auth_check()
+
+    balance_data = balances(account)
+
+    usdt_free = balance_data.get(
+        "USDT",
+        Decimal("0")
+    )
+
+    telegram(
+        "✅ AUTH SUCCESS\n"
+        "🔓 canTrade=True\n"
+        f"💰 USDT FREE: {usdt_free}"
+    )
+
+    info = exchange_info()
+
+    # مهم:
+    # اول پوزیشن قبلی بررسی می‌شود.
+    # بعد از آن موجودی USDT بررسی می‌شود.
+    existing = find_existing_position(info)
+
+    if existing:
+
+        manage_position(existing)
+
+        return
+
+    if usdt_free < ORDER_VALUE:
+
+        telegram(
+            "❌ USDT BALANCE TOO LOW\n"
+            f"💰 FREE: {usdt_free}\n"
+            f"💵 REQUIRED: {ORDER_VALUE}"
         )
+
+        return
+
+    signal = scan(info)
+
+    if not signal:
+
+        telegram(
+            "🔎 NO VALID BUY SIGNAL\n"
+            "🚫 NO TRADE"
+        )
+
+        return
+
+    buy_position(
+        signal,
+        info
+    )
+
+
+if __name__ == "__main__":
+
+    try:
+        main()
 
     except Exception as e:
 
         telegram(
-            "🚨 REAL SELL FAILED\n"
-            f"🪙 {symbol}\n"
-            f"📦 QTY: "
-            f"{fmt_decimal(quantity)}\n"
+            f"🚨 ATI ERROR {VERSION}\n"
             f"❌ {e}"
         )
 
         raise
-
-    sell_id = sell_order.get(
-        "orderId"
-    )
-
-    telegram(
-        "✅ SELL ACCEPTED\n"
-        f"🪙 {symbol}\n"
-        f"🆔 {sell_id}\n"
-        f"📌 STATUS: "
-        f"{sell_order.get('status')}"
-    )
-
-    if sell_id is not None:
-
-        time.sleep(1)
-
-        try:
-
-            final_sell = get_order(
-                symbol,
-                sell_id
-            )
-
-            sell_status = final_sell.get(
-                "status",
-                "UNKNOWN"
-            )
-
-            sell_qty = final_sell.get(
-                "executedQty",
-                "0"
-            )
-
-            sell_quote = final_sell.get(
-                "cummulativeQuoteQty",
-                final_sell.get(
-                    "cumulativeQuoteQty",
-                    "0"
-                )
-            )
-
-            telegram(
-                "🧾 SELL RESULT\n"
-                f"🪙 {symbol}\n"
-                f"🆔 {sell_id}\n"
-                f"📌 STATUS: {sell_status}\n"
-                f"📦 EXECUTED: {sell_qty}\n"
-                f"💵 QUOTE: {sell_quote}\n"
-                f"📌 REASON: {reason}"
-            )
-
-        except Exception as e:
-
-            telegram(
-                "⚠️ SELL SENT BUT "
-                "STATUS CHECK FAILED\n"
-                f"🆔 {sell_id}\n"
-                f"❌ {e}"
-            )
-
-
-# ============================================================
-# MANAGE POSITION
-# ============================================================
-
-def manage_existing_position(
-    position
-):
-
-    symbol = position[
-        "symbol"
-    ]
-
-    quantity = position[
-        "quantity"
-    ]
-
-    entry_price = position[
-        "entry_price"
-    ]
-
-    tp_price = (
-        entry_price
-        * (
-            Decimal("1")
-            + TP_PERCENT
-            / Decimal("100")
-        )
-    )
-
-    sl_price = (
-        entry_price
-        * (
-            Decimal("1")
-            - SL_PERCENT
-            / Decimal("100")
-        )
-    )
-
-    current = position[
-        "current_price"
-    ]
-
-    telegram(
-        "🟢 EXISTING POSITION FOUND\n"
-        f"🪙 {symbol}\n"
-        f"📦 QTY: {quantity}\n"
-        f"📥 ENTRY: {entry_price}\n"
-        f"💵 CURRENT: {
