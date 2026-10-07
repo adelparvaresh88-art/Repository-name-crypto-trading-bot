@@ -2,19 +2,25 @@ import os
 import time
 import hmac
 import hashlib
-import requests
+from decimal import Decimal
 from urllib.parse import urlencode
-from decimal import Decimal, ROUND_DOWN
+
+import requests
 
 
 # =========================================================
-# ATI FUTURES REAL MULTI-COIN
+# ATI FUTURES
+# MULTI COIN
+# AUTH + MARKET DISCOVERY
 # =========================================================
 
 API_BASE = "https://api1.tabdeal.org"
 
-READ_BASE = API_BASE + "/r/fapi/v1/"
-WRITE_BASE = API_BASE + "/fapi/v1/"
+# Public Futures
+READ_BASE = API_BASE + "/r/fapi/"
+
+# Private Futures
+WRITE_BASE = API_BASE + "/fapi/"
 
 API_KEY = (
     os.getenv("TABDIL_API_KEY")
@@ -28,43 +34,54 @@ API_SECRET = (
     or ""
 ).strip()
 
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+TELEGRAM_TOKEN = os.getenv(
+    "TELEGRAM_BOT_TOKEN",
+    ""
+).strip()
+
+TELEGRAM_CHAT_ID = os.getenv(
+    "TELEGRAM_CHAT_ID",
+    ""
+).strip()
 
 
 # =========================================================
-# REAL SETTINGS
+# SETTINGS
 # =========================================================
 
-REAL_TRADING = True
-
-LEVERAGE = int(os.getenv("FUTURES_LEVERAGE", "3"))
+LEVERAGE = int(
+    os.getenv(
+        "FUTURES_LEVERAGE",
+        "3"
+    )
+)
 
 ORDER_USDT = Decimal(
-    os.getenv("ORDER_USDT", "2")
+    os.getenv(
+        "ORDER_USDT",
+        "2"
+    )
 )
 
-TP_PERCENT = Decimal(
-    os.getenv("TP_PERCENT", "2.0")
-)
-
-SL_PERCENT = Decimal(
-    os.getenv("SL_PERCENT", "1.0")
+MAX_SYMBOLS = int(
+    os.getenv(
+        "MAX_FUTURES_SYMBOLS",
+        "75"
+    )
 )
 
 RECV_WINDOW = 5000
-TIMEOUT = 15
+TIMEOUT = 20
 
-# حداکثر تعداد نماد برای بررسی
-MAX_SYMBOLS = int(
-    os.getenv("MAX_FUTURES_SYMBOLS", "75")
-)
+# فعلاً OFF
+# بعد از AUTH SUCCESS روشن می‌کنیم.
+REAL_TRADING = False
 
 
 session = requests.Session()
 
 session.headers.update({
-    "User-Agent": "ATI-FUTURES-REAL/1.0",
+    "User-Agent": "ATI-FUTURES/2.0",
     "Accept": "application/json",
 })
 
@@ -73,84 +90,101 @@ session.headers.update({
 # TELEGRAM
 # =========================================================
 
-def tg(text):
+def telegram(message):
 
-    print(text)
+    print("\n" + message)
 
-    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+    if not TELEGRAM_TOKEN:
+        return
+
+    if not TELEGRAM_CHAT_ID:
         return
 
     try:
 
         url = (
-            f"https://api.telegram.org/"
-            f"bot{TELEGRAM_TOKEN}/sendMessage"
+            "https://api.telegram.org/bot"
+            + TELEGRAM_TOKEN
+            + "/sendMessage"
         )
 
         session.post(
             url,
             data={
                 "chat_id": TELEGRAM_CHAT_ID,
-                "text": text,
+                "text": message,
             },
             timeout=10,
         )
 
     except Exception as e:
 
-        print("Telegram error:", e)
+        print(
+            "Telegram error:",
+            e
+        )
 
 
 # =========================================================
 # JSON
 # =========================================================
 
-def json_response(r):
+def read_json(response):
 
     try:
-        return r.json()
+
+        return response.json()
 
     except Exception:
 
         raise RuntimeError(
-            f"HTTP {r.status_code}: "
-            f"{r.text[:1000]}"
+            "HTTP "
+            + str(response.status_code)
+            + ":\n"
+            + response.text[:1500]
         )
 
 
 # =========================================================
-# PUBLIC GET
+# PUBLIC REQUEST
 # =========================================================
 
-def public_get(endpoint, params=None):
+def public_get(
+    endpoint,
+    params=None
+):
 
-    r = session.get(
-        READ_BASE + endpoint,
+    url = READ_BASE + endpoint
+
+    response = session.get(
+        url,
         params=params or {},
         timeout=TIMEOUT,
     )
 
-    if r.status_code >= 400:
+    if response.status_code >= 400:
 
         raise RuntimeError(
-            f"HTTP {r.status_code}: "
-            f"{r.text[:1000]}"
+            "HTTP "
+            + str(response.status_code)
+            + ":\n"
+            + response.text[:1500]
         )
 
-    return json_response(r)
+    return read_json(response)
 
 
 # =========================================================
-# SIGN
+# SIGNATURE
 # =========================================================
 
-def signature(data):
+def make_signature(data):
 
     query = urlencode(data)
 
     return hmac.new(
-        API_SECRET.encode(),
-        query.encode(),
+        API_SECRET.encode("utf-8"),
+        query.encode("utf-8"),
         hashlib.sha256,
     ).hexdigest()
 
@@ -159,58 +193,100 @@ def signature(data):
 # PRIVATE GET
 # =========================================================
 
-def private_get(endpoint, params=None):
+def private_get(
+    endpoint,
+    version="v1",
+    params=None
+):
 
-    if not API_KEY or not API_SECRET:
+    if not API_KEY:
 
         raise RuntimeError(
-            "TABDIL_API_KEY / TABDIL_API_SECRET missing"
+            "TABDIL_API_KEY not found"
         )
 
-    data = dict(params or {})
+    if not API_SECRET:
 
+        raise RuntimeError(
+            "TABDIL_API_SECRET not found"
+        )
+
+    data = dict(
+        params or {}
+    )
+
+    # timestamp integer
     data["timestamp"] = int(
         time.time() * 1000
     )
 
     data["recvWindow"] = RECV_WINDOW
 
-    data["signature"] = signature(data)
+    data["signature"] = make_signature(
+        data
+    )
 
     headers = {
         "X-MBX-APIKEY": API_KEY
     }
 
-    r = session.get(
-        READ_BASE + endpoint,
+    url = (
+        API_BASE
+        + "/r/fapi/"
+        + version
+        + "/"
+        + endpoint
+    )
+
+    print(
+        "📥 PRIVATE GET:",
+        url
+    )
+
+    response = session.get(
+        url,
         params=data,
         headers=headers,
         timeout=TIMEOUT,
     )
 
-    if r.status_code >= 400:
+    if response.status_code >= 400:
 
         raise RuntimeError(
-            f"HTTP {r.status_code}: "
-            f"{r.text[:1000]}"
+            "HTTP "
+            + str(response.status_code)
+            + ":\n"
+            + response.text[:1500]
         )
 
-    return json_response(r)
+    return read_json(response)
 
 
 # =========================================================
 # PRIVATE POST
 # =========================================================
 
-def private_post(endpoint, params):
+def private_post(
+    endpoint,
+    version="v1",
+    params=None
+):
 
-    if not API_KEY or not API_SECRET:
+    if not API_KEY:
 
         raise RuntimeError(
-            "API KEY / SECRET missing"
+            "TABDIL_API_KEY not found"
         )
 
-    data = dict(params)
+    if not API_SECRET:
+
+        raise RuntimeError(
+            "TABDIL_API_SECRET not found"
+        )
+
+    data = dict(
+        params or {}
+    )
 
     data["timestamp"] = int(
         time.time() * 1000
@@ -218,95 +294,126 @@ def private_post(endpoint, params):
 
     data["recvWindow"] = RECV_WINDOW
 
-    data["signature"] = signature(data)
+    data["signature"] = make_signature(
+        data
+    )
 
     headers = {
         "X-MBX-APIKEY": API_KEY,
-        "Content-Type": "application/x-www-form-urlencoded",
+        "Content-Type":
+            "application/x-www-form-urlencoded",
     }
 
-    r = session.post(
-        WRITE_BASE + endpoint,
+    url = (
+        WRITE_BASE
+        + version
+        + "/"
+        + endpoint
+    )
+
+    print(
+        "📤 PRIVATE POST:",
+        url
+    )
+
+    response = session.post(
+        url,
         data=data,
         headers=headers,
         timeout=TIMEOUT,
     )
 
-    if r.status_code >= 400:
+    if response.status_code >= 400:
 
         raise RuntimeError(
-            f"HTTP {r.status_code}: "
-            f"{r.text[:1500]}"
+            "HTTP "
+            + str(response.status_code)
+            + ":\n"
+            + response.text[:1500]
         )
 
-    return json_response(r)
+    return read_json(response)
 
 
 # =========================================================
 # EXCHANGE INFO
 # =========================================================
 
-def exchange_info():
+def get_exchange_info():
+
+    print(
+        "🔎 GET FUTURES EXCHANGE INFO"
+    )
 
     data = public_get(
         "exchangeInfo"
     )
 
-    if isinstance(data, dict):
+    return data
+
+
+# =========================================================
+# EXTRACT SYMBOLS
+# =========================================================
+
+def extract_symbols(data):
+
+    rows = []
+
+    if isinstance(data, list):
+
+        rows = data
+
+    elif isinstance(data, dict):
 
         if isinstance(
             data.get("symbols"),
             list
         ):
-            return data["symbols"]
 
-        if isinstance(
+            rows = data["symbols"]
+
+        elif isinstance(
             data.get("data"),
             list
         ):
-            return data["data"]
 
-        if isinstance(
+            rows = data["data"]
+
+        elif isinstance(
             data.get("result"),
             list
         ):
-            return data["result"]
 
-        if isinstance(
+            rows = data["result"]
+
+        elif isinstance(
             data.get("data"),
             dict
         ):
 
+            nested = data["data"]
+
             if isinstance(
-                data["data"].get("symbols"),
+                nested.get("symbols"),
                 list
             ):
-                return data["data"]["symbols"]
 
-        if isinstance(
+                rows = nested["symbols"]
+
+        elif isinstance(
             data.get("result"),
             dict
         ):
 
+            nested = data["result"]
+
             if isinstance(
-                data["result"].get("symbols"),
+                nested.get("symbols"),
                 list
             ):
-                return data["result"]["symbols"]
 
-    if isinstance(data, list):
-        return data
-
-    return []
-
-
-# =========================================================
-# SYMBOL LIST
-# =========================================================
-
-def get_symbols():
-
-    rows = exchange_info()
+                rows = nested["symbols"]
 
     symbols = []
 
@@ -314,7 +421,7 @@ def get_symbols():
 
         if isinstance(row, str):
 
-            symbol = row.upper()
+            symbol = row.upper().strip()
 
         elif isinstance(row, dict):
 
@@ -322,32 +429,35 @@ def get_symbols():
                 row.get("symbol")
                 or row.get("contract")
                 or row.get("pair")
+                or row.get("name")
                 or ""
-            ).upper()
+            ).upper().strip()
 
             status = str(
                 row.get("status")
                 or ""
-            ).upper()
+            ).upper().strip()
 
             if status:
 
-                allowed = [
+                allowed = {
                     "TRADING",
                     "OPEN",
                     "ACTIVE",
                     "1",
-                ]
+                }
 
                 if status not in allowed:
                     continue
 
         else:
+
             continue
 
         if not symbol:
             continue
 
+        # فقط بازارهای USDT/USD
         if not (
             symbol.endswith("USDT")
             or symbol.endswith("USDC")
@@ -355,16 +465,14 @@ def get_symbols():
         ):
             continue
 
-        blocked = [
-            "INDEX",
-            "MARK",
-            "TEST",
-        ]
+        # موارد غیرمعامله‌ای
+        if "INDEX" in symbol:
+            continue
 
-        if any(
-            x in symbol
-            for x in blocked
-        ):
+        if "MARK" in symbol:
+            continue
+
+        if "TEST" in symbol:
             continue
 
         symbols.append(symbol)
@@ -375,275 +483,250 @@ def get_symbols():
 
 
 # =========================================================
-# ORDER BOOK
+# DEPTH
 # =========================================================
 
-def depth(symbol):
+def get_depth(symbol):
 
     return public_get(
         "depth",
         {
             "symbol": symbol,
             "limit": 5,
-        },
+        }
     )
 
 
 # =========================================================
-# PRICE
+# TEST SYMBOLS
 # =========================================================
 
-def get_price(symbol):
+def verify_symbols(symbols):
 
-    data = depth(symbol)
+    verified = []
 
-    bids = data.get(
-        "bids",
-        []
+    print(
+        "\n" + "=" * 55
     )
 
-    asks = data.get(
-        "asks",
-        []
+    print(
+        "🧪 VERIFY FUTURES SYMBOLS"
     )
 
-    if not bids or not asks:
-        return None
-
-    bid = Decimal(
-        str(bids[0][0])
+    print(
+        "=" * 55
     )
 
-    ask = Decimal(
-        str(asks[0][0])
-    )
-
-    return (
-        bid + ask
-    ) / Decimal("2")
-
-
-# =========================================================
-# SIMPLE PRICE-ACTION SIGNAL
-# =========================================================
-
-def signal(symbol):
-
-    try:
-
-        data = depth(symbol)
-
-        bids = data.get(
-            "bids",
-            []
-        )
-
-        asks = data.get(
-            "asks",
-            []
-        )
-
-        if not bids or not asks:
-            return None
-
-        bid_price = Decimal(
-            str(bids[0][0])
-        )
-
-        ask_price = Decimal(
-            str(asks[0][0])
-        )
-
-        bid_qty = Decimal(
-            str(bids[0][1])
-        )
-
-        ask_qty = Decimal(
-            str(asks[0][1])
-        )
-
-        if bid_qty <= 0 or ask_qty <= 0:
-            return None
-
-        total = (
-            bid_qty + ask_qty
-        )
-
-        bid_pressure = (
-            bid_qty / total
-        ) * Decimal("100")
-
-        ask_pressure = (
-            ask_qty / total
-        ) * Decimal("100")
-
-        price = (
-            bid_price + ask_price
-        ) / Decimal("2")
-
-        # فقط وقتی فشار واضح باشد
-        if bid_pressure >= Decimal("65"):
-
-            return {
-                "symbol": symbol,
-                "side": "BUY",
-                "price": price,
-                "pressure": bid_pressure,
-            }
-
-        if ask_pressure >= Decimal("65"):
-
-            return {
-                "symbol": symbol,
-                "side": "SELL",
-                "price": price,
-                "pressure": ask_pressure,
-            }
-
-    except Exception as e:
-
-        print(
-            f"{symbol} signal error:",
-            e
-        )
-
-    return None
-
-
-# =========================================================
-# FIND OPEN POSITIONS
-# =========================================================
-
-def open_positions():
-
-    data = private_get(
-        "positionRisk"
-    )
-
-    if not isinstance(data, list):
-        return []
-
-    result = []
-
-    for p in data:
+    for symbol in symbols:
 
         try:
 
-            qty = Decimal(
-                str(
-                    p.get("positionAmt")
-                    or p.get("quantity")
-                    or p.get("qty")
-                    or "0"
-                )
+            data = get_depth(
+                symbol
             )
 
-        except Exception:
+            bids = data.get(
+                "bids",
+                []
+            )
 
-            qty = Decimal("0")
+            asks = data.get(
+                "asks",
+                []
+            )
 
-        if qty != 0:
+            if bids and asks:
 
-            result.append(p)
+                verified.append(
+                    symbol
+                )
 
-    return result
+                print(
+                    "✅",
+                    symbol
+                )
+
+            else:
+
+                print(
+                    "⚠️",
+                    symbol,
+                    "EMPTY BOOK"
+                )
+
+        except Exception as e:
+
+            print(
+                "❌",
+                symbol,
+                str(e)[:150]
+            )
+
+    return verified
 
 
 # =========================================================
-# SET LEVERAGE
+# FUTURES ACCOUNT
 # =========================================================
 
-def set_leverage(symbol):
+def futures_account():
 
-    return private_post(
-        "leverage",
-        {
-            "symbol": symbol,
-            "leverage": LEVERAGE,
-        },
+    print(
+        "\n" + "=" * 55
     )
 
-
-# =========================================================
-# FIND STEP SIZE
-# =========================================================
-
-def symbol_rules(symbol):
-
-    rows = exchange_info()
-
-    for row in rows:
-
-        if not isinstance(row, dict):
-            continue
-
-        s = str(
-            row.get("symbol")
-            or ""
-        ).upper()
-
-        if s != symbol:
-            continue
-
-        step = (
-            row.get("stepSize")
-            or row.get("quantityStep")
-            or row.get("qtyStep")
-            or "0.000001"
-        )
-
-        min_qty = (
-            row.get("minQty")
-            or row.get("minQuantity")
-            or "0"
-        )
-
-        return (
-            Decimal(str(step)),
-            Decimal(str(min_qty)),
-        )
-
-    return (
-        Decimal("0.000001"),
-        Decimal("0"),
+    print(
+        "🔐 FUTURES ACCOUNT AUTH"
     )
 
-
-# =========================================================
-# ROUND QUANTITY
-# =========================================================
-
-def round_qty(qty, step):
-
-    if step <= 0:
-        return qty
-
-    return (
-        qty / step
-    ).to_integral_value(
-        rounding=ROUND_DOWN
-    ) * step
-
-
-# =========================================================
-# REAL MARKET ORDER
-# =========================================================
-
-def market_order(
-    symbol,
-    side,
-    quantity,
-):
-
-    return private_post(
-        "order",
-        {
-            "symbol": symbol,
-            "side": side,
-            "type": "MARKET",
-            "quantity": str(quantity),
-        },
+    print(
+        "=" * 55
     )
+
+    # مهم:
+    # Futures account در v3
+    data = private_get(
+        "account",
+        version="v3"
+    )
+
+    if not isinstance(
+        data,
+        dict
+    ):
+
+        raise RuntimeError(
+            "Unexpected account response"
+        )
+
+    print(
+        "✅ AUTH SUCCESS"
+    )
+
+    print(
+        "🔓 canTrade:",
+        data.get(
+            "canTrade"
+        )
+    )
+
+    print(
+        "📥 ACCOUNT RESPONSE OK"
+    )
+
+    return data
+
+
+# =========================================================
+# FUTURES POSITIONS
+# =========================================================
+
+def futures_positions():
+
+    print(
+        "\n" + "=" * 55
+    )
+
+    print(
+        "📌 FUTURES POSITIONS"
+    )
+
+    print(
+        "=" * 55
+    )
+
+    data = private_get(
+        "positionRisk",
+        version="v3"
+    )
+
+    if not isinstance(
+        data,
+        list
+    ):
+
+        if isinstance(
+            data,
+            dict
+        ):
+
+            if isinstance(
+                data.get("data"),
+                list
+            ):
+
+                data = data["data"]
+
+            elif isinstance(
+                data.get("result"),
+                list
+            ):
+
+                data = data["result"]
+
+    positions = []
+
+    if isinstance(
+        data,
+        list
+    ):
+
+        for position in data:
+
+            if not isinstance(
+                position,
+                dict
+            ):
+
+                continue
+
+            qty = (
+                position.get(
+                    "positionAmt"
+                )
+                or position.get(
+                    "quantity"
+                )
+                or position.get(
+                    "qty"
+                )
+                or "0"
+            )
+
+            try:
+
+                qty_decimal = Decimal(
+                    str(qty)
+                )
+
+            except Exception:
+
+                qty_decimal = Decimal(
+                    "0"
+                )
+
+            if qty_decimal != 0:
+
+                positions.append(
+                    position
+                )
+
+                print(
+                    "🟢",
+                    position.get(
+                        "symbol"
+                    ),
+                    "QTY=",
+                    qty
+                )
+
+    if not positions:
+
+        print(
+            "✅ NO OPEN POSITIONS"
+        )
+
+    return positions
 
 
 # =========================================================
@@ -652,40 +735,56 @@ def market_order(
 
 def main():
 
-    tg(
-        "💓 ATI FUTURES REAL\n"
-        "🔥 REAL TRADING = ON\n"
-        "📊 MULTI-COIN\n"
-        f"⚙️ LEVERAGE = {LEVERAGE}x\n"
-        f"💵 ORDER = {ORDER_USDT} USDT"
+    telegram(
+        "💓 ATI FUTURES\n"
+        "⚡ MULTI-COIN V3 AUTH FIX\n"
+        "📡 TABDEAL FUTURES\n"
+        f"⚙️ LEVERAGE: {LEVERAGE}x\n"
+        f"💵 ORDER: {ORDER_USDT} USDT\n"
+        "🔒 REAL ORDER: OFF"
     )
 
-    if not API_KEY or not API_SECRET:
+    # -----------------------------------------------------
+    # API CHECK
+    # -----------------------------------------------------
 
-        tg(
-            "❌ API KEY/SECRET موجود نیست."
+    if not API_KEY:
+
+        telegram(
+            "❌ TABDIL_API_KEY پیدا نشد."
+        )
+
+        return
+
+    if not API_SECRET:
+
+        telegram(
+            "❌ TABDIL_API_SECRET پیدا نشد."
         )
 
         return
 
     # -----------------------------------------------------
-    # ACCOUNT
+    # AUTH
     # -----------------------------------------------------
 
     try:
 
-        account = private_get(
-            "account"
-        )
+        account = futures_account()
 
-        tg(
+        telegram(
             "✅ FUTURES AUTH SUCCESS\n"
-            f"🔓 canTrade={account.get('canTrade')}"
+            "🔓 canTrade="
+            + str(
+                account.get(
+                    "canTrade"
+                )
+            )
         )
 
     except Exception as e:
 
-        tg(
+        telegram(
             "❌ FUTURES AUTH ERROR\n\n"
             + str(e)
         )
@@ -698,16 +797,18 @@ def main():
 
     try:
 
-        positions = open_positions()
+        positions = futures_positions()
 
-        tg(
+        telegram(
             "📌 OPEN POSITIONS: "
-            + str(len(positions))
+            + str(
+                len(positions)
+            )
         )
 
     except Exception as e:
 
-        tg(
+        telegram(
             "❌ POSITION ERROR\n\n"
             + str(e)
         )
@@ -715,16 +816,20 @@ def main():
         return
 
     # -----------------------------------------------------
-    # SYMBOLS
+    # EXCHANGE INFO
     # -----------------------------------------------------
 
     try:
 
-        symbols = get_symbols()
+        info = get_exchange_info()
+
+        symbols = extract_symbols(
+            info
+        )
 
     except Exception as e:
 
-        tg(
+        telegram(
             "❌ EXCHANGE INFO ERROR\n\n"
             + str(e)
         )
@@ -733,208 +838,75 @@ def main():
 
     if not symbols:
 
-        tg(
+        telegram(
             "❌ هیچ Futures Symbol پیدا نشد."
         )
 
         return
 
-    symbols = symbols[:MAX_SYMBOLS]
-
-    tg(
-        "📊 FUTURES MARKET\n"
-        f"TOTAL SYMBOLS = {len(symbols)}\n"
-        "🔎 SCANNING..."
+    print(
+        "\n📊 TOTAL FUTURES SYMBOLS:",
+        len(symbols)
     )
 
     # -----------------------------------------------------
-    # SCAN
+    # LIMIT
     # -----------------------------------------------------
 
-    candidates = []
-
-    open_symbols = set()
-
-    for p in positions:
-
-        s = str(
-            p.get("symbol")
-            or ""
-        ).upper()
-
-        if s:
-            open_symbols.add(s)
-
-    for symbol in symbols:
-
-        # پوزیشن باز را دوباره وارد نکن
-        if symbol in open_symbols:
-            continue
-
-        sig = signal(symbol)
-
-        if not sig:
-            continue
-
-        candidates.append(sig)
-
-        print(
-            "SIGNAL",
-            symbol,
-            sig["side"],
-            sig["pressure"]
-        )
-
-    if not candidates:
-
-        tg(
-            "ℹ️ فعلاً سیگنال قدرتمند پیدا نشد.\n"
-            f"📊 SCANNED: {len(symbols)}\n"
-            "🔒 NO ORDER"
-        )
-
-        return
+    symbols = symbols[
+        :MAX_SYMBOLS
+    ]
 
     # -----------------------------------------------------
-    # BEST SIGNAL
+    # VERIFY
     # -----------------------------------------------------
 
-    candidates.sort(
-        key=lambda x: x["pressure"],
-        reverse=True,
+    verified = verify_symbols(
+        symbols
     )
 
-    best = candidates[0]
-
-    symbol = best["symbol"]
-    side = best["side"]
-    price = best["price"]
-    pressure = best["pressure"]
-
-    tg(
-        "🚨 BEST FUTURES SIGNAL\n\n"
-        f"🪙 {symbol}\n"
-        f"📍 {side}\n"
-        f"💰 PRICE: {price}\n"
-        f"💪 PRESSURE: {pressure:.2f}%\n"
-        f"⚙️ LEVERAGE: {LEVERAGE}x\n"
-        f"💵 MARGIN: {ORDER_USDT} USDT\n"
-        "🔥 REAL ORDER: ON"
+    telegram(
+        "✅ ATI FUTURES SCAN OK\n"
+        f"📊 TOTAL: {len(symbols)}\n"
+        f"🟢 VERIFIED: {len(verified)}\n"
+        "🔐 AUTH: SUCCESS\n"
+        "🔒 REAL ORDER: OFF"
     )
 
     # -----------------------------------------------------
-    # LEVERAGE
+    # END
     # -----------------------------------------------------
 
-    try:
+    print(
+        "\n" + "=" * 55
+    )
 
-        lev = set_leverage(
-            symbol
-        )
+    print(
+        "✅ ATI FUTURES COMPLETE"
+    )
 
-        print(
-            "LEVERAGE RESULT:",
-            lev
-        )
+    print(
+        "AUTH = SUCCESS"
+    )
 
-    except Exception as e:
+    print(
+        "REAL ORDER = OFF"
+    )
 
-        tg(
-            "❌ LEVERAGE ERROR\n\n"
-            + str(e)
-        )
-
-        return
-
-    # -----------------------------------------------------
-    # QUANTITY
-    # -----------------------------------------------------
-
-    try:
-
-        step, min_qty = symbol_rules(
-            symbol
-        )
-
-        if price <= 0:
-
-            raise RuntimeError(
-                "Invalid price"
-            )
-
-        # مقدار اسمی پوزیشن:
-        # margin × leverage
-        notional = (
-            ORDER_USDT
-            * Decimal(LEVERAGE)
-        )
-
-        quantity = (
-            notional / price
-        )
-
-        quantity = round_qty(
-            quantity,
-            step,
-        )
-
-        if quantity <= 0:
-
-            raise RuntimeError(
-                "Calculated quantity is zero"
-            )
-
-        if quantity < min_qty:
-
-            raise RuntimeError(
-                f"Quantity {quantity} "
-                f"< minimum {min_qty}"
-            )
-
-    except Exception as e:
-
-        tg(
-            "❌ QUANTITY ERROR\n\n"
-            + str(e)
-        )
-
-        return
-
-    # -----------------------------------------------------
-    # REAL ORDER
-    # -----------------------------------------------------
-
-    try:
-
-        order = market_order(
-            symbol,
-            side,
-            quantity,
-        )
-
-        tg(
-            "🔥🔥 REAL FUTURES ORDER SENT 🔥🔥\n\n"
-            f"🪙 {symbol}\n"
-            f"📍 {side}\n"
-            f"💰 ENTRY ≈ {price}\n"
-            f"📦 QTY = {quantity}\n"
-            f"⚙️ LEVERAGE = {LEVERAGE}x\n"
-            f"💵 MARGIN ≈ {ORDER_USDT} USDT\n\n"
-            f"ORDER RESPONSE:\n{str(order)[:1500]}"
-        )
-
-    except Exception as e:
-
-        tg(
-            "❌ REAL ORDER FAILED\n\n"
-            f"{symbol}\n"
-            f"{side}\n"
-            f"QTY={quantity}\n\n"
-            f"{e}"
-        )
-
-        return
+    print(
+        "=" * 55
+    )
 
 
 if __name__ == "__main__":
-    main()
+
+    try:
+
+        main()
+
+    except Exception as e:
+
+        telegram(
+            "🚨 ATI FUTURES CRITICAL ERROR\n\n"
+            + str(e)
+        )
