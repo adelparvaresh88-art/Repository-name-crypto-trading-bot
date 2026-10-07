@@ -1,31 +1,18 @@
+import os
+import time
+import math
+import hmac
+import hashlib
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from urllib.parse import urlencode
+
+import requests
+
+
 # ============================================================
 # ATI FUTURES REAL V7.3
 # FAST ICHIMOKU SCANNER
-# TABDEAL FUTURES
-# REAL BUY / SELL
-# ============================================================
-
-import os
-import time
-import hmac
-import hashlib
-import requests
-
-from urllib.parse import urlencode
-from datetime import datetime, timezone
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from decimal import Decimal, ROUND_DOWN
-
-
-# ============================================================
-# VERSION
-# ============================================================
-
-VERSION = "ATI-FUTURES-REAL-V7.3"
-
-
-# ============================================================
-# API
 # ============================================================
 
 API_BASE = "https://api1.tabdeal.org"
@@ -34,158 +21,55 @@ PUBLIC_V1 = API_BASE + "/r/fapi/v1/"
 PRIVATE_V3 = API_BASE + "/r/fapi/v3/"
 WRITE_V1 = API_BASE + "/fapi/v1/"
 
-REQUEST_TIMEOUT = 8
+TIMEFRAME = "5m"
+KLINE_LIMIT = 100
+
+MAX_WORKERS = 16
+SCAN_INTERVAL = 300
+
+LEVERAGE = 3
+ORDER_USDT = float(os.getenv("ORDER_QTY", "2"))
+
+MAX_NEW_TRADES = 1
+
+SL_PCT = 0.010
+TP_PCT = 0.020
+
+MIN_SCORE = 5.0
+MAX_KIJUN_DISTANCE = 0.025
+
+TENKAN_N = 9
+KIJUN_N = 26
+SENKOU_B_N = 52
+
+LIVE_TRADING = (
+    os.getenv("LIVE_TRADING", "true")
+    .strip()
+    .lower()
+    in ("1", "true", "yes", "on")
+)
+
+BUY_LOCK = False
 
 
 # ============================================================
-# ENV HELPERS
+# SECRETS
 # ============================================================
 
-def env_str(name, default=""):
-    value = os.getenv(name, "")
-    if value and value.strip():
-        return value.strip()
-    return default
-
-
-def env_int(name, default):
-    try:
-        return int(env_str(name, str(default)))
-    except Exception:
-        return default
-
-
-def env_float(name, default):
-    try:
-        return float(env_str(name, str(default)))
-    except Exception:
-        return default
-
-
-def env_bool(name, default=False):
-    value = env_str(name, "").lower()
-
-    if not value:
-        return default
-
-    return value in (
-        "1",
-        "true",
-        "yes",
-        "on",
-    )
-
-
-# ============================================================
-# SETTINGS
-# ============================================================
-
-TIMEFRAME = env_str("TIMEFRAME", "5m")
-
-KLINE_LIMIT = env_int(
-    "KLINE_LIMIT",
-    100
+API_KEY = (
+    os.getenv("TABDIL_API_KEY")
+    or os.getenv("TABDEAL_API_KEY")
+    or ""
 )
 
-SCAN_WORKERS = max(
-    4,
-    env_int("SCAN_WORKERS", 16)
+API_SECRET = (
+    os.getenv("TABDIL_API_SECRET")
+    or os.getenv("TABDEAL_API_SECRET")
+    or ""
 )
 
-SCAN_INTERVAL_SECONDS = env_int(
-    "SCAN_INTERVAL_SECONDS",
-    300
-)
-
-# ------------------------------------------------------------
-# Ichimoku signal settings
-# ------------------------------------------------------------
-
-MIN_SIGNAL_SCORE = env_float(
-    "MIN_SIGNAL_SCORE",
-    5.0
-)
-
-MAX_KIJUN_DISTANCE = env_float(
-    "MAX_KIJUN_DISTANCE",
-    2.5
-)
-
-# ------------------------------------------------------------
-# REAL TRADING
-# ------------------------------------------------------------
-
-LIVE_TRADING = env_bool(
-    "LIVE_TRADING",
-    True
-)
-
-ORDER_USDT = env_float(
-    "ORDER_QTY",
-    2.0
-)
-
-LEVERAGE = env_int(
-    "LEVERAGE",
-    3
-)
-
-MAX_NEW_TRADES = max(
-    1,
-    env_int("MAX_NEW_TRADES", 1)
-)
-
-# ------------------------------------------------------------
-# SL / TP
-# ------------------------------------------------------------
-
-SL_PERCENT = env_float(
-    "SL_PERCENT",
-    1.0
-)
-
-TP_PERCENT = env_float(
-    "TP_PERCENT",
-    2.0
-)
-
-
-# ============================================================
-# API KEYS
-# ============================================================
-
-API_KEY = env_str(
-    "TABDIL_API_KEY",
-    env_str("TABDEAL_API_KEY")
-)
-
-API_SECRET = env_str(
-    "TABDIL_API_SECRET",
-    env_str("TABDEAL_API_SECRET")
-)
-
-
-# ============================================================
-# TELEGRAM
-# ============================================================
-
-TELEGRAM_BOT_TOKEN = env_str(
-    "TELEGRAM_BOT_TOKEN"
-)
-
-TELEGRAM_CHAT_ID = env_str(
-    "TELEGRAM_CHAT_ID"
-)
-
-
-# ============================================================
-# ICHIMOKU SETTINGS
-# ============================================================
-
-TENKAN_PERIOD = 9
-KIJUN_PERIOD = 26
-SENKOU_B_PERIOD = 52
-DISPLACEMENT = 26
+TG_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+TG_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
 
 # ============================================================
@@ -195,151 +79,139 @@ DISPLACEMENT = 26
 session = requests.Session()
 
 session.headers.update({
-    "User-Agent": "ATI-Futures-V7.3",
-    "Accept": "application/json",
+    "User-Agent": "ATI-FUTURES-V7.3"
 })
 
+print_lock = threading.Lock()
+
 
 # ============================================================
-# TIME
+# LOG
 # ============================================================
 
-def utc_now():
-
-    return datetime.now(
-        timezone.utc
-    ).strftime(
-        "%Y-%m-%d %H:%M:%S UTC"
-    )
+def log(msg):
+    with print_lock:
+        print(msg, flush=True)
 
 
 # ============================================================
 # TELEGRAM
 # ============================================================
 
-def telegram(message):
+def tg(msg):
 
-    if not TELEGRAM_BOT_TOKEN:
-        print("⚠️ TELEGRAM_BOT_TOKEN missing")
-        return False
-
-    if not TELEGRAM_CHAT_ID:
-        print("⚠️ TELEGRAM_CHAT_ID missing")
+    if not TG_TOKEN or not TG_CHAT_ID:
         return False
 
     try:
 
         url = (
             f"https://api.telegram.org/"
-            f"bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+            f"bot{TG_TOKEN}/sendMessage"
         )
 
-        response = requests.post(
+        r = session.post(
             url,
             data={
-                "chat_id": TELEGRAM_CHAT_ID,
-                "text": str(message),
+                "chat_id": TG_CHAT_ID,
+                "text": msg
             },
-            timeout=12,
+            timeout=15
         )
 
-        if response.status_code == 200:
-
-            print("✅ TELEGRAM SENT")
-
-            return True
-
-        print(
-            "❌ TELEGRAM ERROR:",
-            response.status_code,
-            response.text[:500]
-        )
-
-        return False
+        return r.ok
 
     except Exception as e:
 
-        print(
-            "❌ TELEGRAM EXCEPTION:",
-            repr(e)
-        )
+        log(f"Telegram error: {e}")
 
         return False
 
 
 # ============================================================
-# TELEGRAM TEST
+# PUBLIC API
 # ============================================================
 
-def telegram_test():
+def public_get(path, params=None):
 
-    if not TELEGRAM_BOT_TOKEN:
-        return False
+    last_error = None
 
-    try:
+    for attempt in range(3):
 
-        url = (
-            f"https://api.telegram.org/"
-            f"bot{TELEGRAM_BOT_TOKEN}/getMe"
-        )
+        try:
 
-        response = requests.get(
-            url,
-            timeout=12
-        )
+            r = session.get(
+                PUBLIC_V1 + path.lstrip("/"),
+                params=params,
+                timeout=12
+            )
 
-        if response.status_code != 200:
-            return False
+            if r.status_code in (
+                429,
+                500,
+                502,
+                503,
+                504
+            ):
 
-        data = response.json()
+                last_error = f"HTTP {r.status_code}"
 
-        if not data.get("ok"):
-            return False
+                time.sleep(
+                    0.2 * (attempt + 1)
+                )
 
-        username = (
-            data.get("result", {})
-            .get("username", "UNKNOWN")
-        )
+                continue
 
-        print(
-            f"✅ TELEGRAM BOT: @{username}"
-        )
+            r.raise_for_status()
 
-        return telegram(
-            "🧪 ATI TELEGRAM TEST\n\n"
-            "✅ Telegram connection is working.\n"
-            f"⚡ {VERSION}\n"
-            f"🕐 {utc_now()}"
-        )
+            return r.json()
 
-    except Exception as e:
+        except Exception as e:
 
-        print(
-            "❌ TELEGRAM TEST ERROR:",
-            repr(e)
-        )
+            last_error = str(e)
 
-        return False
+            if attempt < 2:
+                time.sleep(
+                    0.15 * (attempt + 1)
+                )
+
+    raise RuntimeError(
+        last_error or "Public request failed"
+    )
 
 
 # ============================================================
-# SIGNATURE
+# SIGNED API
 # ============================================================
 
-def signed_params(params=None):
+def signed_request(
+    method,
+    base,
+    path,
+    params=None
+):
 
-    data = dict(params or {})
+    if not API_KEY or not API_SECRET:
 
-    data["timestamp"] = int(
+        raise RuntimeError(
+            "TABDIL/TABDEAL API credentials are missing"
+        )
+
+    p = dict(params or {})
+
+    p["timestamp"] = int(
         time.time() * 1000
     )
 
-    data.setdefault(
+    p.setdefault(
         "recvWindow",
         5000
     )
 
-    query = urlencode(data)
+    query = urlencode(
+        p,
+        doseq=True
+    )
 
     signature = hmac.new(
         API_SECRET.encode(),
@@ -347,193 +219,88 @@ def signed_params(params=None):
         hashlib.sha256
     ).hexdigest()
 
-    data["signature"] = signature
-
-    return data
-
-
-# ============================================================
-# PUBLIC GET
-# ============================================================
-
-def public_get(
-    url,
-    params=None
-):
-
-    response = session.get(
-        url,
-        params=params or {},
-        timeout=REQUEST_TIMEOUT
+    url = (
+        base
+        + path.lstrip("/")
+        + "?"
+        + query
+        + "&signature="
+        + signature
     )
 
-    if response.status_code != 200:
-
-        raise Exception(
-            f"HTTP {response.status_code}: "
-            f"{response.text[:1000]}"
-        )
-
-    return response.json()
-
-
-# ============================================================
-# PRIVATE GET
-# ============================================================
-
-def private_get(
-    url,
-    params=None
-):
-
-    response = session.get(
+    r = session.request(
+        method,
         url,
-        params=signed_params(params),
         headers={
             "X-MBX-APIKEY": API_KEY
         },
-        timeout=REQUEST_TIMEOUT
+        timeout=15
     )
 
-    if response.status_code != 200:
+    if not r.ok:
 
-        raise Exception(
-            f"HTTP {response.status_code}: "
-            f"{response.text[:1200]}"
+        raise RuntimeError(
+            f"HTTP {r.status_code}: "
+            f"{r.text[:500]}"
         )
 
-    return response.json()
+    return r.json()
+
+
+def private_get(path, params=None):
+
+    return signed_request(
+        "GET",
+        PRIVATE_V3,
+        path,
+        params
+    )
+
+
+def private_post(path, params=None):
+
+    return signed_request(
+        "POST",
+        WRITE_V1,
+        path,
+        params
+    )
+
+
+def private_delete(path, params=None):
+
+    return signed_request(
+        "DELETE",
+        WRITE_V1,
+        path,
+        params
+    )
 
 
 # ============================================================
-# PRIVATE POST
+# NUMBER HELPERS
 # ============================================================
 
-def private_post(
-    url,
-    params=None
-):
+def floor_step(value, step):
 
-    response = session.post(
-        url,
-        params=signed_params(params),
-        headers={
-            "X-MBX-APIKEY": API_KEY
-        },
-        timeout=REQUEST_TIMEOUT
-    )
+    if step <= 0:
+        return value
 
-    if response.status_code not in (
-        200,
-        201
-    ):
-
-        raise Exception(
-            f"HTTP {response.status_code}: "
-            f"{response.text[:1500]}"
+    return (
+        math.floor(
+            value / step + 1e-12
         )
-
-    return response.json()
-
-
-# ============================================================
-# ACCOUNT
-# ============================================================
-
-def get_account():
-
-    return private_get(
-        PRIVATE_V3 + "account"
+        * step
     )
 
 
-def get_balance():
+def fmt_num(value, decimals=8):
 
-    return private_get(
-        PRIVATE_V3 + "balance"
+    return (
+        f"{value:.{decimals}f}"
+        .rstrip("0")
+        .rstrip(".")
     )
-
-
-def extract_usdt(data):
-
-    values = []
-
-    def walk(obj):
-
-        if isinstance(obj, dict):
-
-            asset = str(
-                obj.get("asset", "")
-            ).upper()
-
-            if asset == "USDT":
-
-                for key in (
-                    "availableBalance",
-                    "available",
-                    "free",
-                    "walletBalance",
-                    "balance",
-                    "crossWalletBalance",
-                ):
-
-                    try:
-
-                        value = obj.get(key)
-
-                        if value is not None:
-                            values.append(
-                                float(value)
-                            )
-
-                    except Exception:
-                        pass
-
-            for value in obj.values():
-                walk(value)
-
-        elif isinstance(obj, list):
-
-            for value in obj:
-                walk(value)
-
-    walk(data)
-
-    return max(
-        values,
-        default=0.0
-    )
-
-
-def get_usdt_balance():
-
-    try:
-
-        return extract_usdt(
-            get_balance()
-        )
-
-    except Exception as e:
-
-        print(
-            "⚠️ BALANCE ERROR 1:",
-            str(e)[:300]
-        )
-
-    try:
-
-        return extract_usdt(
-            get_account()
-        )
-
-    except Exception as e:
-
-        print(
-            "⚠️ BALANCE ERROR 2:",
-            str(e)[:300]
-        )
-
-    return 0.0
 
 
 # ============================================================
@@ -543,99 +310,146 @@ def get_usdt_balance():
 def get_exchange_info():
 
     return public_get(
-        PUBLIC_V1 + "exchangeInfo"
+        "exchangeInfo"
     )
 
 
 def get_symbols():
 
-    data = get_exchange_info()
+    info = get_exchange_info()
 
-    result = []
+    symbols = []
 
-    for item in data.get(
+    for s in info.get(
         "symbols",
         []
     ):
 
-        if not isinstance(
-            item,
-            dict
-        ):
-            continue
-
-        symbol = str(
-            item.get(
-                "symbol",
-                ""
-            )
-        ).upper()
-
-        quote = str(
-            item.get(
-                "quoteAsset",
-                ""
-            )
-        ).upper()
+        symbol = s.get(
+            "symbol",
+            ""
+        )
 
         status = str(
-            item.get(
+            s.get(
                 "status",
                 ""
             )
         ).upper()
 
-        if (
-            symbol
-            and quote == "USDT"
-            and status in (
-                "TRADING",
-                "ENABLED",
-                "OPEN"
+        quote = str(
+            s.get(
+                "quoteAsset",
+                ""
             )
+        ).upper()
+
+        contract = str(
+            s.get(
+                "contractType",
+                ""
+            )
+        ).upper()
+
+        if status not in (
+            "TRADING",
+            "BREAK"
         ):
+            continue
 
-            result.append(item)
+        if quote != "USDT":
+            continue
 
-    return result
+        if contract and contract not in (
+            "PERPETUAL",
+            "PERPETUAL_CONTRACT"
+        ):
+            continue
 
+        symbols.append(symbol)
 
-# ============================================================
-# TICKERS
-# ============================================================
-
-def get_tickers():
-
-    data = public_get(
-        PUBLIC_V1 + "ticker/24hr"
+    return sorted(
+        set(symbols)
     )
 
-    result = {}
 
-    if isinstance(
-        data,
-        list
+def get_symbol_filters():
+
+    info = get_exchange_info()
+
+    filters = {}
+
+    for s in info.get(
+        "symbols",
+        []
     ):
 
-        for item in data:
+        symbol = s.get(
+            "symbol"
+        )
 
-            if not isinstance(
-                item,
-                dict
-            ):
-                continue
+        if not symbol:
+            continue
 
-            symbol = str(
-                item.get(
-                    "symbol",
-                    ""
+        data = {
+            "step": 0.0,
+            "min_qty": 0.0,
+            "tick": 0.0,
+            "min_notional": 0.0
+        }
+
+        for f in s.get(
+            "filters",
+            []
+        ):
+
+            typ = f.get(
+                "filterType"
+            )
+
+            if typ == "LOT_SIZE":
+
+                data["step"] = float(
+                    f.get(
+                        "stepSize",
+                        0
+                    ) or 0
                 )
-            ).upper()
 
-            if symbol:
-                result[symbol] = item
+                data["min_qty"] = float(
+                    f.get(
+                        "minQty",
+                        0
+                    ) or 0
+                )
 
-    return result
+            elif typ == "PRICE_FILTER":
+
+                data["tick"] = float(
+                    f.get(
+                        "tickSize",
+                        0
+                    ) or 0
+                )
+
+            elif typ in (
+                "MIN_NOTIONAL",
+                "NOTIONAL"
+            ):
+
+                data["min_notional"] = float(
+                    f.get(
+                        "notional",
+                        f.get(
+                            "minNotional",
+                            0
+                        )
+                    ) or 0
+                )
+
+        filters[symbol] = data
+
+    return filters
 
 
 # ============================================================
@@ -644,267 +458,144 @@ def get_tickers():
 
 def get_klines(symbol):
 
-    return public_get(
-        PUBLIC_V1 + "klines",
+    data = public_get(
+        "klines",
         {
             "symbol": symbol,
             "interval": TIMEFRAME,
-            "limit": KLINE_LIMIT,
+            "limit": KLINE_LIMIT
         }
     )
 
-
-def parse_klines(data):
-
     candles = []
 
-    if not isinstance(
-        data,
-        list
-    ):
-        return candles
+    for x in data:
 
-    for row in data:
+        if len(x) < 6:
+            continue
 
-        try:
-
-            if len(row) >= 6:
-
-                candles.append({
-                    "open": float(row[1]),
-                    "high": float(row[2]),
-                    "low": float(row[3]),
-                    "close": float(row[4]),
-                    "volume": float(row[5]),
-                })
-
-        except Exception:
-            pass
+        candles.append({
+            "t": int(x[0]),
+            "o": float(x[1]),
+            "h": float(x[2]),
+            "l": float(x[3]),
+            "c": float(x[4]),
+            "v": float(x[5])
+        })
 
     return candles
-
-
-# ============================================================
-# ICHIMOKU MIDPOINT
-# ============================================================
-
-def midpoint(
-    highs,
-    lows,
-    period
-):
-
-    if len(highs) < period:
-        return None
-
-    return (
-        max(highs[-period:])
-        +
-        min(lows[-period:])
-    ) / 2.0
 
 
 # ============================================================
 # ICHIMOKU
 # ============================================================
 
-def calculate_ichimoku(
-    candles
-):
+def mid_high_low(candles, n):
 
-    if len(candles) < 60:
+    if len(candles) < n:
         return None
 
-    # Remove incomplete candle
+    part = candles[-n:]
+
+    high = max(
+        x["h"]
+        for x in part
+    )
+
+    low = min(
+        x["l"]
+        for x in part
+    )
+
+    return (
+        high + low
+    ) / 2.0
+
+
+def ichimoku(candles):
+
+    # فقط کندل بسته‌شده
     closed = candles[:-1]
 
-    if len(closed) < 55:
+    if len(closed) < (
+        SENKOU_B_N + 3
+    ):
         return None
 
-    highs = [
-        x["high"]
-        for x in closed
-    ]
-
-    lows = [
-        x["low"]
-        for x in closed
-    ]
-
-    closes = [
-        x["close"]
-        for x in closed
-    ]
-
-    close = closes[-1]
-
-    tenkan = midpoint(
-        highs,
-        lows,
-        TENKAN_PERIOD
+    tenkan = mid_high_low(
+        closed,
+        TENKAN_N
     )
 
-    kijun = midpoint(
-        highs,
-        lows,
-        KIJUN_PERIOD
+    kijun = mid_high_low(
+        closed,
+        KIJUN_N
     )
 
-    senkou_b = midpoint(
-        highs,
-        lows,
-        SENKOU_B_PERIOD
+    span_b = mid_high_low(
+        closed,
+        SENKOU_B_N
     )
 
     if (
         tenkan is None
         or kijun is None
-        or senkou_b is None
+        or span_b is None
     ):
         return None
 
-    senkou_a = (
+    span_a = (
         tenkan + kijun
     ) / 2.0
 
+    price = closed[-1]["c"]
+
     cloud_top = max(
-        senkou_a,
-        senkou_b
+        span_a,
+        span_b
     )
 
     cloud_bottom = min(
-        senkou_a,
-        senkou_b
+        span_a,
+        span_b
     )
 
-    previous_highs = highs[:-1]
-    previous_lows = lows[:-1]
-
-    previous_tenkan = midpoint(
-        previous_highs,
-        previous_lows,
-        TENKAN_PERIOD
+    prev_tenkan = mid_high_low(
+        closed[:-1],
+        TENKAN_N
     )
 
-    previous_kijun = midpoint(
-        previous_highs,
-        previous_lows,
-        KIJUN_PERIOD
+    prev_kijun = mid_high_low(
+        closed[:-1],
+        KIJUN_N
     )
 
     bullish_cross = (
-        previous_tenkan is not None
-        and previous_kijun is not None
-        and previous_tenkan <= previous_kijun
+        prev_tenkan is not None
+        and prev_kijun is not None
+        and prev_tenkan <= prev_kijun
         and tenkan > kijun
     )
 
     bearish_cross = (
-        previous_tenkan is not None
-        and previous_kijun is not None
-        and previous_tenkan >= previous_kijun
+        prev_tenkan is not None
+        and prev_kijun is not None
+        and prev_tenkan >= prev_kijun
         and tenkan < kijun
     )
 
-    # Chikou confirmation
-    if len(closes) > DISPLACEMENT:
-
-        reference_close = closes[
-            -1 - DISPLACEMENT
-        ]
-
-    else:
-
-        reference_close = closes[0]
-
-    chikou_buy = (
-        close > reference_close
-    )
-
-    chikou_sell = (
-        close < reference_close
-    )
-
-    kijun_distance = (
-        abs(close - kijun)
-        / kijun
-        * 100
-        if kijun > 0
-        else 999
-    )
-
-    last = closed[-1]
-
-    candle_range = max(
-        last["high"] - last["low"],
-        1e-12
-    )
-
-    close_position = (
-        last["close"] - last["low"]
-    ) / candle_range
-
-    bullish_candle = (
-        last["close"] > last["open"]
-        and close_position >= 0.55
-    )
-
-    bearish_candle = (
-        last["close"] < last["open"]
-        and close_position <= 0.45
-    )
-
     return {
-
-        "close": close,
-
+        "price": price,
         "tenkan": tenkan,
-
         "kijun": kijun,
-
-        "senkou_a": senkou_a,
-
-        "senkou_b": senkou_b,
-
-        "cloud_top": cloud_top,
-
-        "cloud_bottom": cloud_bottom,
-
-        "above_cloud": (
-            close > cloud_top
-        ),
-
-        "below_cloud": (
-            close < cloud_bottom
-        ),
-
-        "inside_cloud": (
-            cloud_bottom
-            <= close
-            <= cloud_top
-        ),
-
-        "bullish_cloud": (
-            senkou_a > senkou_b
-        ),
-
-        "bearish_cloud": (
-            senkou_a < senkou_b
-        ),
-
-        "bullish_cross": bullish_cross,
-
-        "bearish_cross": bearish_cross,
-
-        "chikou_buy": chikou_buy,
-
-        "chikou_sell": chikou_sell,
-
-        "kijun_distance": kijun_distance,
-
-        "bullish_candle": bullish_candle,
-
-        "bearish_candle": bearish_candle,
+        "span_a": span_a,
+        "span_b": span_b,
+        "top": cloud_top,
+        "bottom": cloud_bottom,
+        "bull_cross": bullish_cross,
+        "bear_cross": bearish_cross,
+        "last": closed[-1],
+        "prev": closed[-2]
     }
 
 
@@ -912,506 +603,388 @@ def calculate_ichimoku(
 # SIGNAL ENGINE
 # ============================================================
 
-def evaluate_signal(
+def signal_for(
     symbol,
-    info,
-    ticker,
     candles
 ):
 
-    ichi = calculate_ichimoku(
-        candles
+    if len(candles) < 60:
+
+        return {
+            "symbol": symbol,
+            "status": "insufficient",
+            "kline_ok": False
+        }
+
+    x = ichimoku(candles)
+
+    if not x:
+
+        return {
+            "symbol": symbol,
+            "status": "insufficient",
+            "kline_ok": True
+        }
+
+    price = x["price"]
+    tenkan = x["tenkan"]
+    kijun = x["kijun"]
+
+    top = x["top"]
+    bottom = x["bottom"]
+
+    candle = x["last"]
+
+    bullish_cloud = (
+        x["span_a"] > x["span_b"]
     )
 
-    if not ichi:
+    bearish_cloud = (
+        x["span_a"] < x["span_b"]
+    )
+
+    above_cloud = (
+        price > top
+    )
+
+    below_cloud = (
+        price < bottom
+    )
+
+    inside_cloud = (
+        not above_cloud
+        and not below_cloud
+    )
+
+    if inside_cloud:
 
         return {
-            "status": "insufficient"
+            "symbol": symbol,
+            "status": "inside_cloud",
+            "kline_ok": True
         }
 
-    # No trade inside cloud
-    if ichi["inside_cloud"]:
+    bull_core = (
+        int(above_cloud)
+        + int(tenkan > kijun)
+        + int(bullish_cloud)
+    )
 
-        return {
-            "status": "inside_cloud"
-        }
+    bear_core = (
+        int(below_cloud)
+        + int(tenkan < kijun)
+        + int(bearish_cloud)
+    )
 
-    buy_score = 0.0
-    sell_score = 0.0
-
-    buy_reasons = []
-    sell_reasons = []
-
-    # --------------------------------------------------------
+    # ========================================================
     # BUY
-    # --------------------------------------------------------
-
-    if ichi["above_cloud"]:
-
-        buy_score += 3.0
-        buy_reasons.append(
-            "ABOVE_KUMO"
-        )
+    # ========================================================
 
     if (
-        ichi["tenkan"]
-        > ichi["kijun"]
+        bull_core >= 2
+        and bull_core > bear_core
     ):
-
-        buy_score += 2.0
-        buy_reasons.append(
-            "TENKAN_GT_KIJUN"
-        )
-
-    if ichi["bullish_cloud"]:
-
-        buy_score += 1.5
-        buy_reasons.append(
-            "BULLISH_KUMO"
-        )
-
-    # --------------------------------------------------------
-    # SELL
-    # --------------------------------------------------------
-
-    if ichi["below_cloud"]:
-
-        sell_score += 3.0
-        sell_reasons.append(
-            "BELOW_KUMO"
-        )
-
-    if (
-        ichi["tenkan"]
-        < ichi["kijun"]
-    ):
-
-        sell_score += 2.0
-        sell_reasons.append(
-            "TENKAN_LT_KIJUN"
-        )
-
-    if ichi["bearish_cloud"]:
-
-        sell_score += 1.5
-        sell_reasons.append(
-            "BEARISH_KUMO"
-        )
-
-    # --------------------------------------------------------
-    # CROSS = BONUS
-    # --------------------------------------------------------
-
-    if ichi["bullish_cross"]:
-
-        buy_score += 1.5
-        buy_reasons.append(
-            "TK_CROSS"
-        )
-
-    if ichi["bearish_cross"]:
-
-        sell_score += 1.5
-        sell_reasons.append(
-            "TK_CROSS"
-        )
-
-    # --------------------------------------------------------
-    # CHIKOU = BONUS ONLY
-    # --------------------------------------------------------
-
-    if ichi["chikou_buy"]:
-
-        buy_score += 0.5
-        buy_reasons.append(
-            "CHIKOU"
-        )
-
-    if ichi["chikou_sell"]:
-
-        sell_score += 0.5
-        sell_reasons.append(
-            "CHIKOU"
-        )
-
-    # --------------------------------------------------------
-    # CANDLE = BONUS
-    # --------------------------------------------------------
-
-    if ichi["bullish_candle"]:
-
-        buy_score += 0.5
-        buy_reasons.append(
-            "BULLISH_CANDLE"
-        )
-
-    if ichi["bearish_candle"]:
-
-        sell_score += 0.5
-        sell_reasons.append(
-            "BEARISH_CANDLE"
-        )
-
-    # --------------------------------------------------------
-    # SIDE
-    # --------------------------------------------------------
-
-    if buy_score >= sell_score:
 
         side = "BUY"
 
-        score = buy_score
+        score = 0.0
 
-        reasons = buy_reasons
+        if above_cloud:
+            score += 3.0
 
-        core_count = (
-            int(ichi["above_cloud"])
-            +
-            int(
-                ichi["tenkan"]
-                > ichi["kijun"]
-            )
-            +
-            int(ichi["bullish_cloud"])
-        )
+        if tenkan > kijun:
+            score += 2.0
 
-    else:
+        if bullish_cloud:
+            score += 1.5
+
+        if x["bull_cross"]:
+            score += 1.5
+
+        if candle["c"] > candle["o"]:
+            score += 0.5
+
+        if (
+            x["prev"]["c"]
+            < x["prev"]["o"]
+            and candle["c"]
+            > candle["o"]
+        ):
+            score += 0.25
+
+    # ========================================================
+    # SELL
+    # ========================================================
+
+    elif (
+        bear_core >= 2
+        and bear_core > bull_core
+    ):
 
         side = "SELL"
 
-        score = sell_score
+        score = 0.0
 
-        reasons = sell_reasons
+        if below_cloud:
+            score += 3.0
 
-        core_count = (
-            int(ichi["below_cloud"])
-            +
-            int(
-                ichi["tenkan"]
-                < ichi["kijun"]
-            )
-            +
-            int(ichi["bearish_cloud"])
-        )
+        if tenkan < kijun:
+            score += 2.0
 
-    # Need 2 core conditions
-    if core_count < 2:
+        if bearish_cloud:
+            score += 1.5
+
+        if x["bear_cross"]:
+            score += 1.5
+
+        if candle["c"] < candle["o"]:
+            score += 0.5
+
+        if (
+            x["prev"]["c"]
+            > x["prev"]["o"]
+            and candle["c"]
+            < candle["o"]
+        ):
+            score += 0.25
+
+    else:
 
         return {
-            "status": "weak_core"
+            "symbol": symbol,
+            "status": "weak_core",
+            "kline_ok": True
         }
 
-    # Minimum score
-    if score < MIN_SIGNAL_SCORE:
+    # ========================================================
+    # KIJUN DISTANCE
+    # ========================================================
 
-        return {
-            "status": "low_score"
-        }
+    distance_kijun = (
+        abs(price - kijun)
+        / price
+        if price
+        else 999
+    )
 
-    # Don't chase price too far from Kijun
     if (
-        ichi["kijun_distance"]
+        distance_kijun
         > MAX_KIJUN_DISTANCE
+        and not (
+            x["bull_cross"]
+            or x["bear_cross"]
+        )
     ):
 
-        if not (
-            ichi["bullish_cross"]
-            or
-            ichi["bearish_cross"]
-        ):
+        return {
+            "symbol": symbol,
+            "status": "too_far_kijun",
+            "kline_ok": True
+        }
 
-            return {
-                "status": "too_far_kijun"
-            }
+    # ========================================================
+    # SCORE FILTER
+    # ========================================================
 
-    try:
+    if score < MIN_SCORE:
 
-        change = float(
-            ticker.get(
-                "priceChangePercent",
-                0
-            )
-        )
+        return {
+            "symbol": symbol,
+            "status": "low_score",
+            "kline_ok": True
+        }
 
-    except Exception:
+    # ========================================================
+    # CANDLE CONFIRMATION BONUS
+    # اجباری نیست
+    # ========================================================
 
-        change = 0.0
+    candle_range = max(
+        candle["h"] - candle["l"],
+        1e-12
+    )
 
-    try:
+    close_position = (
+        candle["c"] - candle["l"]
+    ) / candle_range
 
-        volume = float(
-            ticker.get(
-                "quoteVolume",
-                0
-            )
-        )
+    if (
+        side == "BUY"
+        and close_position >= 0.55
+    ):
+        score += 0.25
 
-    except Exception:
-
-        volume = 0.0
+    if (
+        side == "SELL"
+        and close_position <= 0.45
+    ):
+        score += 0.25
 
     return {
-
-        "status": "signal",
-
         "symbol": symbol,
-
+        "status": "signal",
+        "kline_ok": True,
         "side": side,
-
         "score": score,
-
-        "price": ichi["close"],
-
-        "tenkan": ichi["tenkan"],
-
-        "kijun": ichi["kijun"],
-
-        "senkou_a": ichi["senkou_a"],
-
-        "senkou_b": ichi["senkou_b"],
-
-        "kijun_distance": (
-            ichi["kijun_distance"]
-        ),
-
-        "change": change,
-
-        "volume": volume,
-
-        "reasons": reasons,
-
-        "info": info,
+        "price": price,
+        "tenkan": tenkan,
+        "kijun": kijun,
+        "cloud_top": top,
+        "cloud_bottom": bottom,
+        "distance_kijun": distance_kijun
     }
 
 
 # ============================================================
-# ONE SYMBOL
+# SINGLE SCAN
 # ============================================================
 
-def scan_one_symbol(
-    info,
-    ticker
-):
-
-    symbol = str(
-        info.get(
-            "symbol",
-            ""
-        )
-    ).upper()
-
-    if not symbol:
-
-        return {
-            "status": "invalid"
-        }
+def scan_one(symbol):
 
     try:
 
-        raw = get_klines(
+        candles = get_klines(
             symbol
         )
 
-        candles = parse_klines(
-            raw
-        )
-
-        if len(candles) < 60:
-
-            return {
-                "status": "insufficient"
-            }
-
-        return evaluate_signal(
+        return signal_for(
             symbol,
-            info,
-            ticker,
             candles
         )
 
     except Exception as e:
 
-        print(
-            f"⚠️ {symbol} KLINE ERROR: "
-            f"{str(e)[:180]}"
-        )
-
         return {
-            "status": "error"
+            "symbol": symbol,
+            "status": "error",
+            "error": str(e)[:160],
+            "kline_ok": False
         }
 
 
 # ============================================================
-# FAST MARKET SCANNER
+# FAST MARKET SCAN
 # ============================================================
 
-def scan_market(
-    symbols
-):
+def scan_market(symbols):
 
     started = time.perf_counter()
 
     stats = {
-
-        "submitted": 0,
-
+        "submitted": len(symbols),
         "completed": 0,
-
         "signal": 0,
-
         "inside_cloud": 0,
-
         "weak_core": 0,
-
         "low_score": 0,
-
         "too_far_kijun": 0,
-
         "insufficient": 0,
-
         "error": 0,
-
-        "invalid": 0,
-
+        "kline_ok": 0
     }
 
-    results = []
-
-    # --------------------------------------------------------
-    # TICKERS
-    # --------------------------------------------------------
-
-    try:
-
-        tickers = get_tickers()
-
-    except Exception as e:
-
-        print(
-            "❌ TICKER ERROR:",
-            str(e)[:500]
-        )
-
-        elapsed = (
-            time.perf_counter()
-            - started
-        )
-
-        return (
-            [],
-            elapsed,
-            stats
-        )
-
-    # --------------------------------------------------------
-    # TASKS
-    # --------------------------------------------------------
-
-    tasks = []
-
-    for info in symbols:
-
-        symbol = info.get(
-            "symbol"
-        )
-
-        ticker = tickers.get(
-            symbol
-        )
-
-        if ticker:
-
-            tasks.append(
-                (
-                    info,
-                    ticker
-                )
-            )
-
-    stats["submitted"] = len(
-        tasks
-    )
-
-    print(
-        f"🚀 KLINE TASKS: "
-        f"{len(tasks)}"
-    )
-
-    print(
-        f"⚡ WORKERS: "
-        f"{SCAN_WORKERS}"
-    )
-
-    # --------------------------------------------------------
-    # PARALLEL KLINE SCAN
-    # --------------------------------------------------------
+    signals = []
 
     with ThreadPoolExecutor(
-        max_workers=SCAN_WORKERS
+        max_workers=MAX_WORKERS
     ) as executor:
 
         futures = [
             executor.submit(
-                scan_one_symbol,
-                info,
-                ticker
+                scan_one,
+                symbol
             )
-            for info, ticker in tasks
+            for symbol in symbols
         ]
 
         for future in as_completed(
             futures
         ):
 
+            result = future.result()
+
             stats["completed"] += 1
 
-            try:
+            if result.get(
+                "kline_ok"
+            ):
+                stats["kline_ok"] += 1
 
-                result = future.result()
+            status = result.get(
+                "status",
+                "error"
+            )
 
-                status = result.get(
-                    "status",
-                    "invalid"
+            if status in stats:
+                stats[status] += 1
+
+            if status == "signal":
+                signals.append(
+                    result
                 )
-
-                if status not in stats:
-
-                    stats["invalid"] += 1
-
-                else:
-
-                    stats[status] += 1
-
-                if status == "signal":
-
-                    results.append(
-                        result
-                    )
-
-            except Exception as e:
-
-                stats["error"] += 1
-
-                print(
-                    "⚠️ FUTURE ERROR:",
-                    str(e)[:200]
-                )
-
-    results.sort(
-        key=lambda x: x["score"],
-        reverse=True
-    )
 
     elapsed = (
         time.perf_counter()
         - started
     )
 
-    return (
-        results,
-        elapsed,
-        stats
+    signals.sort(
+        key=lambda x: x.get(
+            "score",
+            0
+        ),
+        reverse=True
     )
+
+    return (
+        signals,
+        stats,
+        elapsed
+    )
+
+
+# ============================================================
+# BALANCE
+# ============================================================
+
+def get_balance():
+
+    try:
+
+        data = private_get(
+            "balance"
+        )
+
+        for item in data:
+
+            if (
+                str(
+                    item.get(
+                        "asset",
+                        ""
+                    )
+                ).upper()
+                == "USDT"
+            ):
+
+                return float(
+                    item.get(
+                        "availableBalance",
+                        item.get(
+                            "balance",
+                            0
+                        )
+                    )
+                    or 0
+                )
+
+    except Exception as e:
+
+        log(
+            f"Balance error: {e}"
+        )
+
+    return 0.0
 
 
 # ============================================================
@@ -1420,239 +993,47 @@ def scan_market(
 
 def get_positions():
 
-    return private_get(
-        PRIVATE_V3 + "positionRisk"
+    data = private_get(
+        "positionRisk"
     )
 
+    positions = []
 
-def get_open_positions():
+    for p in data:
 
-    try:
+        try:
 
-        data = get_positions()
-
-        result = []
-
-        if not isinstance(
-            data,
-            list
-        ):
-
-            return result
-
-        for position in data:
-
-            try:
-
-                amount = abs(
-                    float(
-                        position.get(
-                            "positionAmt",
-                            0
-                        )
-                    )
+            amount = float(
+                p.get(
+                    "positionAmt",
+                    0
                 )
+                or 0
+            )
 
-            except Exception:
+            if abs(amount) > 0:
 
-                amount = 0.0
+                positions.append(p)
 
-            if amount > 0:
+        except Exception:
+            pass
 
-                result.append(
-                    position
-                )
-
-        return result
-
-    except Exception as e:
-
-        print(
-            "⚠️ POSITION ERROR:",
-            str(e)[:300]
-        )
-
-        return []
-
-
-# ============================================================
-# PRICE
-# ============================================================
-
-def get_price(
-    symbol
-):
-
-    data = public_get(
-        PUBLIC_V1 + "ticker/price",
-        {
-            "symbol": symbol
-        }
-    )
-
-    return float(
-        data["price"]
-    )
+    return positions
 
 
 # ============================================================
 # LEVERAGE
 # ============================================================
 
-def set_leverage(
-    symbol
-):
+def set_leverage(symbol):
 
     return private_post(
-        WRITE_V1 + "leverage",
+        "leverage",
         {
             "symbol": symbol,
             "leverage": LEVERAGE
         }
     )
-
-
-# ============================================================
-# QUANTITY
-# ============================================================
-
-def make_quantity(
-    price,
-    info
-):
-
-    if price <= 0:
-        return 0.0
-
-    raw_quantity = (
-        ORDER_USDT
-        / price
-    )
-
-    step_size = 0.0
-
-    minimum_qty = 0.0
-
-    minimum_notional = 0.0
-
-    for f in info.get(
-        "filters",
-        []
-    ):
-
-        filter_type = f.get(
-            "filterType"
-        )
-
-        if filter_type == "LOT_SIZE":
-
-            try:
-
-                step_size = float(
-                    f.get(
-                        "stepSize",
-                        0
-                    )
-                )
-
-                minimum_qty = float(
-                    f.get(
-                        "minQty",
-                        0
-                    )
-                )
-
-            except Exception:
-                pass
-
-        elif filter_type in (
-            "MIN_NOTIONAL",
-            "NOTIONAL"
-        ):
-
-            try:
-
-                minimum_notional = float(
-                    f.get(
-                        "notional",
-                        f.get(
-                            "minNotional",
-                            0
-                        )
-                    )
-                )
-
-            except Exception:
-                pass
-
-    quantity = raw_quantity
-
-    if step_size > 0:
-
-        q = Decimal(
-            str(quantity)
-        )
-
-        step = Decimal(
-            str(step_size)
-        )
-
-        quantity = float(
-            (
-                q / step
-            ).to_integral_value(
-                rounding=ROUND_DOWN
-            )
-            * step
-        )
-
-    if quantity < minimum_qty:
-
-        quantity = minimum_qty
-
-    if (
-        minimum_notional > 0
-        and
-        quantity * price
-        < minimum_notional
-    ):
-
-        needed = (
-            minimum_notional
-            / price
-        )
-
-        if step_size > 0:
-
-            q = Decimal(
-                str(needed)
-            )
-
-            step = Decimal(
-                str(step_size)
-            )
-
-            quantity = float(
-                (
-                    q / step
-                ).to_integral_value(
-                    rounding=ROUND_DOWN
-                )
-                * step
-            )
-
-            if (
-                quantity * price
-                < minimum_notional
-            ):
-
-                quantity += step_size
-
-        else:
-
-            quantity = needed
-
-    return quantity
 
 
 # ============================================================
@@ -1666,557 +1047,303 @@ def market_order(
 ):
 
     return private_post(
-        WRITE_V1 + "order",
+        "order",
         {
             "symbol": symbol,
             "side": side,
             "type": "MARKET",
-            "quantity": quantity,
+            "quantity": fmt_num(
+                quantity,
+                12
+            ),
+            "newOrderRespType": "RESULT"
         }
     )
-
-
-# ============================================================
-# FIND POSITION
-# ============================================================
-
-def find_position(
-    symbol
-):
-
-    for _ in range(10):
-
-        try:
-
-            data = get_positions()
-
-            if isinstance(
-                data,
-                list
-            ):
-
-                for position in data:
-
-                    if (
-                        position.get(
-                            "symbol"
-                        )
-                        != symbol
-                    ):
-                        continue
-
-                    try:
-
-                        amount = float(
-                            position.get(
-                                "positionAmt",
-                                0
-                            )
-                        )
-
-                    except Exception:
-
-                        amount = 0.0
-
-                    if abs(amount) > 0:
-
-                        return position
-
-        except Exception:
-            pass
-
-        time.sleep(1)
-
-    return None
 
 
 # ============================================================
 # SL / TP
 # ============================================================
 
-def set_sl_tp(
-    position
+def place_sl_tp(
+    symbol,
+    side,
+    entry
 ):
 
-    symbol = position.get(
-        "symbol"
+    close_side = (
+        "SELL"
+        if side == "BUY"
+        else "BUY"
     )
 
-    position_id = position.get(
-        "positionId"
-    )
+    if side == "BUY":
 
-    entry_price = float(
-        position.get(
-            "entryPrice",
-            0
-        )
-    )
-
-    position_amount = float(
-        position.get(
-            "positionAmt",
-            0
-        )
-    )
-
-    if entry_price <= 0:
-
-        return None
-
-    if position_amount > 0:
-
-        sl_price = (
-            entry_price
-            *
-            (
-                1
-                -
-                SL_PERCENT / 100
-            )
+        sl = (
+            entry
+            * (1 - SL_PCT)
         )
 
-        tp_price = (
-            entry_price
-            *
-            (
-                1
-                +
-                TP_PERCENT / 100
-            )
+        tp = (
+            entry
+            * (1 + TP_PCT)
         )
 
     else:
 
-        sl_price = (
-            entry_price
-            *
-            (
-                1
-                +
-                SL_PERCENT / 100
-            )
+        sl = (
+            entry
+            * (1 + SL_PCT)
         )
 
-        tp_price = (
-            entry_price
-            *
-            (
-                1
-                -
-                TP_PERCENT / 100
-            )
+        tp = (
+            entry
+            * (1 - TP_PCT)
         )
 
-    return private_post(
-        WRITE_V1 + "positionSlTp",
-        {
-            "positionId": position_id,
-            "symbol": symbol,
-            "slPrice": sl_price,
-            "tpPrice": tp_price,
-            "workingType": "MARK_PRICE",
-        }
-    )
-
-
-# ============================================================
-# RUN CYCLE
-# ============================================================
-
-def run_cycle():
-
-    print()
-    print("=" * 70)
-    print(
-        f"⚡ {VERSION}"
-    )
-    print(
-        f"🕐 {utc_now()}"
-    )
-    print("=" * 70)
-
-    # --------------------------------------------------------
-    # BALANCE
-    # --------------------------------------------------------
-
-    balance = get_usdt_balance()
-
-    # --------------------------------------------------------
-    # OPEN POSITIONS
-    # --------------------------------------------------------
-
-    open_positions = (
-        get_open_positions()
-    )
-
-    print(
-        f"💰 USDT: "
-        f"{balance:.6f}"
-    )
-
-    print(
-        f"📌 OPEN POSITIONS: "
-        f"{len(open_positions)}"
-    )
-
-    if (
-        len(open_positions)
-        >= MAX_NEW_TRADES
-    ):
-
-        telegram(
-            "⛔ ATI FUTURES\n"
-            "MAX OPEN POSITIONS\n\n"
-            f"📌 Positions: "
-            f"{len(open_positions)}\n"
-            f"💰 USDT: "
-            f"{balance:.6f}\n"
-            f"🕐 {utc_now()}"
+    params = {
+        "symbol": symbol,
+        "side": close_side,
+        "stopLossPrice": fmt_num(
+            sl,
+            12
+        ),
+        "takeProfitPrice": fmt_num(
+            tp,
+            12
         )
-
-        return
-
-    # --------------------------------------------------------
-    # MARKETS
-    # --------------------------------------------------------
-
-    symbols = get_symbols()
-
-    print(
-        f"📊 FUTURES MARKETS: "
-        f"{len(symbols)}"
-    )
-
-    if not symbols:
-
-        telegram(
-            "❌ ATI FUTURES\n"
-            "NO FUTURES MARKETS FOUND"
-        )
-
-        return
-
-    # --------------------------------------------------------
-    # SCAN
-    # --------------------------------------------------------
-
-    results, elapsed, stats = (
-        scan_market(
-            symbols
-        )
-    )
-
-    print()
-    print(
-        "================ SCAN REPORT ================"
-    )
-
-    print(
-        f"📊 MARKETS: "
-        f"{len(symbols)}"
-    )
-
-    print(
-        f"📥 KLINE TASKS: "
-        f"{stats['submitted']}"
-    )
-
-    print(
-        f"✅ COMPLETED: "
-        f"{stats['completed']}"
-    )
-
-    print(
-        f"🎯 FINAL SIGNALS: "
-        f"{stats['signal']}"
-    )
-
-    print(
-        f"☁️ INSIDE CLOUD: "
-        f"{stats['inside_cloud']}"
-    )
-
-    print(
-        f"🧩 WEAK CORE: "
-        f"{stats['weak_core']}"
-    )
-
-    print(
-        f"🏆 LOW SCORE: "
-        f"{stats['low_score']}"
-    )
-
-    print(
-        f"📏 FAR KIJUN: "
-        f"{stats['too_far_kijun']}"
-    )
-
-    print(
-        f"⚠️ INSUFFICIENT: "
-        f"{stats['insufficient']}"
-    )
-
-    print(
-        f"❌ ERRORS: "
-        f"{stats['error']}"
-    )
-
-    print(
-        f"⏱️ REAL SCAN TIME: "
-        f"{elapsed:.2f}s"
-    )
-
-    print(
-        "=============================================="
-    )
-
-    # --------------------------------------------------------
-    # NO SIGNAL
-    # --------------------------------------------------------
-
-    if not results:
-
-        telegram(
-            "💓 ATI FUTURES ALIVE\n\n"
-
-            f"📊 Markets: "
-            f"{len(symbols)}\n"
-
-            f"📥 Kline tasks: "
-            f"{stats['submitted']}\n"
-
-            f"✅ Completed: "
-            f"{stats['completed']}\n"
-
-            f"☁️ Inside cloud: "
-            f"{stats['inside_cloud']}\n"
-
-            f"🧩 Weak core: "
-            f"{stats['weak_core']}\n"
-
-            f"🏆 Low score: "
-            f"{stats['low_score']}\n"
-
-            f"📏 Far Kijun: "
-            f"{stats['too_far_kijun']}\n"
-
-            f"⚠️ Errors: "
-            f"{stats['error']}\n"
-
-            f"🎯 Final signals: 0\n"
-
-            f"⏱️ Scan: "
-            f"{elapsed:.2f}s\n"
-
-            f"💰 USDT: "
-            f"{balance:.6f}\n"
-
-            f"🟢 LIVE: "
-            f"{LIVE_TRADING}\n"
-
-            f"🕐 {utc_now()}"
-        )
-
-        return
-
-    # --------------------------------------------------------
-    # BEST SIGNAL
-    # --------------------------------------------------------
-
-    best = results[0]
-
-    symbol = best["symbol"]
-
-    side = best["side"]
-
-    score = best["score"]
-
-    price = best["price"]
-
-    print()
-    print(
-        "🚨 BEST SIGNAL"
-    )
-
-    print(
-        f"🪙 {symbol}"
-    )
-
-    print(
-        f"📈 {side}"
-    )
-
-    print(
-        f"🏆 SCORE: {score:.2f}"
-    )
-
-    print(
-        f"💵 PRICE: {price}"
-    )
-
-    print(
-        "🧠 "
-        +
-        ", ".join(
-            best["reasons"]
-        )
-    )
-
-    # --------------------------------------------------------
-    # SIGNAL TELEGRAM
-    # --------------------------------------------------------
-
-    telegram(
-        "🚨 ATI FAST ICHIMOKU SIGNAL\n\n"
-
-        f"🪙 {symbol}\n"
-
-        f"📈 SIDE: {side}\n"
-
-        f"🏆 SCORE: "
-        f"{score:.2f}\n"
-
-        f"💵 PRICE: "
-        f"{price}\n"
-
-        f"☁️ Tenkan: "
-        f"{best['tenkan']}\n"
-
-        f"☁️ Kijun: "
-        f"{best['kijun']}\n"
-
-        f"☁️ Senkou A: "
-        f"{best['senkou_a']}\n"
-
-        f"☁️ Senkou B: "
-        f"{best['senkou_b']}\n"
-
-        f"📊 24H: "
-        f"{best['change']:.2f}%\n"
-
-        f"🧠 "
-        +
-        ", ".join(
-            best["reasons"]
-        )
-
-        +
-
-        f"\n\n🎯 Candidates: "
-        f"{len(results)}"
-
-        +
-
-        f"\n⏱️ Scan: "
-        f"{elapsed:.2f}s"
-
-        +
-
-        f"\n🟢 LIVE: "
-        f"{LIVE_TRADING}"
-
-        +
-
-        f"\n🕐 {utc_now()}"
-    )
-
-    # --------------------------------------------------------
-    # PAPER MODE
-    # --------------------------------------------------------
-
-    if not LIVE_TRADING:
-
-        print(
-            "🟡 PAPER MODE"
-        )
-
-        return
-
-    # --------------------------------------------------------
-    # BALANCE SAFETY
-    # --------------------------------------------------------
-
-    if balance < 0.5:
-
-        telegram(
-            "❌ ATI FUTURES\n"
-            "BALANCE TOO LOW\n\n"
-            f"💰 USDT: "
-            f"{balance:.6f}"
-        )
-
-        return
-
-    # --------------------------------------------------------
-    # PRICE + QUANTITY
-    # --------------------------------------------------------
+    }
 
     try:
 
-        current_price = get_price(
-            symbol
+        result = private_post(
+            "positionSlTp",
+            params
         )
 
-        quantity = make_quantity(
-            current_price,
-            best["info"]
+        return (
+            result,
+            sl,
+            tp
         )
 
     except Exception as e:
 
-        telegram(
-            "❌ PRICE / QUANTITY ERROR\n\n"
-            +
-            str(e)[:1500]
+        log(
+            f"SL/TP endpoint failed "
+            f"for {symbol}: {e}"
         )
 
-        return
+        return (
+            None,
+            sl,
+            tp
+        )
+
+
+# ============================================================
+# ENTRY PRICE
+# ============================================================
+
+def get_entry_price(
+    order,
+    fallback
+):
+
+    for key in (
+        "avgPrice",
+        "avgFillPrice",
+        "price"
+    ):
+
+        try:
+
+            value = float(
+                order.get(
+                    key,
+                    0
+                )
+                or 0
+            )
+
+            if value > 0:
+                return value
+
+        except Exception:
+            pass
+
+    return fallback
+
+
+# ============================================================
+# QUANTITY
+# ============================================================
+
+def make_quantity(
+    symbol,
+    price,
+    filters
+):
+
+    f = filters.get(
+        symbol,
+        {}
+    )
+
+    step = float(
+        f.get(
+            "step",
+            0
+        )
+        or 0
+    )
+
+    min_qty = float(
+        f.get(
+            "min_qty",
+            0
+        )
+        or 0
+    )
+
+    min_notional = float(
+        f.get(
+            "min_notional",
+            0
+        )
+        or 0
+    )
+
+    if price <= 0:
+
+        raise RuntimeError(
+            "Invalid price"
+        )
+
+    quantity = (
+        ORDER_USDT
+        / price
+    )
+
+    if (
+        min_notional
+        and quantity * price
+        < min_notional
+    ):
+
+        quantity = (
+            min_notional
+            / price
+        )
+
+    if min_qty:
+
+        quantity = max(
+            quantity,
+            min_qty
+        )
+
+    if step:
+
+        quantity = floor_step(
+            quantity,
+            step
+        )
 
     if quantity <= 0:
 
-        telegram(
-            f"❌ INVALID QUANTITY\n"
-            f"🪙 {symbol}"
+        raise RuntimeError(
+            "Quantity became zero"
         )
 
-        return
+    return quantity
 
-    print(
-        f"📦 ORDER QUANTITY: "
-        f"{quantity}"
+
+# ============================================================
+# REAL TRADE
+# ============================================================
+
+def trade_best_signal(
+    signals,
+    filters
+):
+
+    if not signals:
+        return None
+
+    if BUY_LOCK:
+
+        log(
+            "BUY_LOCK=True -> "
+            "No order"
+        )
+
+        return None
+
+    # فقط یک پوزیشن باز
+    try:
+
+        positions = get_positions()
+
+        if positions:
+
+            log(
+                f"Open positions: "
+                f"{len(positions)} "
+                f"-> skip new trade"
+            )
+
+            return None
+
+    except Exception as e:
+
+        log(
+            f"Position check failed: {e}"
+        )
+
+        return None
+
+    signal = signals[0]
+
+    symbol = signal["symbol"]
+    side = signal["side"]
+    price = signal["price"]
+
+    balance = get_balance()
+
+    if balance <= 0:
+
+        tg(
+            "❌ ATI FUTURES\n"
+            "USDT balance is zero "
+            "or unavailable."
+        )
+
+        return None
+
+    # برای جلوگیری از رد شدن سفارش به خاطر
+    # نداشتن موجودی کافی
+    if ORDER_USDT > balance * 0.95:
+
+        tg(
+            f"⚠️ ATI FUTURES\n"
+            f"Balance: {balance:.6f} USDT\n"
+            f"Order: {ORDER_USDT:.2f} USDT\n"
+            f"موجودی برای سفارش کافی نیست."
+        )
+
+        return None
+
+    quantity = make_quantity(
+        symbol,
+        price,
+        filters
     )
-
-    # --------------------------------------------------------
-    # SET LEVERAGE
-    # --------------------------------------------------------
 
     try:
 
         set_leverage(
             symbol
-        )
-
-    except Exception as e:
-
-        telegram(
-            "❌ LEVERAGE ERROR\n\n"
-            f"🪙 {symbol}\n"
-            f"⚙️ {LEVERAGE}x\n\n"
-            +
-            str(e)[:1500]
-        )
-
-        return
-
-    # --------------------------------------------------------
-    # REAL MARKET ORDER
-    # --------------------------------------------------------
-
-    try:
-
-        print(
-            "🚨 REAL FUTURES ORDER"
         )
 
         order = market_order(
@@ -2225,107 +1352,187 @@ def run_cycle():
             quantity
         )
 
-        order_id = order.get(
-            "orderId",
-            "UNKNOWN"
+        entry = get_entry_price(
+            order,
+            price
         )
 
-        telegram(
-            "🚨 REAL FUTURES TRADE OPENED\n\n"
-
-            f"🪙 {symbol}\n"
-
-            f"📈 {side}\n"
-
-            f"🏆 Score: "
-            f"{score:.2f}\n"
-
-            f"💵 Price: "
-            f"{current_price}\n"
-
-            f"📦 Qty: "
-            f"{quantity}\n"
-
-            f"⚙️ Leverage: "
-            f"{LEVERAGE}x\n"
-
-            f"🆔 Order: "
-            f"{order_id}\n"
-
-            f"🕐 {utc_now()}"
+        sltp_result, sl, tp = (
+            place_sl_tp(
+                symbol,
+                side,
+                entry
+            )
         )
+
+        direction = (
+            "🟢 LONG / BUY"
+            if side == "BUY"
+            else
+            "🔴 SHORT / SELL"
+        )
+
+        message = (
+            "🚨 ATI FUTURES REAL TRADE\n"
+            "⚡ V7.3 Ichimoku\n"
+            f"📌 {symbol}\n"
+            f"{direction}\n"
+            f"💵 Entry: {entry:.10g}\n"
+            f"📦 Qty: {quantity:.10g}\n"
+            f"🎯 TP: {tp:.10g}\n"
+            f"🛑 SL: {sl:.10g}\n"
+            f"⭐ Score: {signal['score']:.2f}\n"
+            "☁️ Ichimoku confirmed\n"
+            f"🟢 LIVE: {LIVE_TRADING}"
+        )
+
+        tg(message)
+
+        log(message)
+
+        if sltp_result is None:
+
+            tg(
+                "⚠️ Position opened.\n"
+                "SL/TP endpoint was not "
+                "confirmed.\n"
+                "Position should be checked."
+            )
+
+        return order
 
     except Exception as e:
 
-        telegram(
-            "❌ REAL FUTURES ORDER ERROR\n\n"
-
-            f"🪙 {symbol}\n"
-
-            f"📈 {side}\n\n"
-
-            +
-            str(e)[:1800]
+        error_message = (
+            "❌ ATI FUTURES ORDER ERROR\n"
+            f"{symbol}\n"
+            f"{e}"
         )
 
-        return
+        tg(error_message)
 
-    # --------------------------------------------------------
-    # FIND POSITION
-    # --------------------------------------------------------
+        log(error_message)
 
-    position = find_position(
-        symbol
+        return None
+
+
+# ============================================================
+# HEARTBEAT
+# ============================================================
+
+def heartbeat(
+    symbol_count,
+    stats,
+    elapsed,
+    balance=None
+):
+
+    if balance is None:
+
+        balance = (
+            get_balance()
+            if API_KEY
+            else 0.0
+        )
+
+    signal_text = (
+        "YES"
+        if stats.get(
+            "signal",
+            0
+        )
+        else
+        "NO SIGNAL"
     )
 
-    if not position:
+    message = (
+        "💓 ATI FUTURES ALIVE\n"
+        "⚡ V7.3 ICHIMOKU FAST SCANNER\n"
+        f"📊 Markets: {symbol_count}\n"
+        f"📡 Completed: "
+        f"{stats['completed']}/"
+        f"{stats['submitted']}\n"
+        f"📈 Klines OK: "
+        f"{stats['kline_ok']}\n"
+        f"☁️ Signal: {signal_text}\n"
+        f"⏱️ Scan: {elapsed:.3f}s\n"
+        f"🚫 Cloud: "
+        f"{stats['inside_cloud']} "
+        f"| Weak: "
+        f"{stats['weak_core']} "
+        f"| Low: "
+        f"{stats['low_score']}\n"
+        f"📏 Far Kijun: "
+        f"{stats['too_far_kijun']} "
+        f"| Error: "
+        f"{stats['error']}\n"
+        f"💰 USDT: "
+        f"{balance:.6f}\n"
+        f"🟢 LIVE: "
+        f"{LIVE_TRADING}\n"
+        f"🕐 "
+        f"{time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())}"
+    )
 
-        telegram(
-            "⚠️ ORDER ACCEPTED\n"
-            "BUT POSITION NOT FOUND\n\n"
+    tg(message)
 
-            f"🪙 {symbol}\n"
+    log(message)
 
-            "🚨 SL/TP NOT CONFIRMED"
+
+# ============================================================
+# STARTUP
+# ============================================================
+
+def startup():
+
+    log(
+        "💓 ATI FUTURES V7.3 START"
+    )
+
+    log(
+        "⚡ FAST ICHIMOKU SCANNER"
+    )
+
+    log(
+        f"📡 TABDEAL FUTURES | "
+        f"{TIMEFRAME}"
+    )
+
+    log(
+        f"⚙️ LEVERAGE: "
+        f"{LEVERAGE}x | "
+        f"ORDER: "
+        f"{ORDER_USDT} USDT"
+    )
+
+    log(
+        f"🟢 LIVE: "
+        f"{LIVE_TRADING}"
+    )
+
+    if not API_KEY or not API_SECRET:
+
+        raise RuntimeError(
+            "TABDIL_API_KEY / "
+            "TABDIL_API_SECRET missing"
         )
 
-        return
+    balance = get_balance()
 
-    # --------------------------------------------------------
-    # SL / TP
-    # --------------------------------------------------------
+    log(
+        f"💰 USDT FREE: "
+        f"{balance:.8f}"
+    )
 
-    try:
-
-        set_sl_tp(
-            position
-        )
-
-        telegram(
-            "🛡️ SL/TP SET\n\n"
-
-            f"🪙 {symbol}\n"
-
-            f"📍 Entry: "
-            f"{position.get('entryPrice')}\n"
-
-            f"🛑 SL: "
-            f"{SL_PERCENT}%\n"
-
-            f"🎯 TP: "
-            f"{TP_PERCENT}%"
-        )
-
-    except Exception as e:
-
-        telegram(
-            "🚨 URGENT SL/TP ERROR\n\n"
-
-            f"🪙 {symbol}\n"
-
-            +
-            str(e)[:1800]
-        )
+    tg(
+        "💓 ATI FUTURES V7.3 STARTED\n"
+        "⚡ Ichimoku Fast Scanner\n"
+        f"📡 Tabdeal Futures {TIMEFRAME}\n"
+        f"⚙️ Leverage: {LEVERAGE}x\n"
+        f"💵 Order: {ORDER_USDT} USDT\n"
+        f"🟢 LIVE: {LIVE_TRADING}\n"
+        f"💰 USDT: {balance:.6f}"
+    )
 
 
 # ============================================================
@@ -2334,198 +1541,125 @@ def run_cycle():
 
 def main():
 
-    print("=" * 70)
+    startup()
 
-    print(
-        f"💓 {VERSION} STARTING"
+    filters = get_symbol_filters()
+
+    symbols = get_symbols()
+
+    log(
+        f"📊 Futures markets found: "
+        f"{len(symbols)}"
     )
 
-    print("=" * 70)
+    if not symbols:
 
-    print(
-        "☁️ STRATEGY: FAST ICHIMOKU"
-    )
-
-    print(
-        f"🕯️ TIMEFRAME: "
-        f"{TIMEFRAME}"
-    )
-
-    print(
-        f"🚀 WORKERS: "
-        f"{SCAN_WORKERS}"
-    )
-
-    print(
-        f"⚙️ LEVERAGE: "
-        f"{LEVERAGE}x"
-    )
-
-    print(
-        f"💵 ORDER: "
-        f"{ORDER_USDT} USDT"
-    )
-
-    print(
-        f"🛑 SL: "
-        f"{SL_PERCENT}%"
-    )
-
-    print(
-        f"🎯 TP: "
-        f"{TP_PERCENT}%"
-    )
-
-    print(
-        f"🟢 LIVE: "
-        f"{LIVE_TRADING}"
-    )
-
-    print(
-        f"⏱️ LOOP: "
-        f"{SCAN_INTERVAL_SECONDS}s"
-    )
-
-    # --------------------------------------------------------
-    # TELEGRAM
-    # --------------------------------------------------------
-
-    telegram_test()
-
-    # --------------------------------------------------------
-    # KEYS
-    # --------------------------------------------------------
-
-    if not API_KEY or not API_SECRET:
-
-        print(
-            "❌ API KEY / SECRET MISSING"
+        raise RuntimeError(
+            "No USDT futures symbols found"
         )
-
-        telegram(
-            "❌ ATI FUTURES ERROR\n"
-            "TABDIL/TABDEAL API credentials missing."
-        )
-
-        return
-
-    # --------------------------------------------------------
-    # AUTH
-    # --------------------------------------------------------
-
-    try:
-
-        account = get_account()
-
-        print(
-            "✅ FUTURES AUTH SUCCESS"
-        )
-
-        print(
-            "🔓 canTrade:",
-            account.get(
-                "canTrade"
-            )
-        )
-
-        if (
-            account.get(
-                "canTrade"
-            )
-            is False
-        ):
-
-            telegram(
-                "❌ ATI FUTURES\n"
-                "canTrade=False"
-            )
-
-            return
-
-    except Exception as e:
-
-        print(
-            "❌ AUTH ERROR:",
-            str(e)
-        )
-
-        telegram(
-            "❌ ATI FUTURES AUTH ERROR\n\n"
-            +
-            str(e)[:1800]
-        )
-
-        return
-
-    # --------------------------------------------------------
-    # LOOP
-    # --------------------------------------------------------
-
-    cycle_number = 0
 
     while True:
 
-        cycle_number += 1
-
-        print()
-        print("=" * 70)
-
-        print(
-            f"🔄 CYCLE #{cycle_number}"
-        )
-
-        print(
-            f"🕐 {utc_now()}"
-        )
-
-        print("=" * 70)
+        cycle_start = time.time()
 
         try:
 
-            run_cycle()
+            signals, stats, elapsed = (
+                scan_market(
+                    symbols
+                )
+            )
+
+            balance = get_balance()
+
+            heartbeat(
+                len(symbols),
+                stats,
+                elapsed,
+                balance
+            )
+
+            # ==================================================
+            # SIGNAL
+            # ==================================================
+
+            if signals:
+
+                best = signals[0]
+
+                log(
+                    f"🎯 BEST "
+                    f"{best['symbol']} "
+                    f"{best['side']} "
+                    f"score="
+                    f"{best['score']:.2f} "
+                    f"price="
+                    f"{best['price']:.10g}"
+                )
+
+                tg(
+                    "🎯 ATI SIGNAL\n"
+                    f"{best['symbol']} | "
+                    f"{best['side']}\n"
+                    f"💵 "
+                    f"{best['price']:.10g}\n"
+                    f"⭐ Score "
+                    f"{best['score']:.2f}\n"
+                    "☁️ Ichimoku"
+                )
+
+                if LIVE_TRADING:
+
+                    trade_best_signal(
+                        signals[
+                            :MAX_NEW_TRADES
+                        ],
+                        filters
+                    )
+
+            else:
+
+                log(
+                    "☁️ NO SIGNAL "
+                    "this cycle"
+                )
 
         except Exception as e:
 
-            print(
-                "❌ CYCLE ERROR:",
-                repr(e)
+            error = (
+                "❌ ATI FUTURES ERROR\n"
+                f"{type(e).__name__}: "
+                f"{e}"
             )
 
-            telegram(
-                "❌ ATI CYCLE ERROR\n\n"
-                +
-                str(e)[:1800]
-                +
-                f"\n\n🔄 Cycle: "
-                f"{cycle_number}"
-                +
-                f"\n🕐 {utc_now()}"
-            )
+            log(error)
 
-        print(
-            f"💓 NEXT SCAN IN "
-            f"{SCAN_INTERVAL_SECONDS} SECONDS"
+            tg(error)
+
+        elapsed_cycle = (
+            time.time()
+            - cycle_start
+        )
+
+        sleep_for = max(
+            5,
+            SCAN_INTERVAL
+            - elapsed_cycle
+        )
+
+        log(
+            f"⏳ Next scan in "
+            f"{sleep_for:.1f}s"
         )
 
         time.sleep(
-            SCAN_INTERVAL_SECONDS
+            sleep_for
         )
 
 
 # ============================================================
-# START
+# RUN
 # ============================================================
 
 if __name__ == "__main__":
-
-    try:
-
-        main()
-
-    except KeyboardInterrupt:
-
-        print(
-            "🛑 BOT STOPPED"
-        )
-
-    except Exception as e:
+    main()
