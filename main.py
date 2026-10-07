@@ -2,30 +2,22 @@ import os
 import time
 import hmac
 import hashlib
-import json
 from urllib.parse import urlencode
 
 import requests
 
 
-# ============================================================
-# ATI FUTURES - TABDEAL
-#
-# Official Tabdeal Futures structure:
-#
-# GET:
-#   https://api1.tabdeal.org/r/fapi/
-#
-# POST / DELETE:
-#   https://api1.tabdeal.org/fapi/
-#
-# No tabdeal.future import
-# ============================================================
+# =========================================================
+# ATI FUTURES MULTI-COIN
+# AUTO SYMBOL DISCOVERY
+# NO BTCUSDT FIXED SYMBOL
+# DIAGNOSTIC VERSION - NO REAL ORDER
+# =========================================================
 
+API_BASE = "https://api1.tabdeal.org"
 
-# ============================================================
-# CONFIG
-# ============================================================
+READ_BASE = f"{API_BASE}/r/fapi/v1/"
+WRITE_BASE = f"{API_BASE}/fapi/v1/"
 
 API_KEY = (
     os.getenv("TABDIL_API_KEY")
@@ -39,1058 +31,643 @@ API_SECRET = (
     or ""
 ).strip()
 
-TELEGRAM_BOT_TOKEN = os.getenv(
-    "TELEGRAM_BOT_TOKEN",
-    ""
-).strip()
+RECV_WINDOW = 5000
+TIMEOUT = 15
 
-TELEGRAM_CHAT_ID = os.getenv(
-    "TELEGRAM_CHAT_ID",
-    ""
-).strip()
+# فعلاً فقط تست و کشف بازار
+# هیچ سفارش واقعی ارسال نمی‌شود.
+REAL_TRADING = False
 
-
-SYMBOL = os.getenv(
-    "FUTURES_SYMBOL",
-    "BTCUSDT"
-).upper().strip()
-
-
-LEVERAGE = int(
-    os.getenv(
-        "FUTURES_LEVERAGE",
-        "3"
-    )
-)
-
-
-ORDER_USDT = os.getenv(
-    "FUTURES_ORDER_USDT",
-    "2"
-)
-
-
-LIVE_TRADING = (
-    os.getenv(
-        "LIVE_TRADING",
-        "false"
-    ).lower()
-    == "true"
-)
-
-
-RECV_WINDOW = int(
-    os.getenv(
-        "RECV_WINDOW",
-        "5000"
-    )
-)
-
-
-BASE_URL = "https://api1.tabdeal.org"
-
-READ_BASE = (
-    BASE_URL + "/r/fapi/"
-)
-
-WRITE_BASE = (
-    BASE_URL + "/fapi/"
-)
-
-
-# ============================================================
-# HTTP SESSION
-# ============================================================
-
-session = requests.Session()
-
-session.headers.update({
+SESSION = requests.Session()
+SESSION.headers.update({
     "User-Agent": "ATI-Futures-Bot/1.0",
     "Accept": "application/json",
 })
 
 
-# ============================================================
+# =========================================================
 # TELEGRAM
-# ============================================================
+# =========================================================
+
+BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+
 
 def telegram(message):
-
-    print("\n" + message)
-
-    if not TELEGRAM_BOT_TOKEN:
-        return
-
-    if not TELEGRAM_CHAT_ID:
+    if not BOT_TOKEN or not CHAT_ID:
+        print(message)
         return
 
     try:
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
 
-        url = (
-            "https://api.telegram.org/bot"
-            + TELEGRAM_BOT_TOKEN
-            + "/sendMessage"
-        )
-
-        response = session.post(
+        SESSION.post(
             url,
             data={
-                "chat_id": TELEGRAM_CHAT_ID,
+                "chat_id": CHAT_ID,
                 "text": message,
             },
-            timeout=15,
+            timeout=10,
+        )
+    except Exception as e:
+        print("Telegram error:", e)
+
+    print(message)
+
+
+# =========================================================
+# HELPERS
+# =========================================================
+
+def pretty_number(value):
+    try:
+        return f"{float(value):,.8f}".rstrip("0").rstrip(".")
+    except Exception:
+        return str(value)
+
+
+def extract_json(response):
+    try:
+        return response.json()
+    except Exception:
+        raise RuntimeError(
+            f"HTTP {response.status_code}: {response.text[:1000]}"
         )
 
-        if response.status_code >= 400:
 
-            print(
-                "TELEGRAM ERROR:",
-                response.text[:1000]
+# =========================================================
+# PUBLIC GET
+# =========================================================
+
+def public_get(endpoint, params=None):
+    url = READ_BASE + endpoint
+
+    r = SESSION.get(
+        url,
+        params=params or {},
+        timeout=TIMEOUT,
+    )
+
+    if r.status_code >= 400:
+        raise RuntimeError(
+            f"HTTP {r.status_code}: {r.text[:1000]}"
+        )
+
+    return extract_json(r)
+
+
+# =========================================================
+# SIGNED GET
+# =========================================================
+
+def signed_get(endpoint, params=None):
+    if not API_KEY or not API_SECRET:
+        raise RuntimeError(
+            "TABDIL_API_KEY / TABDIL_API_SECRET not found"
+        )
+
+    data = dict(params or {})
+
+    data["timestamp"] = int(time.time() * 1000)
+    data["recvWindow"] = RECV_WINDOW
+
+    query = urlencode(data)
+
+    signature = hmac.new(
+        API_SECRET.encode("utf-8"),
+        query.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+    data["signature"] = signature
+
+    headers = {
+        "X-MBX-APIKEY": API_KEY,
+    }
+
+    url = READ_BASE + endpoint
+
+    r = SESSION.get(
+        url,
+        params=data,
+        headers=headers,
+        timeout=TIMEOUT,
+    )
+
+    if r.status_code >= 400:
+        raise RuntimeError(
+            f"HTTP {r.status_code}: {r.text[:1000]}"
+        )
+
+    return extract_json(r)
+
+
+# =========================================================
+# DISCOVER ALL FUTURES SYMBOLS
+# =========================================================
+
+def discover_symbols():
+
+    print("\n" + "=" * 60)
+    print("🔎 FUTURES EXCHANGE INFO")
+    print("=" * 60)
+
+    data = public_get("exchangeInfo")
+
+    print("RAW TYPE:", type(data).__name__)
+
+    symbols = []
+
+    # -----------------------------------------
+    # حالت‌های مختلف پاسخ API
+    # -----------------------------------------
+
+    if isinstance(data, list):
+        symbols = data
+
+    elif isinstance(data, dict):
+
+        if isinstance(data.get("symbols"), list):
+            symbols = data["symbols"]
+
+        elif isinstance(data.get("data"), list):
+            symbols = data["data"]
+
+        elif isinstance(data.get("result"), list):
+            symbols = data["result"]
+
+        elif isinstance(data.get("data"), dict):
+
+            nested = data["data"]
+
+            if isinstance(nested.get("symbols"), list):
+                symbols = nested["symbols"]
+
+        elif isinstance(data.get("result"), dict):
+
+            nested = data["result"]
+
+            if isinstance(nested.get("symbols"), list):
+                symbols = nested["symbols"]
+
+    if not symbols:
+        print("\n❌ هیچ نماد Futures پیدا نشد.")
+        print("RAW RESPONSE:")
+        print(data)
+        return []
+
+    print(f"\n✅ تعداد رکوردهای Futures: {len(symbols)}")
+
+    result = []
+
+    for item in symbols:
+
+        if isinstance(item, str):
+            symbol = item.upper().strip()
+
+        elif isinstance(item, dict):
+            symbol = (
+                item.get("symbol")
+                or item.get("contract")
+                or item.get("name")
+                or item.get("pair")
+                or ""
             )
 
-    except Exception as exc:
+            symbol = str(symbol).upper().strip()
 
+        else:
+            continue
+
+        if symbol:
+            result.append(symbol)
+
+    result = sorted(set(result))
+
+    print(f"✅ تعداد نمادهای قابل استخراج: {len(result)}")
+
+    return result
+
+
+# =========================================================
+# FIND BEST TRADABLE SYMBOLS
+# =========================================================
+
+def find_candidates(symbols):
+
+    print("\n" + "=" * 60)
+    print("📊 FUTURES SYMBOLS")
+    print("=" * 60)
+
+    # حذف مواردی که احتمالاً قابل معامله نیستند
+    blocked_words = [
+        "INDEX",
+        "MARK",
+        "TEST",
+        "NULL",
+    ]
+
+    candidates = []
+
+    for symbol in symbols:
+
+        if any(word in symbol for word in blocked_words):
+            continue
+
+        candidates.append(symbol)
+
+    print(f"✅ قابل بررسی: {len(candidates)}")
+
+    # نمایش حداکثر 100 نماد
+    for i, symbol in enumerate(candidates[:100], 1):
+        print(f"{i:03d}  {symbol}")
+
+    if len(candidates) > 100:
         print(
-            "TELEGRAM EXCEPTION:",
-            repr(exc)
+            f"... و {len(candidates) - 100} نماد دیگر"
         )
 
+    return candidates
 
-# ============================================================
-# RESPONSE HANDLER
-# ============================================================
 
-def handle_response(response):
+# =========================================================
+# VERIFY SYMBOL
+# =========================================================
 
-    print(
-        "HTTP STATUS:",
-        response.status_code
-    )
+def verify_symbol(symbol):
+
+    print("\n" + "=" * 60)
+    print(f"🔍 VERIFY: {symbol}")
+    print("=" * 60)
 
     try:
 
-        data = response.json()
+        data = public_get(
+            "depth",
+            {
+                "symbol": symbol,
+                "limit": 5,
+            },
+        )
 
-    except Exception:
-
-        data = None
-
-
-    if response.status_code >= 400:
+        print("✅ SYMBOL VALID")
 
         if isinstance(data, dict):
 
-            raise RuntimeError(
-                "HTTP "
-                + str(response.status_code)
-                + " | code="
-                + str(data.get("code", ""))
-                + " | msg="
-                + str(data.get("msg", data))
-            )
+            bids = data.get("bids", [])
+            asks = data.get("asks", [])
 
-        raise RuntimeError(
-            "HTTP "
-            + str(response.status_code)
-            + ": "
-            + response.text[:2000]
-        )
+            print("BIDS:", len(bids))
+            print("ASKS:", len(asks))
 
+            if bids:
+                print("BEST BID:", bids[0])
 
-    return data
+            if asks:
+                print("BEST ASK:", asks[0])
 
+        return True
 
-# ============================================================
-# PUBLIC GET
-# /r/fapi/
-# ============================================================
+    except Exception as e:
 
-def public_get(
-    endpoint,
-    params=None
-):
+        print(f"❌ INVALID SYMBOL: {symbol}")
+        print("ERROR:", e)
 
-    url = (
-        READ_BASE
-        + endpoint
-    )
+        return False
 
-    print(
-        "\n➡️ PUBLIC GET:"
-    )
 
-    print(
-        url
-    )
+# =========================================================
+# FIND USDT / USD FUTURES
+# =========================================================
 
-    if params:
+def find_quote_symbols(symbols):
 
-        print(
-            "PARAMS:",
-            params
-        )
+    preferred = []
 
+    for symbol in symbols:
 
-    response = session.get(
-        url,
-        params=params or {},
-        timeout=25,
-    )
+        s = symbol.upper()
 
-
-    return handle_response(
-        response
-    )
-
-
-# ============================================================
-# SIGNED REQUEST
-#
-# GET    -> /r/fapi/
-# POST   -> /fapi/
-# DELETE -> /fapi/
-# ============================================================
-
-def signed_request(
-    method,
-    endpoint,
-    params=None
-):
-
-    if not API_KEY:
-
-        raise RuntimeError(
-            "TABDIL_API_KEY / "
-            "TABDEAL_API_KEY is missing."
-        )
-
-
-    if not API_SECRET:
-
-        raise RuntimeError(
-            "TABDIL_API_SECRET / "
-            "TABDEAL_API_SECRET is missing."
-        )
-
-
-    data = {}
-
-    if params:
-
-        data.update(
-            params
-        )
-
-
-    # Same signing concept as official Client
-    data["timestamp"] = (
-        int(time.time() * 1000)
-    )
-
-    data["recvWindow"] = (
-        RECV_WINDOW
-    )
-
-
-    query = urlencode(
-        data
-    )
-
-
-    signature = hmac.new(
-        API_SECRET.encode(
-            "utf-8"
-        ),
-        query.encode(
-            "utf-8"
-        ),
-        hashlib.sha256
-    ).hexdigest()
-
-
-    data["signature"] = (
-        signature
-    )
-
-
-    headers = {
-        "X-MBX-APIKEY": API_KEY
-    }
-
-
-    method = method.upper()
-
-
-    # --------------------------------------------------------
-    # GET -> READ
-    # --------------------------------------------------------
-
-    if method == "GET":
-
-        url = (
-            READ_BASE
-            + endpoint
-        )
-
-        print(
-            "\n🔐 SIGNED GET:"
-        )
-
-        print(
-            url
-        )
-
-        response = session.get(
-            url,
-            params=data,
-            headers=headers,
-            timeout=25,
-        )
-
-
-    # --------------------------------------------------------
-    # POST -> WRITE
-    # --------------------------------------------------------
-
-    elif method == "POST":
-
-        url = (
-            WRITE_BASE
-            + endpoint
-        )
-
-        print(
-            "\n🔐 SIGNED POST:"
-        )
-
-        print(
-            url
-        )
-
-        response = session.post(
-            url,
-            data=data,
-            headers=headers,
-            timeout=25,
-        )
-
-
-    # --------------------------------------------------------
-    # DELETE -> WRITE
-    # --------------------------------------------------------
-
-    elif method == "DELETE":
-
-        url = (
-            WRITE_BASE
-            + endpoint
-        )
-
-        print(
-            "\n🔐 SIGNED DELETE:"
-        )
-
-        print(
-            url
-        )
-
-        response = session.delete(
-            url,
-            params=data,
-            headers=headers,
-            timeout=25,
-        )
-
-
-    else:
-
-        raise RuntimeError(
-            "Unsupported method: "
-            + method
-        )
-
-
-    return handle_response(
-        response
-    )
-
-
-# ============================================================
-# PUBLIC FUTURES
-# ============================================================
-
-def futures_ping():
-
-    return public_get(
-        "v1/ping"
-    )
-
-
-def futures_time():
-
-    return public_get(
-        "v1/time"
-    )
-
-
-def futures_exchange_info(
-    symbol
-):
-
-    # IMPORTANT:
-    # Official Future.exchange_info()
-    # supports direct symbol parameter.
-
-    return public_get(
-        "v1/exchangeInfo",
-        {
-            "symbol": symbol
-        }
-    )
-
-
-def futures_depth(
-    symbol
-):
-
-    return public_get(
-        "v1/depth",
-        {
-            "symbol": symbol,
-            "limit": 20
-        }
-    )
-
-
-# ============================================================
-# ACCOUNT
-# ============================================================
-
-def futures_account():
-
-    return signed_request(
-        "GET",
-        "v3/account"
-    )
-
-
-def futures_balance():
-
-    return signed_request(
-        "GET",
-        "v3/balance"
-    )
-
-
-# ============================================================
-# POSITION
-# ============================================================
-
-def futures_positions(
-    symbol
-):
-
-    return signed_request(
-        "GET",
-        "v1/position",
-        {
-            "symbol": symbol
-        }
-    )
-
-
-def futures_position_risk(
-    symbol
-):
-
-    return signed_request(
-        "GET",
-        "v3/positionRisk",
-        {
-            "symbol": symbol
-        }
-    )
-
-
-# ============================================================
-# LEVERAGE
-# ============================================================
-
-def futures_get_leverage(
-    symbol
-):
-
-    return signed_request(
-        "GET",
-        "v1/leverage",
-        {
-            "symbol": symbol
-        }
-    )
-
-
-def futures_set_leverage(
-    symbol,
-    leverage
-):
-
-    return signed_request(
-        "POST",
-        "v1/leverage",
-        {
-            "symbol": symbol,
-            "leverage": leverage
-        }
-    )
-
-
-# ============================================================
-# POSITION PARSER
-# ============================================================
-
-def find_active_position(
-    data,
-    symbol
-):
-
-    if isinstance(
-        data,
-        list
-    ):
-
-        items = data
-
-    elif isinstance(
-        data,
-        dict
-    ):
-
-        items = []
-
-        for key in (
-            "positions",
-            "data",
-            "result"
+        if (
+            s.endswith("USDT")
+            or s.endswith("USDC")
+            or s.endswith("USD")
         ):
+            preferred.append(s)
 
-            value = data.get(
-                key
-            )
-
-            if isinstance(
-                value,
-                list
-            ):
-
-                items = value
-                break
-
-            if isinstance(
-                value,
-                dict
-            ):
-
-                for nested_key in (
-                    "positions",
-                    "data",
-                    "result"
-                ):
-
-                    nested = value.get(
-                        nested_key
-                    )
-
-                    if isinstance(
-                        nested,
-                        list
-                    ):
-
-                        items = nested
-                        break
-
-                if items:
-                    break
-
-    else:
-
-        items = []
+    return sorted(set(preferred))
 
 
-    symbol = symbol.upper()
+# =========================================================
+# ACCOUNT TEST
+# =========================================================
 
+def account_test():
 
-    for item in items:
+    print("\n" + "=" * 60)
+    print("🔐 FUTURES ACCOUNT")
+    print("=" * 60)
 
-        if not isinstance(
-            item,
-            dict
-        ):
-            continue
+    data = signed_get("account")
 
+    if isinstance(data, dict):
 
-        item_symbol = str(
-            item.get(
-                "symbol",
-                ""
-            )
-        ).upper()
+        print("✅ AUTH SUCCESS")
 
+        print(
+            "canTrade:",
+            data.get("canTrade")
+        )
 
-        if item_symbol != symbol:
-            continue
+        print(
+            "canWithdraw:",
+            data.get("canWithdraw")
+        )
 
+        print(
+            "canDeposit:",
+            data.get("canDeposit")
+        )
 
-        # Try common position amount fields
-        for field in (
-            "positionAmt",
-            "amount",
-            "quantity",
-            "positionQuantity",
-            "size"
-        ):
+        assets = data.get("assets", [])
 
-            if field in item:
+        if isinstance(assets, list):
+
+            print("\n💰 BALANCES:")
+
+            shown = 0
+
+            for asset in assets:
+
+                if not isinstance(asset, dict):
+                    continue
+
+                name = asset.get("asset", "")
+
+                wallet = (
+                    asset.get("walletBalance")
+                    or asset.get("balance")
+                    or "0"
+                )
+
+                available = (
+                    asset.get("availableBalance")
+                    or asset.get("available")
+                    or "0"
+                )
 
                 try:
+                    available_float = float(available)
+                except Exception:
+                    available_float = 0
 
-                    amount = float(
-                        item[field]
+                if available_float != 0 or name in [
+                    "USDT",
+                    "USDC",
+                ]:
+
+                    print(
+                        f"{name}: "
+                        f"wallet={wallet} "
+                        f"available={available}"
                     )
 
-                    if amount != 0:
+                    shown += 1
 
-                        return item
-
-                except Exception:
-
-                    pass
+            if shown == 0:
+                print("موجودی قابل نمایش پیدا نشد.")
 
 
-        # Alternative active/state fields
-        state = str(
-            item.get(
-                "state",
-                ""
+# =========================================================
+# POSITION TEST
+# =========================================================
+
+def positions_test():
+
+    print("\n" + "=" * 60)
+    print("📌 OPEN FUTURES POSITIONS")
+    print("=" * 60)
+
+    data = signed_get("positionRisk")
+
+    if isinstance(data, list):
+
+        open_positions = []
+
+        for p in data:
+
+            if not isinstance(p, dict):
+                continue
+
+            amount = (
+                p.get("positionAmt")
+                or p.get("quantity")
+                or p.get("qty")
+                or "0"
             )
-        ).lower()
+
+            try:
+                amount_float = float(amount)
+            except Exception:
+                amount_float = 0
+
+            if amount_float != 0:
+                open_positions.append(p)
+
+        if not open_positions:
+            print("✅ هیچ پوزیشن بازی وجود ندارد.")
+
+        else:
+
+            for p in open_positions:
+
+                print(
+                    "\nSYMBOL:",
+                    p.get("symbol")
+                )
+
+                print(
+                    "POSITION:",
+                    p.get("positionAmt")
+                    or p.get("quantity")
+                    or p.get("qty")
+                )
+
+                print(
+                    "ENTRY:",
+                    p.get("entryPrice")
+                )
+
+                print(
+                    "MARK:",
+                    p.get("markPrice")
+                )
+
+                print(
+                    "UNREALIZED:",
+                    p.get("unRealizedProfit")
+                )
 
 
-        if state in (
-            "open",
-            "active"
-        ):
-
-            return item
-
-
-        if item.get(
-            "isActive"
-        ) in (
-            True,
-            1,
-            "1",
-            "true"
-        ):
-
-            return item
-
-
-    return None
-
-
-# ============================================================
+# =========================================================
 # MAIN
-# ============================================================
+# =========================================================
 
 def main():
 
     telegram(
-        "💓 ATI FUTURES ALIVE\n"
-        "⚡ V2 DIRECT SYMBOL TEST\n"
-        f"📡 {SYMBOL}\n"
-        f"🔧 LEVERAGE: {LEVERAGE}x\n"
-        f"💵 ORDER MARGIN: {ORDER_USDT} USDT\n"
-        f"🔓 LIVE: {LIVE_TRADING}\n"
-        "📥 GET  -> /r/fapi/\n"
-        "📤 POST -> /fapi/"
+        "💓 ATI FUTURES\n"
+        "⚡ MULTI-COIN AUTO DISCOVERY\n"
+        "📡 TABDEAL FUTURES\n"
+        "🔒 REAL ORDER: OFF\n"
+        "🔎 BTC ثابت نیست"
+    )
+
+    print("\nATI FUTURES MULTI-COIN START")
+
+    # -----------------------------------------
+    # 1. Discover
+    # -----------------------------------------
+
+    try:
+        symbols = discover_symbols()
+
+    except Exception as e:
+
+        telegram(
+            "❌ FUTURES EXCHANGE INFO ERROR\n\n"
+            + str(e)
+        )
+
+        return
+
+    if not symbols:
+
+        telegram(
+            "❌ هیچ Futures Symbol پیدا نشد."
+        )
+
+        return
+
+    # -----------------------------------------
+    # 2. All tradable candidates
+    # -----------------------------------------
+
+    candidates = find_candidates(symbols)
+
+    # -----------------------------------------
+    # 3. USDT / USD market list
+    # -----------------------------------------
+
+    quote_symbols = find_quote_symbols(candidates)
+
+    print("\n" + "=" * 60)
+    print("💵 USDT / USD FUTURES")
+    print("=" * 60)
+
+    print(
+        f"تعداد: {len(quote_symbols)}"
+    )
+
+    for symbol in quote_symbols[:150]:
+        print(symbol)
+
+    if len(quote_symbols) > 150:
+        print(
+            f"... {len(quote_symbols)-150} مورد دیگر"
+        )
+
+    # -----------------------------------------
+    # 4. Verify several real symbols
+    # -----------------------------------------
+
+    print("\n" + "=" * 60)
+    print("🧪 VERIFY REAL FUTURES MARKETS")
+    print("=" * 60)
+
+    verified = []
+
+    # اول نمادهای USDT
+    test_list = quote_symbols[:20]
+
+    for symbol in test_list:
+
+        if verify_symbol(symbol):
+            verified.append(symbol)
+
+    # -----------------------------------------
+    # 5. Account
+    # -----------------------------------------
+
+    if API_KEY and API_SECRET:
+
+        try:
+            account_test()
+
+        except Exception as e:
+
+            print(
+                "\n❌ ACCOUNT ERROR:"
+            )
+
+            print(e)
+
+        try:
+            positions_test()
+
+        except Exception as e:
+
+            print(
+                "\n❌ POSITION ERROR:"
+            )
+
+            print(e)
+
+    else:
+
+        print(
+            "\n⚠️ API KEY/SECRET موجود نیست."
+        )
+
+    # -----------------------------------------
+    # FINAL
+    # -----------------------------------------
+
+    print("\n" + "=" * 60)
+    print("✅ ATI FUTURES DISCOVERY FINISHED")
+    print("=" * 60)
+
+    print(
+        f"📊 TOTAL SYMBOLS: {len(symbols)}"
+    )
+
+    print(
+        f"💵 USDT/USD SYMBOLS: {len(quote_symbols)}"
+    )
+
+    print(
+        f"🟢 VERIFIED SYMBOLS: {len(verified)}"
+    )
+
+    if verified:
+
+        print("\nنمادهای تأییدشده:")
+
+        for s in verified:
+            print("✅", s)
+
+    print(
+        "\n🔒 REAL ORDER = OFF"
+    )
+
+    telegram(
+        "✅ ATI FUTURES SCAN OK\n"
+        f"📊 TOTAL: {len(symbols)}\n"
+        f"💵 USDT/USD: {len(quote_symbols)}\n"
+        f"🟢 VERIFIED: {len(verified)}\n"
+        "🔒 REAL ORDER: OFF"
     )
 
 
-    try:
-
-        # ====================================================
-        # STEP 1 - PING
-        # ====================================================
-
-        ping = futures_ping()
-
-        print(
-            "\n✅ FUTURES PING OK"
-        )
-
-        print(
-            json.dumps(
-                ping,
-                ensure_ascii=False
-            )
-        )
-
-
-        # ====================================================
-        # STEP 2 - SERVER TIME
-        # ====================================================
-
-        server_time = (
-            futures_time()
-        )
-
-        print(
-            "\n✅ FUTURES TIME OK"
-        )
-
-        print(
-            json.dumps(
-                server_time,
-                ensure_ascii=False
-            )
-        )
-
-
-        # ====================================================
-        # STEP 3 - DIRECT BTCUSDT EXCHANGE INFO
-        # ====================================================
-
-        print(
-            "\n🔎 DIRECT SYMBOL TEST:"
-        )
-
-        print(
-            SYMBOL
-        )
-
-
-        symbol_info = (
-            futures_exchange_info(
-                SYMBOL
-            )
-        )
-
-
-        print(
-            "\n✅ EXCHANGE INFO RESPONSE:"
-        )
-
-        print(
-            json.dumps(
-                symbol_info,
-                ensure_ascii=False,
-                indent=2
-            )[:10000]
-        )
-
-
-        # ====================================================
-        # IMPORTANT:
-        # Do NOT assume symbols[] exists.
-        # Direct symbol request itself is the test.
-        # ====================================================
-
-        print(
-            "\n✅ DIRECT SYMBOL REQUEST ACCEPTED:"
-        )
-
-        print(
-            SYMBOL
-        )
-
-
-        # ====================================================
-        # STEP 4 - DEPTH TEST
-        # ====================================================
-
-        depth = (
-            futures_depth(
-                SYMBOL
-            )
-        )
-
-
-        print(
-            "\n✅ DEPTH OK:"
-        )
-
-        print(
-            json.dumps(
-                depth,
-                ensure_ascii=False,
-                indent=2
-            )[:8000]
-        )
-
-
-        # ====================================================
-        # STEP 5 - API CREDENTIAL CHECK
-        # ====================================================
-
-        if not API_KEY:
-
-            raise RuntimeError(
-                "API KEY missing."
-            )
-
-
-        if not API_SECRET:
-
-            raise RuntimeError(
-                "API SECRET missing."
-            )
-
-
-        # ====================================================
-        # STEP 6 - ACCOUNT
-        # ====================================================
-
-        account = (
-            futures_account()
-        )
-
-
-        print(
-            "\n✅ AUTH SUCCESS"
-        )
-
-        print(
-            json.dumps(
-                account,
-                ensure_ascii=False,
-                indent=2
-            )[:8000]
-        )
-
-
-        # ====================================================
-        # STEP 7 - BALANCE
-        # ====================================================
-
-        balance = (
-            futures_balance()
-        )
-
-
-        print(
-            "\n💰 FUTURES BALANCE:"
-        )
-
-        print(
-            json.dumps(
-                balance,
-                ensure_ascii=False,
-                indent=2
-            )[:8000]
-        )
-
-
-        # ====================================================
-        # STEP 8 - POSITION
-        # ====================================================
-
-        positions = (
-            futures_positions(
-                SYMBOL
-            )
-        )
-
-
-        print(
-            "\n📊 FUTURES POSITION:"
-        )
-
-        print(
-            json.dumps(
-                positions,
-                ensure_ascii=False,
-                indent=2
-            )[:8000]
-        )
-
-
-        active = (
-            find_active_position(
-                positions,
-                SYMBOL
-            )
-        )
-
-
-        if active:
-
-            telegram(
-                "📌 ATI FUTURES\n"
-                "⚠️ ACTIVE POSITION FOUND\n\n"
-                f"📡 {SYMBOL}\n"
-                "🚫 NO NEW ORDER\n\n"
-                + json.dumps(
-                    active,
-                    ensure_ascii=False
-                )[:2000]
-            )
-
-            return
-
-
-        # ====================================================
-        # STEP 9 - POSITION RISK
-        # ====================================================
-
-        try:
-
-            risk = (
-                futures_position_risk(
-                    SYMBOL
-                )
-            )
-
-
-            print(
-                "\n📊 POSITION RISK:"
-            )
-
-            print(
-                json.dumps(
-                    risk,
-                    ensure_ascii=False,
-                    indent=2
-                )[:8000]
-            )
-
-
-        except Exception as exc:
-
-            print(
-                "\nPOSITION RISK WARNING:",
-                repr(exc)
-            )
-
-
-        # ====================================================
-        # STEP 10 - CURRENT LEVERAGE
-        # ====================================================
-
-        try:
-
-            leverage_info = (
-                futures_get_leverage(
-                    SYMBOL
-                )
-            )
-
-
-            print(
-                "\n🔧 CURRENT LEVERAGE:"
-            )
-
-            print(
-                json.dumps(
-                    leverage_info,
-                    ensure_ascii=False,
-                    indent=2
-                )
-            )
-
-
-        except Exception as exc:
-
-            print(
-                "\nLEVERAGE READ WARNING:",
-                repr(exc)
-            )
-
-
-        # ====================================================
-        # STEP 11 - SET LEVERAGE ONLY IF LIVE
-        # ====================================================
-
-        if LIVE_TRADING:
-
-            print(
-                "\n🔴 LIVE TRADING IS ON"
-            )
-
-
-            leverage_result = (
-                futures_set_leverage(
-                    SYMBOL,
-                    LEVERAGE
-                )
-            )
-
-
-            print(
-                "\n✅ LEVERAGE SET:"
-            )
-
-            print(
-                json.dumps(
-                    leverage_result,
-                    ensure_ascii=False,
-                    indent=2
-                )
-            )
-
-
-        else:
-
-            print(
-                "\n🟢 LIVE TRADING OFF"
-            )
-
-
-        # ====================================================
-        # FINAL
-        # ====================================================
-
-        telegram(
-            "✅ ATI FUTURES API TEST PASSED\n\n"
-            f"📡 SYMBOL: {SYMBOL}\n"
-            f"🔧 LEVERAGE: {LEVERAGE}x\n"
-            f"💵 ORDER MARGIN: {ORDER_USDT} USDT\n"
-            f"🔓 LIVE: {LIVE_TRADING}\n\n"
-            "✅ PING\n"
-            "✅ SERVER TIME\n"
-            "✅ DIRECT EXCHANGE INFO\n"
-            "✅ DEPTH\n"
-            "✅ AUTH\n"
-            "✅ BALANCE\n"
-            "✅ POSITION\n\n"
-            "🚫 NO ORDER SENT"
-        )
-
-
-    except Exception as exc:
-
-        error = (
-            "❌ ATI FUTURES ERROR\n\n"
-            + type(exc).__name__
-            + ": "
-            + str(exc)
-        )
-
-
-        print(
-            "\n"
-            + error
-        )
-
-
-        telegram(
-            error
-        )
-
-
-# ============================================================
-# START
-# ============================================================
-
 if __name__ == "__main__":
-
     main()
