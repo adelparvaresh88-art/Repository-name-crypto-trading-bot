@@ -5,204 +5,231 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
 # =========================================================
-# ATI FUTURES V7.6
-# ICHIMOKU 5M - SIGNAL MODE
+# ATI FUTURES V7.7
+# TABDEAL FUTURES
+# ICHIMOKU 5M
+# KLINE DIAGNOSTIC + FAST SCANNER
+# NO REAL ORDERS
 # =========================================================
 
 API_BASE = "https://api1.tabdeal.org"
-PUBLIC_BASE = API_BASE + "/r/fapi/v1/"
+
+FAPI_READ = API_BASE + "/r/fapi/"
+FAPI_WRITE = API_BASE + "/fapi/"
 
 INTERVAL = "5m"
 KLINE_LIMIT = 100
 
-WORKERS = 12
-TIMEOUT = 7
+WORKERS = 16
+TIMEOUT = 8
 
-# Ichimoku
 TENKAN = 9
 KIJUN = 26
 SENKOU_B = 52
 
-# Signal settings
-MIN_SCORE = 4.0
-MAX_KIJUN_DISTANCE = 4.0
+MIN_SCORE = 3.5
+MAX_KIJUN_DISTANCE = 5.0
 
-# Scan
-MAX_SYMBOLS = 100
+MAX_MARKETS = 100
 
-TELEGRAM_TOKEN = os.getenv(
-    "TELEGRAM_BOT_TOKEN", ""
-).strip()
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 
-TELEGRAM_CHAT_ID = os.getenv(
-    "TELEGRAM_CHAT_ID", ""
-).strip()
-
-session = requests.Session()
-
-session.headers.update({
-    "User-Agent": "ATI-FUTURES-V7.6",
-    "Accept": "application/json",
-})
+# بسیار مهم:
+# این نسخه هیچ سفارش واقعی ارسال نمی‌کند.
+REAL_TRADING = False
 
 
 # =========================================================
 # TIME
 # =========================================================
 
-def now():
-    return datetime.now(
-        timezone.utc
-    ).strftime(
-        "%Y-%m-%d %H:%M:%S UTC"
-    )
+def utc_now():
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
 
 # =========================================================
 # TELEGRAM
 # =========================================================
 
-def telegram(text):
-
+def telegram(message):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+        print(message)
         return
+
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
 
     try:
         requests.post(
-            f"https://api.telegram.org/"
-            f"bot{TELEGRAM_TOKEN}/sendMessage",
-            json={
+            url,
+            data={
                 "chat_id": TELEGRAM_CHAT_ID,
-                "text": text,
+                "text": message,
             },
-            timeout=8,
+            timeout=10,
         )
-
     except Exception as e:
-        print(
-            "Telegram error:",
-            e
-        )
+        print("Telegram error:", e)
 
 
 # =========================================================
-# PUBLIC API
+# HTTP
 # =========================================================
+
+session = requests.Session()
+
+session.headers.update({
+    "User-Agent": "ATI-FUTURES-V7.7",
+    "Accept": "application/json",
+})
+
 
 def public_get(path, params=None):
+    """
+    Futures public GET.
+    """
+    url = FAPI_READ + path
 
-    url = PUBLIC_BASE + path
-
-    r = session.get(
+    response = session.get(
         url,
         params=params or {},
         timeout=TIMEOUT,
     )
 
-    if r.status_code != 200:
-
+    if response.status_code != 200:
         raise RuntimeError(
-            f"HTTP {r.status_code}: "
-            f"{r.text[:300]}"
+            f"HTTP {response.status_code}: {response.text[:300]}"
         )
-
-    return r.json()
-
-
-# =========================================================
-# SERVER
-# =========================================================
-
-def server_ok():
 
     try:
+        return response.json()
+    except Exception:
+        raise RuntimeError(
+            f"INVALID JSON: {response.text[:300]}"
+        )
 
+
+# =========================================================
+# SERVER TIME TEST
+# =========================================================
+
+def test_server_time():
+
+    try:
         data = public_get(
-            "time"
+            "v1/time"
         )
 
-        return bool(
-            data.get("serverTime")
-        )
+        return True, str(data)
 
     except Exception as e:
-
-        print(
-            "Server error:",
-            e
-        )
-
-        return False
+        return False, str(e)
 
 
 # =========================================================
-# SYMBOLS
+# EXCHANGE INFO
 # =========================================================
 
-def get_symbols():
+def get_exchange_info():
 
-    data = public_get(
-        "exchangeInfo"
-    )
-
-    result = []
-
-    for item in data.get(
-        "symbols",
-        []
-    ):
-
-        symbol = str(
-            item.get(
-                "symbol",
-                ""
-            )
-        ).upper()
-
-        symbol = (
-            symbol
-            .replace("_", "")
-            .replace("-", "")
-            .replace("/", "")
-        )
-
-        if not symbol.endswith(
-            "USDT"
-        ):
-            continue
-
-        status = str(
-            item.get(
-                "status",
-                "TRADING"
-            )
-        ).upper()
-
-        if status not in (
-            "TRADING",
-            "ACTIVE",
-            "ENABLED",
-            "1",
-        ):
-            continue
-
-        result.append(
-            symbol
-        )
-
-    return list(
-        dict.fromkeys(result)
+    return public_get(
+        "v1/exchangeInfo"
     )
 
 
 # =========================================================
-# KLINES
+# SYMBOL NORMALIZER
+# =========================================================
+
+def normalize_symbol(symbol):
+
+    if not symbol:
+        return ""
+
+    symbol = str(symbol).upper().strip()
+
+    symbol = (
+        symbol
+        .replace("_", "")
+        .replace("-", "")
+        .replace("/", "")
+        .replace(" ", "")
+    )
+
+    return symbol
+
+
+# =========================================================
+# MARKET DISCOVERY
+# =========================================================
+
+def get_markets():
+
+    data = get_exchange_info()
+
+    symbols = []
+
+    if isinstance(data, dict):
+
+        raw = data.get("symbols", [])
+
+    elif isinstance(data, list):
+
+        raw = data
+
+    else:
+
+        raw = []
+
+    for item in raw:
+
+        if isinstance(item, str):
+
+            symbol = normalize_symbol(item)
+
+        elif isinstance(item, dict):
+
+            symbol = normalize_symbol(
+                item.get("symbol")
+                or item.get("pair")
+                or item.get("contract")
+            )
+
+        else:
+
+            continue
+
+        if not symbol:
+            continue
+
+        if not symbol.endswith("USDT"):
+            continue
+
+        symbols.append(symbol)
+
+    # unique
+    symbols = list(dict.fromkeys(symbols))
+
+    return symbols[:MAX_MARKETS]
+
+
+# =========================================================
+# KLINE
 # =========================================================
 
 def get_klines(symbol):
 
+    """
+    Official Tabdeal Futures read structure:
+
+    /r/fapi/v1/klines
+
+    symbol = BTCUSDT
+    interval = 5m
+    """
+
     data = public_get(
-        "klines",
+        "v1/klines",
         {
             "symbol": symbol,
             "interval": INTERVAL,
@@ -210,646 +237,563 @@ def get_klines(symbol):
         }
     )
 
-    if not isinstance(
-        data,
-        list
-    ):
-
-        return None
+    if not isinstance(data, list):
+        raise RuntimeError(
+            f"KLINE NOT LIST: {str(data)[:300]}"
+        )
 
     if len(data) < 60:
-
-        return None
+        raise RuntimeError(
+            f"KLINE TOO SHORT: {len(data)}"
+        )
 
     candles = []
 
-    for x in data:
+    for row in data:
 
-        candles.append({
-            "open": float(x[1]),
-            "high": float(x[2]),
-            "low": float(x[3]),
-            "close": float(x[4]),
-            "volume": float(x[5]),
-        })
+        if not isinstance(row, list):
+            continue
+
+        if len(row) < 6:
+            continue
+
+        try:
+
+            candles.append({
+                "time": int(row[0]),
+                "open": float(row[1]),
+                "high": float(row[2]),
+                "low": float(row[3]),
+                "close": float(row[4]),
+                "volume": float(row[5]),
+            })
+
+        except Exception:
+            continue
+
+    if len(candles) < 60:
+        raise RuntimeError(
+            f"VALID KLINES TOO SHORT: {len(candles)}"
+        )
 
     return candles
-
-
-# =========================================================
-# MIDPOINT
-# =========================================================
-
-def midpoint(
-    candles,
-    period,
-    end=None
-):
-
-    if end is None:
-        end = len(candles)
-
-    if end < period:
-        return None
-
-    section = candles[
-        end - period:end
-    ]
-
-    high = max(
-        x["high"]
-        for x in section
-    )
-
-    low = min(
-        x["low"]
-        for x in section
-    )
-
-    return (
-        high + low
-    ) / 2
 
 
 # =========================================================
 # ICHIMOKU
 # =========================================================
 
-def calculate(candles):
+def ichimoku(candles):
 
-    # Use CLOSED candle
+    if len(candles) < 60:
+        return None
+
+    # آخرین کندل بسته شده
     i = len(candles) - 2
 
-    previous = i - 1
+    def highest(start, end):
+        values = [
+            candles[x]["high"]
+            for x in range(start, end + 1)
+        ]
+        return max(values)
+
+    def lowest(start, end):
+        values = [
+            candles[x]["low"]
+            for x in range(start, end + 1)
+        ]
+        return min(values)
+
+    def midpoint(start, end):
+        return (
+            highest(start, end)
+            +
+            lowest(start, end)
+        ) / 2.0
 
     tenkan = midpoint(
-        candles,
-        TENKAN,
-        i + 1
+        i - TENKAN + 1,
+        i
     )
 
     kijun = midpoint(
-        candles,
-        KIJUN,
-        i + 1
+        i - KIJUN + 1,
+        i
     )
 
-    span_b = midpoint(
-        candles,
-        SENKOU_B,
-        i + 1
-    )
-
-    old_tenkan = midpoint(
-        candles,
-        TENKAN,
-        previous + 1
-    )
-
-    old_kijun = midpoint(
-        candles,
-        KIJUN,
-        previous + 1
-    )
-
-    if None in (
-        tenkan,
-        kijun,
-        span_b,
-        old_tenkan,
-        old_kijun,
-    ):
-
-        return None
-
-    span_a = (
+    senkou_a = (
         tenkan + kijun
-    ) / 2
+    ) / 2.0
+
+    senkou_b = midpoint(
+        i - SENKOU_B + 1,
+        i
+    )
 
     cloud_top = max(
-        span_a,
-        span_b
+        senkou_a,
+        senkou_b
     )
 
     cloud_bottom = min(
-        span_a,
-        span_b
+        senkou_a,
+        senkou_b
     )
 
-    candle = candles[i]
+    close = candles[i]["close"]
+    open_price = candles[i]["open"]
 
-    price = candle["close"]
+    bullish_candle = close > open_price
+    bearish_candle = close < open_price
 
-    bullish = (
-        candle["close"]
-        >
-        candle["open"]
+    # previous candle
+    p = i - 1
+
+    prev_tenkan = midpoint(
+        p - TENKAN + 1,
+        p
     )
 
-    bearish = (
-        candle["close"]
-        <
-        candle["open"]
-    )
-
-    volume_avg = sum(
-        x["volume"]
-        for x in candles[
-            i - 20:i
-        ]
-    ) / 20
-
-    volume_ok = (
-        candle["volume"]
-        >=
-        volume_avg * 0.8
+    prev_kijun = midpoint(
+        p - KIJUN + 1,
+        p
     )
 
     bullish_cross = (
-        old_tenkan <= old_kijun
-        and
-        tenkan > kijun
+        prev_tenkan <= prev_kijun
+        and tenkan > kijun
     )
 
     bearish_cross = (
-        old_tenkan >= old_kijun
-        and
-        tenkan < kijun
+        prev_tenkan >= prev_kijun
+        and tenkan < kijun
     )
 
-    distance = (
-        abs(price - kijun)
-        /
-        kijun
-        *
-        100
+    bullish_cloud = senkou_a > senkou_b
+    bearish_cloud = senkou_a < senkou_b
+
+    # volume
+    volume_start = max(0, i - 20)
+
+    volumes = [
+        candles[x]["volume"]
+        for x in range(
+            volume_start,
+            i
+        )
+    ]
+
+    avg_volume = (
+        sum(volumes) / len(volumes)
+        if volumes
+        else 0
     )
 
+    current_volume = candles[i]["volume"]
+
+    volume_ok = (
+        avg_volume > 0
+        and current_volume >= avg_volume * 0.8
+    )
+
+    # distance from kijun
+    if kijun != 0:
+
+        kijun_distance = (
+            abs(close - kijun)
+            / abs(kijun)
+        ) * 100.0
+
+    else:
+
+        kijun_distance = 999.0
+
+    buy_score = 0.0
+    sell_score = 0.0
+
     # =====================================================
-    # BUY SCORE
+    # BUY
     # =====================================================
 
-    buy = 0
+    if close > cloud_top:
+        buy_score += 2.5
 
-    if price > cloud_top:
-        buy += 2.5
-
-    elif price > cloud_bottom:
-        buy += 1.5
+    elif close > cloud_bottom:
+        buy_score += 1.5
 
     if tenkan > kijun:
-        buy += 1.5
+        buy_score += 1.5
 
-    if span_a > span_b:
-        buy += 1.0
+    if bullish_cloud:
+        buy_score += 1.0
 
     if bullish_cross:
-        buy += 2.0
+        buy_score += 2.0
 
-    if bullish:
-        buy += 0.5
+    if bullish_candle:
+        buy_score += 0.5
 
     if volume_ok:
-        buy += 0.5
+        buy_score += 0.5
 
     # =====================================================
-    # SELL SCORE
+    # SELL
     # =====================================================
 
-    sell = 0
+    if close < cloud_bottom:
+        sell_score += 2.5
 
-    if price < cloud_bottom:
-        sell += 2.5
-
-    elif price < cloud_top:
-        sell += 1.5
+    elif close < cloud_top:
+        sell_score += 1.5
 
     if tenkan < kijun:
-        sell += 1.5
+        sell_score += 1.5
 
-    if span_a < span_b:
-        sell += 1.0
+    if bearish_cloud:
+        sell_score += 1.0
 
     if bearish_cross:
-        sell += 2.0
+        sell_score += 2.0
 
-    if bearish:
-        sell += 0.5
+    if bearish_candle:
+        sell_score += 0.5
 
     if volume_ok:
-        sell += 0.5
-
-    # =====================================================
-    # KIJUN DISTANCE
-    # =====================================================
-
-    if distance > MAX_KIJUN_DISTANCE:
-
-        return {
-            "signal": None,
-            "reason": "far_kijun",
-        }
+        sell_score += 0.5
 
     # =====================================================
     # SIGNAL
     # =====================================================
 
-    if buy >= MIN_SCORE and buy > sell:
+    signal = None
+    score = max(
+        buy_score,
+        sell_score
+    )
 
-        return {
-            "signal": "BUY",
-            "score": buy,
-            "price": price,
-            "tenkan": tenkan,
-            "kijun": kijun,
-            "cloud_top": cloud_top,
-            "cloud_bottom": cloud_bottom,
-            "distance": distance,
-            "volume_ok": volume_ok,
-            "cross": bullish_cross,
-        }
+    if (
+        buy_score >= MIN_SCORE
+        and buy_score > sell_score
+        and kijun_distance <= MAX_KIJUN_DISTANCE
+    ):
+        signal = "BUY"
 
-    if sell >= MIN_SCORE and sell > buy:
-
-        return {
-            "signal": "SELL",
-            "score": sell,
-            "price": price,
-            "tenkan": tenkan,
-            "kijun": kijun,
-            "cloud_top": cloud_top,
-            "cloud_bottom": cloud_bottom,
-            "distance": distance,
-            "volume_ok": volume_ok,
-            "cross": bearish_cross,
-        }
+    elif (
+        sell_score >= MIN_SCORE
+        and sell_score > buy_score
+        and kijun_distance <= MAX_KIJUN_DISTANCE
+    ):
+        signal = "SELL"
 
     return {
-        "signal": None,
-        "buy": buy,
-        "sell": sell,
+        "signal": signal,
+        "score": score,
+        "buy_score": buy_score,
+        "sell_score": sell_score,
+        "close": close,
+        "tenkan": tenkan,
+        "kijun": kijun,
+        "cloud_top": cloud_top,
+        "cloud_bottom": cloud_bottom,
+        "kijun_distance": kijun_distance,
+        "volume_ok": volume_ok,
+        "bullish_cross": bullish_cross,
+        "bearish_cross": bearish_cross,
     }
 
 
 # =========================================================
-# ANALYZE
+# SCAN ONE SYMBOL
 # =========================================================
 
-def analyze(symbol):
+def scan_symbol(symbol):
 
     try:
 
-        candles = get_klines(
-            symbol
-        )
+        candles = get_klines(symbol)
 
-        if not candles:
+        result = ichimoku(candles)
 
+        if result is None:
             return {
                 "symbol": symbol,
-                "status": "error",
+                "ok": False,
+                "error": "ICHIMOKU DATA ERROR",
             }
 
-        result = calculate(
-            candles
-        )
+        result["symbol"] = symbol
+        result["ok"] = True
 
-        if not result:
-
-            return {
-                "symbol": symbol,
-                "status": "error",
-            }
-
-        if result.get(
-            "signal"
-        ):
-
-            return {
-                "symbol": symbol,
-                "status": "signal",
-                **result,
-            }
-
-        return {
-            "symbol": symbol,
-            "status": "no_signal",
-            **result,
-        }
+        return result
 
     except Exception as e:
 
         return {
             "symbol": symbol,
-            "status": "error",
-            "error": str(e)[:300],
+            "ok": False,
+            "error": str(e),
         }
 
 
 # =========================================================
-# SCAN
+# DIAGNOSTIC TEST
 # =========================================================
 
-def scan(symbols):
+def diagnostic():
 
-    start = time.time()
+    tests = [
+        "BTCUSDT",
+        "ETHUSDT",
+    ]
 
     results = []
 
-    with ThreadPoolExecutor(
-        max_workers=WORKERS
-    ) as executor:
+    for symbol in tests:
 
-        jobs = {
-            executor.submit(
-                analyze,
-                s
-            ): s
-            for s in symbols
-        }
+        result = scan_symbol(symbol)
 
-        for future in as_completed(
-            jobs
-        ):
+        results.append(result)
 
-            try:
-
-                results.append(
-                    future.result()
-                )
-
-            except Exception as e:
-
-                results.append({
-                    "symbol": jobs[future],
-                    "status": "error",
-                    "error": str(e),
-                })
-
-    return (
-        results,
-        time.time() - start
-    )
+    return results
 
 
 # =========================================================
-# MAIN
+# TELEGRAM HEADER
 # =========================================================
 
-def main():
+telegram(
+    "💓 ATI FUTURES V7.7\n\n"
+    "⚡ ICHIMOKU 5M\n"
+    "☁️ 9 / 26 / 52\n\n"
+    "🔧 KLINE ENDPOINT FIXED\n"
+    "🎯 DIAGNOSTIC + FAST SCANNER\n\n"
+    "📡 TABDEAL FUTURES\n\n"
+    f"🕐 {utc_now()}"
+)
 
-    print()
-    print("=" * 65)
-    print("💓 ATI FUTURES V7.6")
-    print("⚡ ICHIMOKU 5M SIGNAL SCANNER")
-    print("=" * 65)
 
-    print(
-        "☁️ Ichimoku: 9 / 26 / 52"
-    )
+# =========================================================
+# SERVER TEST
+# =========================================================
 
-    print(
-        "🎯 Minimum score:",
-        MIN_SCORE
-    )
+server_ok, server_info = test_server_time()
 
-    print(
-        "📏 Max Kijun distance:",
-        MAX_KIJUN_DISTANCE,
-        "%"
-    )
-
-    print(
-        "🕐",
-        now()
-    )
+if not server_ok:
 
     telegram(
-        f"""💓 ATI FUTURES V7.6
-
-⚡ ICHIMOKU 5M
-☁️ 9 / 26 / 52
-
-🎯 SIGNAL SCANNER ACTIVE
-
-📡 TABDEAL FUTURES
-
-🕐 {now()}"""
+        "❌ ATI FUTURES V7.7\n\n"
+        "🚨 SERVER TIME FAILED\n\n"
+        f"{server_info}\n\n"
+        "🛑 SCAN STOPPED\n"
+        "🔒 NO ORDERS"
     )
 
-    # -----------------------------------------------------
-    # SERVER
-    # -----------------------------------------------------
+    raise SystemExit(0)
 
-    if not server_ok():
 
-        print(
-            "🛑 API OFFLINE"
-        )
+# =========================================================
+# KLINE DIAGNOSTIC
+# =========================================================
 
-        telegram(
-            f"""🛑 ATI V7.6
+diag = diagnostic()
 
-❌ FUTURES API OFFLINE
+diag_text = [
+    "🧪 KLINE DIAGNOSTIC",
+    ""
+]
 
-🚫 NO SIGNAL
-🚫 NO ORDER
+for item in diag:
 
-🕐 {now()}"""
-        )
+    symbol = item["symbol"]
 
-        return
+    if item["ok"]:
 
-    # -----------------------------------------------------
-    # SYMBOLS
-    # -----------------------------------------------------
-
-    try:
-
-        symbols = get_symbols()
-
-    except Exception as e:
-
-        print(
-            "❌ SYMBOL ERROR:",
-            e
-        )
-
-        telegram(
-            f"""🛑 ATI V7.6
-
-❌ MARKET DATA ERROR
-
-🚫 NO ORDER
-
-{str(e)[:500]}"""
-        )
-
-        return
-
-    symbols = symbols[
-        :MAX_SYMBOLS
-    ]
-
-    print(
-        "📊 Markets:",
-        len(symbols)
-    )
-
-    # -----------------------------------------------------
-    # SCAN
-    # -----------------------------------------------------
-
-    results, elapsed = scan(
-        symbols
-    )
-
-    good = [
-        x for x in results
-        if x["status"] != "error"
-    ]
-
-    errors = [
-        x for x in results
-        if x["status"] == "error"
-    ]
-
-    signals = [
-        x for x in results
-        if x["status"] == "signal"
-    ]
-
-    print()
-    print(
-        "📡 Completed:",
-        len(results),
-        "/",
-        len(symbols)
-    )
-
-    print(
-        "📈 Klines OK:",
-        len(good)
-    )
-
-    print(
-        "🔥 Signals:",
-        len(signals)
-    )
-
-    print(
-        "❌ Errors:",
-        len(errors)
-    )
-
-    print(
-        "⏱️ Scan:",
-        f"{elapsed:.2f}s"
-    )
-
-    # -----------------------------------------------------
-    # API ERROR
-    # -----------------------------------------------------
-
-    if errors:
-
-        print(
-            "⚠️ API errors detected"
-        )
-
-        sample = errors[0]
-
-        print(
-            "Sample:",
-            sample
-        )
-
-    # -----------------------------------------------------
-    # SIGNALS
-    # -----------------------------------------------------
-
-    signals.sort(
-        key=lambda x:
-        x.get(
-            "score",
-            0
-        ),
-        reverse=True,
-    )
-
-    if signals:
-
-        # Send up to 5 strongest signals
-        top = signals[:5]
-
-        text = (
-            "🔥 ATI FUTURES V7.6\n\n"
-            "⚡ ICHIMOKU 5M SIGNALS\n\n"
-        )
-
-        for i, s in enumerate(
-            top,
-            1
-        ):
-
-            text += (
-                f"{i}️⃣ "
-                f"{s['symbol']}\n"
-                f"📌 {s['signal']}\n"
-                f"⭐ Score: "
-                f"{s['score']:.1f}\n"
-                f"💰 Price: "
-                f"{s['price']}\n"
-                f"📏 Kijun: "
-                f"{s['distance']:.2f}%\n"
-                f"☁️ Cloud: "
-                f"{s['cloud_bottom']:.6g}"
-                f" - "
-                f"{s['cloud_top']:.6g}\n"
-                f"🔀 TK Cross: "
-                f"{'YES' if s['cross'] else 'NO'}\n"
-                f"📊 Volume: "
-                f"{'OK' if s['volume_ok'] else 'LOW'}\n\n"
-            )
-
-        text += (
-            f"📊 Markets: {len(symbols)}\n"
-            f"⏱️ Scan: {elapsed:.2f}s\n"
-            f"🕐 {now()}"
-        )
-
-        print()
-        print(text)
-
-        telegram(
-            text
+        diag_text.append(
+            f"✅ {symbol} KLINE OK"
         )
 
     else:
 
-        text = f"""💓 ATI FUTURES V7.6
-
-⚡ ICHIMOKU 5M
-
-📊 Markets: {len(symbols)}
-📈 Klines OK: {len(good)}
-🔥 Signals: 0
-❌ Errors: {len(errors)}
-
-⏱️ Scan: {elapsed:.2f}s
-
-☁️ NO SIGNAL THIS CYCLE
-
-🕐 {now()}"""
-
-        print(
-            text
+        diag_text.append(
+            f"❌ {symbol}"
         )
 
-        telegram(
-            text
+        diag_text.append(
+            f"   {item['error'][:220]}"
         )
 
+telegram(
+    "\n".join(diag_text)
+)
 
-if __name__ == "__main__":
-    main()
+
+# =========================================================
+# MARKET DISCOVERY
+# =========================================================
+
+try:
+
+    markets = get_markets()
+
+except Exception as e:
+
+    telegram(
+        "❌ EXCHANGE INFO FAILED\n\n"
+        f"{str(e)[:500]}\n\n"
+        "🛑 NO SCAN\n"
+        "🔒 NO ORDERS"
+    )
+
+    raise SystemExit(0)
+
+
+if not markets:
+
+    telegram(
+        "❌ NO FUTURES MARKETS FOUND\n\n"
+        "🛑 SCAN STOPPED\n"
+        "🔒 NO ORDERS"
+    )
+
+    raise SystemExit(0)
+
+
+# =========================================================
+# FAST SCAN
+# =========================================================
+
+start = time.time()
+
+results = []
+
+with ThreadPoolExecutor(
+    max_workers=WORKERS
+) as executor:
+
+    futures = {
+        executor.submit(
+            scan_symbol,
+            symbol
+        ): symbol
+
+        for symbol in markets
+    }
+
+    for future in as_completed(futures):
+
+        try:
+
+            result = future.result()
+
+            results.append(result)
+
+        except Exception as e:
+
+            symbol = futures[future]
+
+            results.append({
+                "symbol": symbol,
+                "ok": False,
+                "error": str(e),
+            })
+
+
+elapsed = time.time() - start
+
+
+# =========================================================
+# STATS
+# =========================================================
+
+ok_count = sum(
+    1
+    for x in results
+    if x.get("ok")
+)
+
+error_count = len(results) - ok_count
+
+signals = [
+    x
+    for x in results
+    if x.get("ok")
+    and x.get("signal")
+]
+
+
+signals.sort(
+    key=lambda x: x.get("score", 0),
+    reverse=True
+)
+
+
+# =========================================================
+# RESULT MESSAGE
+# =========================================================
+
+message = (
+    "💓 ATI FUTURES V7.7\n\n"
+    "⚡ ICHIMOKU 5M\n"
+    "☁️ 9 / 26 / 52\n\n"
+    f"📊 Markets: {len(markets)}\n"
+    f"📈 Klines OK: {ok_count}\n"
+    f"🔥 Signals: {len(signals)}\n"
+    f"❌ Errors: {error_count}\n"
+    f"⏱️ Scan: {elapsed:.2f}s\n\n"
+)
+
+
+# =========================================================
+# SIGNALS
+# =========================================================
+
+if signals:
+
+    message += "🎯 STRONGEST SIGNALS\n\n"
+
+    for item in signals[:5]:
+
+        symbol = item["symbol"]
+        signal = item["signal"]
+
+        score = item["score"]
+        close = item["close"]
+
+        message += (
+            f"{'🟢' if signal == 'BUY' else '🔴'} "
+            f"{signal} {symbol}\n"
+            f"💵 Price: {close:g}\n"
+            f"⭐ Score: {score:.1f}\n"
+            f"📐 Kijun distance: "
+            f"{item['kijun_distance']:.2f}%\n"
+            f"☁️ Cloud: "
+            f"{item['cloud_bottom']:g} - "
+            f"{item['cloud_top']:g}\n"
+        )
+
+        if item["bullish_cross"]:
+            message += "🔄 Bullish TK Cross\n"
+
+        if item["bearish_cross"]:
+            message += "🔄 Bearish TK Cross\n"
+
+        message += "\n"
+
+else:
+
+    message += (
+        "☁️ NO SIGNAL THIS CYCLE\n\n"
+        "Ichimoku scanned closed 5m candles."
+    )
+
+
+message += (
+    "\n\n🔒 REAL ORDERS: OFF\n"
+    f"🕐 {utc_now()}"
+)
+
+
+telegram(message)
+
+print(message)
