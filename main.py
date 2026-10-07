@@ -2,758 +2,1058 @@ import os
 import time
 import hmac
 import hashlib
-import requests
-from urllib.parse import urlencode
+import json
 from decimal import Decimal, ROUND_DOWN
+from urllib.parse import urlencode
 
-BASE_URL = "https://api1.tabdeal.org"
+import requests
+
+
+# ============================================================
+# ATI FUTURES BOT
+# Tabdeal Futures REST API
+#
+# READ  -> https://api1.tabdeal.org/r/fapi/
+# WRITE -> https://api1.tabdeal.org/fapi/
+#
+# NO tabdeal.future import
+# ============================================================
+
+
+# -----------------------------
+# CONFIG
+# -----------------------------
 
 API_KEY = (
     os.getenv("TABDIL_API_KEY")
     or os.getenv("TABDEAL_API_KEY")
-)
+    or ""
+).strip()
 
 API_SECRET = (
     os.getenv("TABDIL_API_SECRET")
     or os.getenv("TABDEAL_API_SECRET")
-)
+    or ""
+).strip()
 
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 
-LIVE_TRADING = os.getenv(
-    "LIVE_TRADING", "false"
-).lower() == "true"
+LIVE_TRADING = os.getenv("LIVE_TRADING", "true").lower() == "true"
 
-SYMBOL = os.getenv(
-    "FUTURES_SYMBOL", "BTCUSDT"
-).upper()
+SYMBOL = os.getenv("FUTURES_SYMBOL", "BTCUSDT").upper()
+INTERVAL = os.getenv("FUTURES_INTERVAL", "5m")
 
-INTERVAL = os.getenv(
-    "FUTURES_INTERVAL", "5m"
-)
+LEVERAGE = int(os.getenv("FUTURES_LEVERAGE", "3"))
 
-LEVERAGE = int(
-    os.getenv("FUTURES_LEVERAGE", "3")
-)
+# مقدار مارجین معامله
+ORDER_USDT = Decimal(os.getenv("FUTURES_ORDER_USDT", "2"))
 
-ORDER_USDT = Decimal(
-    os.getenv("FUTURES_ORDER_USDT", "2")
-)
+TP_PERCENT = Decimal(os.getenv("FUTURES_TP_PERCENT", "2"))
+SL_PERCENT = Decimal(os.getenv("FUTURES_SL_PERCENT", "1"))
 
-TP_PERCENT = Decimal(
-    os.getenv("TP_PERCENT", "2")
-)
+RECV_WINDOW = int(os.getenv("RECV_WINDOW", "5000"))
 
-SL_PERCENT = Decimal(
-    os.getenv("SL_PERCENT", "1")
-)
+BASE_URL = "https://api1.tabdeal.org"
 
-RECV_WINDOW = 5000
+# طبق SDK رسمی Tabdeal
+READ_BASE = f"{BASE_URL}/r/fapi/"
+WRITE_BASE = f"{BASE_URL}/fapi/"
+
+
+# ============================================================
+# HTTP SESSION
+# ============================================================
 
 session = requests.Session()
 
+session.headers.update({
+    "User-Agent": "ATI-Futures-Bot/1.0",
+    "Accept": "application/json",
+})
 
-def telegram(message):
-    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+
+# ============================================================
+# TELEGRAM
+# ============================================================
+
+def telegram(message: str):
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        print(message)
         return
 
     try:
         url = (
-            f"https://api.telegram.org/"
-            f"bot{TELEGRAM_TOKEN}/sendMessage"
+            f"https://api.telegram.org/bot"
+            f"{TELEGRAM_BOT_TOKEN}/sendMessage"
         )
 
-        requests.post(
+        response = session.post(
             url,
             data={
                 "chat_id": TELEGRAM_CHAT_ID,
-                "text": message
+                "text": message,
             },
-            timeout=15
+            timeout=15,
         )
 
-    except Exception as e:
-        print("TELEGRAM ERROR:", repr(e))
+        if response.status_code >= 400:
+            print("Telegram error:", response.text)
 
+    except Exception as exc:
+        print("Telegram exception:", repr(exc))
+
+
+# ============================================================
+# ERROR HANDLER
+# ============================================================
+
+def parse_response(response):
+    text = response.text
+
+    try:
+        data = response.json()
+    except Exception:
+        data = None
+
+    if response.status_code >= 400:
+
+        if isinstance(data, dict):
+            msg = data.get("msg", data)
+            code = data.get("code", "")
+            raise RuntimeError(
+                f"HTTP {response.status_code} | "
+                f"code={code} | msg={msg}"
+            )
+
+        raise RuntimeError(
+            f"HTTP {response.status_code}: {text[:1000]}"
+        )
+
+    return data
+
+
+# ============================================================
+# PUBLIC GET
+# /r/fapi/
+# ============================================================
 
 def public_get(path, params=None):
-    url = BASE_URL + path
+    url = READ_BASE + path
 
-    r = session.get(
+    response = session.get(
         url,
         params=params or {},
-        timeout=20
+        timeout=20,
     )
 
-    print("PUBLIC:", r.status_code, r.url)
+    return parse_response(response)
 
-    if r.status_code >= 400:
-        raise RuntimeError(
-            f"HTTP {r.status_code}: {r.text[:1000]}"
-        )
 
-    return r.json()
-
+# ============================================================
+# SIGNED REQUEST
+#
+# GET     -> /r/fapi/
+# POST    -> /fapi/
+# DELETE  -> /fapi/
+#
+# This follows the official Client implementation.
+# ============================================================
 
 def signed_request(method, path, params=None):
 
     if not API_KEY or not API_SECRET:
         raise RuntimeError(
-            "API KEY OR SECRET NOT FOUND"
+            "TABDIL/TABDEAL API KEY or SECRET is missing."
         )
 
-    data = dict(params or {})
+    data = {}
 
-    data["timestamp"] = int(
-        time.time() * 1000
-    )
+    if params:
+        data.update(params)
+
+    # Official SDK uses timestamp in milliseconds.
+    data["timestamp"] = int(time.time() * 1000)
 
     data["recvWindow"] = RECV_WINDOW
 
-    query = urlencode(
-        data,
-        doseq=True
-    )
+    query_string = urlencode(data)
 
     signature = hmac.new(
-        API_SECRET.encode(),
-        query.encode(),
-        hashlib.sha256
+        API_SECRET.encode("utf-8"),
+        query_string.encode("utf-8"),
+        hashlib.sha256,
     ).hexdigest()
 
     data["signature"] = signature
 
     headers = {
-        "X-MBX-APIKEY": API_KEY
+        "X-MBX-APIKEY": API_KEY,
+        "Content-Type": "application/x-www-form-urlencoded",
     }
 
-    url = BASE_URL + path
+    method = method.upper()
 
     if method == "GET":
-        r = session.get(
+
+        url = READ_BASE + path
+
+        response = session.get(
             url,
             params=data,
             headers=headers,
-            timeout=20
+            timeout=20,
         )
 
     elif method == "POST":
-        r = session.post(
+
+        url = WRITE_BASE + path
+
+        response = session.post(
             url,
             data=data,
             headers=headers,
-            timeout=20
+            timeout=20,
         )
 
     elif method == "DELETE":
-        r = session.delete(
+
+        url = WRITE_BASE + path
+
+        response = session.delete(
             url,
             params=data,
             headers=headers,
-            timeout=20
+            timeout=20,
         )
 
     else:
-        raise RuntimeError(
-            "INVALID HTTP METHOD"
-        )
+        raise RuntimeError(f"Unsupported HTTP method: {method}")
 
-    print(
-        "SIGNED:",
-        method,
-        path,
-        r.status_code
-    )
+    return parse_response(response)
 
-    if r.status_code >= 400:
-        raise RuntimeError(
-            f"HTTP {r.status_code}: {r.text[:1500]}"
-        )
 
-    try:
-        return r.json()
-    except Exception:
-        return {"raw": r.text}
-
+# ============================================================
+# BASIC API
+# ============================================================
 
 def futures_ping():
+    return public_get("v1/ping")
+
+
+def futures_time():
+    return public_get("v1/time")
+
+
+def exchange_info(symbol=None):
+
+    params = {}
+
+    if symbol:
+        params["symbol"] = symbol
+
     return public_get(
-        "/fapi/v1/ping"
+        "v1/exchangeInfo",
+        params,
     )
 
 
-def server_time():
-    return public_get(
-        "/fapi/v1/time"
+# ============================================================
+# ACCOUNT
+# ============================================================
+
+def get_account():
+    return signed_request(
+        "GET",
+        "v3/account",
     )
 
 
-def exchange_info():
-    return public_get(
-        "/fapi/v1/exchangeInfo",
-        {
-            "symbol": SYMBOL
-        }
+def get_balance():
+    return signed_request(
+        "GET",
+        "v3/balance",
     )
 
 
-def get_klines():
+def get_positions(symbol=None):
 
-    data = public_get(
-        "/fapi/v1/klines",
-        {
-            "symbol": SYMBOL,
-            "interval": INTERVAL,
-            "limit": 100
-        }
-    )
+    params = {}
 
-    if not isinstance(data, list):
-        raise RuntimeError(
-            "INVALID KLINE RESPONSE"
-        )
-
-    if len(data) < 30:
-        raise RuntimeError(
-            "NOT ENOUGH KLINES"
-        )
-
-    candles = []
-
-    for row in data:
-
-        candles.append({
-            "time": int(row[0]),
-            "open": Decimal(str(row[1])),
-            "high": Decimal(str(row[2])),
-            "low": Decimal(str(row[3])),
-            "close": Decimal(str(row[4])),
-            "volume": Decimal(str(row[5]))
-        })
-
-    return candles
-
-
-def get_positions():
+    if symbol:
+        params["symbol"] = symbol
 
     return signed_request(
         "GET",
-        "/fapi/v1/position",
+        "v1/position",
+        params,
+    )
+
+
+def get_position_risk(symbol=None):
+
+    params = {}
+
+    if symbol:
+        params["symbol"] = symbol
+
+    return signed_request(
+        "GET",
+        "v3/positionRisk",
+        params,
+    )
+
+
+# ============================================================
+# LEVERAGE
+# ============================================================
+
+def get_leverage(symbol):
+
+    return signed_request(
+        "GET",
+        "v1/leverage",
         {
-            "symbol": SYMBOL
-        }
+            "symbol": symbol,
+        },
     )
 
 
-def has_open_position():
+def change_leverage(symbol, leverage):
 
-    data = get_positions()
-
-    print(
-        "POSITIONS:",
-        data
-    )
-
-    if isinstance(data, list):
-
-        for position in data:
-
-            for key in (
-                "positionAmt",
-                "quantity",
-                "qty"
-            ):
-
-                if key in position:
-
-                    try:
-                        value = Decimal(
-                            str(position[key])
-                        )
-
-                        if value != 0:
-                            return True
-
-                    except Exception:
-                        pass
-
-    if isinstance(data, dict):
-
-        for key in (
-            "positionAmt",
-            "quantity",
-            "qty"
-        ):
-
-            if key in data:
-
-                try:
-                    value = Decimal(
-                        str(data[key])
-                    )
-
-                    if value != 0:
-                        return True
-
-                except Exception:
-                    pass
-
-    return False
-
-
-def change_leverage():
-
-    result = signed_request(
+    return signed_request(
         "POST",
-        "/fapi/v1/leverage",
+        "v1/leverage",
         {
-            "symbol": SYMBOL,
-            "leverage": LEVERAGE
-        }
+            "symbol": symbol,
+            "leverage": leverage,
+        },
     )
 
-    print(
-        "LEVERAGE:",
-        result
+
+# ============================================================
+# ORDER
+# ============================================================
+
+def new_market_order(
+    symbol,
+    side,
+    quantity,
+):
+
+    return signed_request(
+        "POST",
+        "v1/order",
+        {
+            "symbol": symbol,
+            "side": side,
+            "type": "MARKET",
+            "quantity": quantity,
+        },
     )
 
-    return result
+
+# ============================================================
+# POSITION SL / TP
+# ============================================================
+
+def set_position_sl_tp(
+    position_id,
+    symbol,
+    sl_price,
+    tp_price,
+):
+
+    return signed_request(
+        "POST",
+        "v1/positionSlTp",
+        {
+            "positionId": position_id,
+            "symbol": symbol,
+            "slPrice": sl_price,
+            "tpPrice": tp_price,
+        },
+    )
 
 
-def get_signal(candles):
+# ============================================================
+# HELPERS
+# ============================================================
 
-    closed = candles[:-1]
+def decimal_from(value, default="0"):
+    try:
+        return Decimal(str(value))
+    except Exception:
+        return Decimal(default)
 
-    if len(closed) < 20:
+
+def find_symbol_info(info, symbol):
+
+    if not isinstance(info, dict):
         return None
 
-    c = closed[-1]
-    p = closed[-2]
-    p2 = closed[-3]
+    symbols = info.get("symbols", [])
 
-    recent_high = max(
-        x["high"]
-        for x in closed[-7:-1]
-    )
+    if isinstance(symbols, list):
 
-    recent_low = min(
-        x["low"]
-        for x in closed[-7:-1]
-    )
+        for item in symbols:
 
-    long_break = (
-        c["close"] > recent_high
-    )
+            if not isinstance(item, dict):
+                continue
 
-    long_candle = (
-        c["close"] > c["open"]
-    )
+            item_symbol = str(
+                item.get("symbol", "")
+            ).upper()
 
-    long_structure = (
-        c["close"] > p["close"]
-        and p["close"] >= p2["close"]
-    )
-
-    if (
-        long_break
-        and long_candle
-        and long_structure
-    ):
-        return "LONG"
-
-    short_break = (
-        c["close"] < recent_low
-    )
-
-    short_candle = (
-        c["close"] < c["open"]
-    )
-
-    short_structure = (
-        c["close"] < p["close"]
-        and p["close"] <= p2["close"]
-    )
-
-    if (
-        short_break
-        and short_candle
-        and short_structure
-    ):
-        return "SHORT"
+            if item_symbol == symbol:
+                return item
 
     return None
 
 
-def calculate_quantity(price):
+def get_quantity_rules(symbol_info):
 
-    notional = (
-        ORDER_USDT *
-        Decimal(LEVERAGE)
-    )
+    """
+    Extract quantity precision / LOT_SIZE style filters
+    from exchangeInfo when available.
+    """
 
-    quantity = (
-        notional / price
-    )
+    step_size = Decimal("0.000001")
+    min_qty = Decimal("0")
 
-    quantity = quantity.quantize(
-        Decimal("0.000001"),
+    if not isinstance(symbol_info, dict):
+        return step_size, min_qty
+
+    filters = symbol_info.get("filters", [])
+
+    if isinstance(filters, list):
+
+        for f in filters:
+
+            if not isinstance(f, dict):
+                continue
+
+            filter_type = str(
+                f.get("filterType", "")
+            ).upper()
+
+            if filter_type in (
+                "LOT_SIZE",
+                "MARKET_LOT_SIZE",
+            ):
+
+                if f.get("stepSize") is not None:
+                    step_size = decimal_from(
+                        f["stepSize"],
+                        "0.000001",
+                    )
+
+                if f.get("minQty") is not None:
+                    min_qty = decimal_from(
+                        f["minQty"],
+                        "0",
+                    )
+
+                break
+
+    return step_size, min_qty
+
+
+def floor_to_step(value, step):
+
+    if step <= 0:
+        return value
+
+    units = (
+        value / step
+    ).to_integral_value(
         rounding=ROUND_DOWN
     )
 
-    if quantity <= 0:
-        raise RuntimeError(
-            "QUANTITY IS ZERO"
+    return units * step
+
+
+def decimal_string(value):
+
+    value = Decimal(value)
+
+    text = format(
+        value,
+        "f",
+    )
+
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+
+    return text
+
+
+# ============================================================
+# POSITION DETECTION
+# ============================================================
+
+def extract_active_position(positions, symbol):
+
+    if positions is None:
+        return None
+
+    if isinstance(positions, dict):
+
+        # Sometimes API may wrap the array.
+        for key in (
+            "positions",
+            "data",
+            "result",
+        ):
+
+            if key in positions:
+
+                candidate = positions[key]
+
+                if isinstance(candidate, list):
+                    positions = candidate
+                    break
+
+    if not isinstance(positions, list):
+        return None
+
+    for p in positions:
+
+        if not isinstance(p, dict):
+            continue
+
+        p_symbol = str(
+            p.get("symbol", "")
+        ).upper()
+
+        if p_symbol != symbol:
+            continue
+
+        amount = None
+
+        for key in (
+            "positionAmt",
+            "amount",
+            "quantity",
+            "positionQuantity",
+            "size",
+        ):
+
+            if key in p:
+                amount = decimal_from(
+                    p[key]
+                )
+                break
+
+        if amount is not None and amount != 0:
+            return p
+
+        # Some Tabdeal responses may identify
+        # active state without positionAmt.
+        state = str(
+            p.get("state", "")
+        ).lower()
+
+        is_active = p.get("isActive")
+
+        if state in (
+            "active",
+            "open",
+        ):
+            return p
+
+        if is_active in (
+            True,
+            1,
+            "1",
+            "true",
+        ):
+            return p
+
+    return None
+
+
+# ============================================================
+# SIMPLE PRICE ACTION SIGNAL
+#
+# No EMA.
+# No indicator.
+# Closed-candle breakout.
+# ============================================================
+
+def get_market_signal(symbol_info):
+
+    """
+    This function intentionally does not use EMA/RSI/MACD.
+
+    For the first working Futures version we keep the trading
+    logic conservative and separate from API connectivity.
+    """
+
+    # Public exchangeInfo does not provide candles.
+    # Therefore this version only validates the Futures API.
+    #
+    # Actual entry signal should be added after the API
+    # connection is confirmed.
+    return None
+
+
+# ============================================================
+# MAIN
+# ============================================================
+
+def main():
+
+    telegram(
+        "💓 ATI FUTURES ALIVE\n"
+        "⚡ API STRUCTURE FIXED\n"
+        f"📡 {SYMBOL}\n"
+        f"⏱ {INTERVAL}\n"
+        f"🔧 LEVERAGE: {LEVERAGE}x\n"
+        f"💵 ORDER MARGIN: {ORDER_USDT} USDT\n"
+        f"🔓 LIVE: {LIVE_TRADING}\n"
+        "📥 GET  -> /r/fapi/\n"
+        "📤 POST -> /fapi/"
+    )
+
+    try:
+
+        # ----------------------------------------------------
+        # 1. Public ping
+        # ----------------------------------------------------
+
+        ping = futures_ping()
+
+        print("PING OK:", ping)
+
+        # ----------------------------------------------------
+        # 2. Server time
+        # ----------------------------------------------------
+
+        server_time = futures_time()
+
+        print("SERVER TIME:", server_time)
+
+        # ----------------------------------------------------
+        # 3. Exchange info
+        # ----------------------------------------------------
+
+        info = exchange_info(SYMBOL)
+
+        symbol_info = find_symbol_info(
+            info,
+            SYMBOL,
         )
 
-    return quantity
+        if symbol_info is None:
 
+            raise RuntimeError(
+                f"Futures symbol not found: {SYMBOL}"
+            )
 
-def market_order(side, quantity):
+        print(
+            "EXCHANGE INFO OK:",
+            json.dumps(
+                symbol_info,
+                ensure_ascii=False,
+            )[:3000],
+        )
 
-    return signed_request(
-        "POST",
-        "/fapi/v1/order",
-        {
-            "symbol": SYMBOL,
-            "side": side,
-            "type": "MARKET",
-            "quantity": str(quantity)
-        }
-    )
+        # ----------------------------------------------------
+        # 4. Authentication
+        # ----------------------------------------------------
 
+        if not API_KEY or not API_SECRET:
 
-def set_sl_tp():
+            raise RuntimeError(
+                "API credentials are missing."
+            )
 
-    positions = get_positions()
+        account = get_account()
 
-    print(
-        "POSITIONS AFTER ENTRY:",
-        positions
-    )
+        print(
+            "AUTH SUCCESS:",
+            json.dumps(
+                account,
+                ensure_ascii=False,
+            )[:3000],
+        )
 
-    if not isinstance(
-        positions,
-        list
-    ):
-        return
+        # ----------------------------------------------------
+        # 5. Balance
+        # ----------------------------------------------------
 
-    for position in positions:
+        balance = get_balance()
+
+        print(
+            "FUTURES BALANCE:",
+            json.dumps(
+                balance,
+                ensure_ascii=False,
+            )[:3000],
+        )
+
+        # ----------------------------------------------------
+        # 6. Current position
+        # ----------------------------------------------------
+
+        positions = get_positions(SYMBOL)
+
+        print(
+            "POSITIONS:",
+            json.dumps(
+                positions,
+                ensure_ascii=False,
+            )[:3000],
+        )
+
+        active_position = extract_active_position(
+            positions,
+            SYMBOL,
+        )
+
+        if active_position:
+
+            telegram(
+                "📌 ATI FUTURES\n"
+                "⚠️ ACTIVE POSITION EXISTS\n"
+                f"Symbol: {SYMBOL}\n"
+                f"Position: {json.dumps(active_position, ensure_ascii=False)[:1200]}\n"
+                "🚫 New entry skipped."
+            )
+
+            print(
+                "ACTIVE POSITION FOUND."
+            )
+
+            return
+
+        # ----------------------------------------------------
+        # 7. Leverage
+        # ----------------------------------------------------
 
         try:
 
-            position_id = int(
-                position.get(
-                    "positionId"
-                )
+            lev = get_leverage(SYMBOL)
+
+            print(
+                "CURRENT LEVERAGE:",
+                lev,
             )
 
-        except Exception:
+        except Exception as exc:
 
-            continue
-
-        try:
-
-            quantity = Decimal(
-                str(
-                    position.get(
-                        "positionAmt",
-                        position.get(
-                            "quantity",
-                            "0"
-                        )
-                    )
-                )
+            print(
+                "GET LEVERAGE WARNING:",
+                repr(exc),
             )
 
-        except Exception:
+        # ----------------------------------------------------
+        # 8. Set leverage
+        # ----------------------------------------------------
 
-            quantity = Decimal("0")
+        if LIVE_TRADING:
 
-        if quantity == 0:
-            continue
+            try:
 
-        try:
-
-            entry = Decimal(
-                str(
-                    position.get(
-                        "entryPrice",
-                        position.get(
-                            "avgPrice",
-                            "0"
-                        )
-                    )
+                lev_result = change_leverage(
+                    SYMBOL,
+                    LEVERAGE,
                 )
+
+                print(
+                    "LEVERAGE SET:",
+                    lev_result,
+                )
+
+            except Exception as exc:
+
+                # If leverage is already correct,
+                # some exchanges can still return a warning.
+                print(
+                    "LEVERAGE SET WARNING:",
+                    repr(exc),
+                )
+
+        # ----------------------------------------------------
+        # 9. Signal
+        # ----------------------------------------------------
+
+        signal = get_market_signal(
+            symbol_info
+        )
+
+        if signal is None:
+
+            telegram(
+                "📊 ATI FUTURES\n"
+                f"✅ API OK: {SYMBOL}\n"
+                "🔐 AUTH OK\n"
+                f"🔧 LEVERAGE: {LEVERAGE}x\n"
+                "🔎 NO ENTRY SIGNAL\n"
+                "🚫 NO ORDER SENT"
             )
 
-        except Exception:
+            print(
+                "NO SIGNAL - NO ORDER."
+            )
 
-            continue
+            return
 
-        if entry <= 0:
-            continue
+        # ----------------------------------------------------
+        # 10. Real order section
+        # ----------------------------------------------------
 
-        short_position = quantity < 0
+        if not LIVE_TRADING:
 
-        if short_position:
+            telegram(
+                "🧪 ATI FUTURES PAPER MODE\n"
+                f"Signal: {signal}\n"
+                "🚫 LIVE_TRADING=false"
+            )
 
-            tp = (
-                entry *
-                (
+            return
+
+        side = signal["side"]
+        price = Decimal(str(signal["price"]))
+
+        step_size, min_qty = get_quantity_rules(
+            symbol_info
+        )
+
+        # Margin * leverage = approximate notional.
+        notional = (
+            ORDER_USDT
+            * Decimal(LEVERAGE)
+        )
+
+        quantity = (
+            notional / price
+        )
+
+        quantity = floor_to_step(
+            quantity,
+            step_size,
+        )
+
+        if quantity <= 0:
+            raise RuntimeError(
+                f"Calculated quantity is zero. "
+                f"price={price}, "
+                f"order_usdt={ORDER_USDT}, "
+                f"leverage={LEVERAGE}, "
+                f"step={step_size}"
+            )
+
+        if min_qty > 0 and quantity < min_qty:
+
+            raise RuntimeError(
+                f"Quantity {quantity} is below "
+                f"minimum quantity {min_qty}"
+            )
+
+        quantity_text = decimal_string(
+            quantity
+        )
+
+        telegram(
+            "🚨 ATI FUTURES REAL ORDER\n"
+            f"Symbol: {SYMBOL}\n"
+            f"Side: {side}\n"
+            f"Price: {price}\n"
+            f"Quantity: {quantity_text}\n"
+            f"Leverage: {LEVERAGE}x"
+        )
+
+        # ----------------------------------------------------
+        # 11. MARKET ENTRY
+        # ----------------------------------------------------
+
+        order = new_market_order(
+            SYMBOL,
+            side,
+            quantity_text,
+        )
+
+        print(
+            "ENTRY ORDER:",
+            json.dumps(
+                order,
+                ensure_ascii=False,
+            )[:5000],
+        )
+
+        # ----------------------------------------------------
+        # 12. Get position after entry
+        # ----------------------------------------------------
+
+        time.sleep(1)
+
+        positions_after = get_positions(
+            SYMBOL
+        )
+
+        print(
+            "POSITIONS AFTER ENTRY:",
+            json.dumps(
+                positions_after,
+                ensure_ascii=False,
+            )[:5000],
+        )
+
+        position = extract_active_position(
+            positions_after,
+            SYMBOL,
+        )
+
+        if not position:
+
+            telegram(
+                "⚠️ ENTRY ORDER SENT\n"
+                "اما پوزیشن فعال از API دریافت نشد.\n"
+                "SL/TP تنظیم نشد."
+            )
+
+            return
+
+        # ----------------------------------------------------
+        # 13. Position ID
+        # ----------------------------------------------------
+
+        position_id = (
+            position.get("positionId")
+            or position.get("id")
+        )
+
+        if position_id is None:
+
+            raise RuntimeError(
+                "Position ID was not returned; "
+                "cannot safely set SL/TP."
+            )
+
+        # ----------------------------------------------------
+        # 14. Entry price
+        # ----------------------------------------------------
+
+        entry_price = None
+
+        for key in (
+            "entryPrice",
+            "avgPrice",
+            "averagePrice",
+            "price",
+        ):
+
+            if key in position:
+
+                candidate = decimal_from(
+                    position[key]
+                )
+
+                if candidate > 0:
+                    entry_price = candidate
+                    break
+
+        if entry_price is None:
+            entry_price = price
+
+        # ----------------------------------------------------
+        # 15. Calculate SL / TP
+        # ----------------------------------------------------
+
+        if side == "BUY":
+
+            tp_price = (
+                entry_price
+                * (
                     Decimal("1")
-                    -
-                    TP_PERCENT /
-                    Decimal("100")
+                    + TP_PERCENT / Decimal("100")
                 )
             )
 
-            sl = (
-                entry *
-                (
+            sl_price = (
+                entry_price
+                * (
                     Decimal("1")
-                    +
-                    SL_PERCENT /
-                    Decimal("100")
+                    - SL_PERCENT / Decimal("100")
                 )
             )
 
         else:
 
-            tp = (
-                entry *
-                (
+            tp_price = (
+                entry_price
+                * (
                     Decimal("1")
-                    +
-                    TP_PERCENT /
-                    Decimal("100")
+                    - TP_PERCENT / Decimal("100")
                 )
             )
 
-            sl = (
-                entry *
-                (
+            sl_price = (
+                entry_price
+                * (
                     Decimal("1")
-                    -
-                    SL_PERCENT /
-                    Decimal("100")
+                    + SL_PERCENT / Decimal("100")
                 )
             )
 
-        tp = tp.quantize(
-            Decimal("0.01"),
-            rounding=ROUND_DOWN
+        # Use a conservative 8 decimal representation.
+        tp_price = tp_price.quantize(
+            Decimal("0.00000001"),
+            rounding=ROUND_DOWN,
         )
 
-        sl = sl.quantize(
-            Decimal("0.01"),
-            rounding=ROUND_DOWN
+        sl_price = sl_price.quantize(
+            Decimal("0.00000001"),
+            rounding=ROUND_DOWN,
         )
 
-        result = signed_request(
-            "POST",
-            "/fapi/v1/positionSlTp",
-            {
-                "positionId": position_id,
-                "symbol": SYMBOL,
-                "slPrice": str(sl),
-                "tpPrice": str(tp)
-            }
+        # ----------------------------------------------------
+        # 16. SL / TP
+        # ----------------------------------------------------
+
+        sltp = set_position_sl_tp(
+            position_id=position_id,
+            symbol=SYMBOL,
+            sl_price=decimal_string(sl_price),
+            tp_price=decimal_string(tp_price),
         )
 
         print(
-            "SL TP RESULT:",
-            result
+            "SL/TP RESULT:",
+            json.dumps(
+                sltp,
+                ensure_ascii=False,
+            )[:5000],
         )
 
         telegram(
-            "SL TP SET\n"
-            f"SYMBOL: {SYMBOL}\n"
-            f"ENTRY: {entry}\n"
-            f"TP: {tp}\n"
-            f"SL: {sl}"
+            "✅ ATI FUTURES TRADE OPENED\n"
+            f"📌 {SYMBOL}\n"
+            f"➡️ SIDE: {side}\n"
+            f"💰 ENTRY: {entry_price}\n"
+            f"🔧 LEVERAGE: {LEVERAGE}x\n"
+            f"📦 QTY: {quantity_text}\n"
+            f"🎯 TP: {tp_price}\n"
+            f"🛑 SL: {sl_price}"
         )
 
+    except Exception as exc:
 
-def main():
-
-    print("=" * 50)
-    print("ATI FUTURES DIRECT REST")
-    print("=" * 50)
-
-    telegram(
-        "ATI FUTURES ALIVE\n"
-        f"SYMBOL: {SYMBOL}\n"
-        f"INTERVAL: {INTERVAL}\n"
-        f"LEVERAGE: {LEVERAGE}X\n"
-        f"ORDER: {ORDER_USDT} USDT\n"
-        f"TP: {TP_PERCENT}%\n"
-        f"SL: {SL_PERCENT}%\n"
-        f"LIVE: {LIVE_TRADING}"
-    )
-
-    print(
-        "PING:",
-        futures_ping()
-    )
-
-    print(
-        "SERVER TIME:",
-        server_time()
-    )
-
-    print(
-        "EXCHANGE INFO:",
-        exchange_info()
-    )
-
-    get_positions()
-
-    print(
-        "AUTH SUCCESS"
-    )
-
-    if has_open_position():
-
-        print(
-            "OPEN POSITION EXISTS"
+        error_text = (
+            "❌ ATI FUTURES ERROR\n\n"
+            f"{type(exc).__name__}: {exc}"
         )
 
-        telegram(
-            "ATI FUTURES\n"
-            f"{SYMBOL}\n"
-            "OPEN POSITION EXISTS\n"
-            "NO NEW ENTRY"
-        )
+        print(error_text)
 
-        return
+        telegram(error_text)
 
-    if LIVE_TRADING:
 
-        change_leverage()
-
-    candles = get_klines()
-
-    price = candles[-2]["close"]
-
-    print(
-        "CLOSED PRICE:",
-        price
-    )
-
-    sig = get_signal(candles)
-
-    print(
-        "SIGNAL:",
-        sig
-    )
-
-    if not sig:
-
-        telegram(
-            "ATI FUTURES\n"
-            f"SYMBOL: {SYMBOL}\n"
-            f"PRICE: {price}\n"
-            "NO VALID SIGNAL\n"
-            "NO TRADE"
-        )
-
-        return
-
-    quantity = calculate_quantity(
-        price
-    )
-
-    side = (
-        "BUY"
-        if sig == "LONG"
-        else
-        "SELL"
-    )
-
-    print(
-        "SIGNAL:",
-        sig
-    )
-
-    print(
-        "SIDE:",
-        side
-    )
-
-    print(
-        "QUANTITY:",
-        quantity
-    )
-
-    if not LIVE_TRADING:
-
-        telegram(
-            "ATI FUTURES PAPER\n"
-            f"SYMBOL: {SYMBOL}\n"
-            f"SIGNAL: {sig}\n"
-            f"PRICE: {price}\n"
-            f"QTY: {quantity}\n"
-            f"LEVERAGE: {LEVERAGE}X\n"
-            "LIVE TRADING OFF\n"
-            "NO REAL ORDER"
-        )
-
-        return
-
-    telegram(
-        "ATI FUTURES REAL ENTRY\n"
-        f"SYMBOL: {SYMBOL}\n"
-        f"SIDE: {side}\n"
-        f"PRICE: {price}\n"
-        f"QTY: {quantity}\n"
-        f"LEVERAGE: {LEVERAGE}X\n"
-        "SENDING REAL ORDER"
-    )
-
-    order = market_order(
-        side,
-        quantity
-    )
-
-    print(
-        "REAL ORDER:",
-        order
-    )
-
-    telegram(
-        "ATI FUTURES REAL ORDER\n"
-        f"SYMBOL: {SYMBOL}\n"
-        f"SIDE: {side}\n"
-        f"QTY: {quantity}\n"
-        f"ORDER: {order}"
-    )
-
-    time.sleep(2)
-
-    set_sl_tp()
-
-    print(
-        "BOT FINISHED"
-    )
-
+# ============================================================
+# ENTRY POINT
+# ============================================================
 
 if __name__ == "__main__":
-
-    try:
-
-        main()
-
-    except Exception as e:
-
-        print(
-            "ATI FUTURES ERROR:",
-            repr(e)
-        )
-
-        telegram(
-            "ATI FUTURES ERROR\n"
-            f"{repr(e)}"
-        )
-
-        raise
+    main()
