@@ -1,669 +1,595 @@
 import os
 import time
-import hmac
-import hashlib
 import requests
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
 # =========================================================
-# ATI FUTURES V7.5
-# DIAGNOSTIC VERSION
+# ATI FUTURES V7.6
+# ICHIMOKU 5M - SIGNAL MODE
 # =========================================================
 
 API_BASE = "https://api1.tabdeal.org"
-
 PUBLIC_BASE = API_BASE + "/r/fapi/v1/"
-PRIVATE_BASE = API_BASE + "/r/fapi/v3/"
 
-TIMEOUT = 15
 INTERVAL = "5m"
 KLINE_LIMIT = 100
 
-# ---------------------------------------------------------
-# ENV
-# ---------------------------------------------------------
+WORKERS = 12
+TIMEOUT = 7
 
-API_KEY = (
-    os.getenv("TABDIL_API_KEY")
-    or os.getenv("TABDEAL_API_KEY")
-    or ""
+# Ichimoku
+TENKAN = 9
+KIJUN = 26
+SENKOU_B = 52
+
+# Signal settings
+MIN_SCORE = 4.0
+MAX_KIJUN_DISTANCE = 4.0
+
+# Scan
+MAX_SYMBOLS = 100
+
+TELEGRAM_TOKEN = os.getenv(
+    "TELEGRAM_BOT_TOKEN", ""
 ).strip()
 
-API_SECRET = (
-    os.getenv("TABDIL_API_SECRET")
-    or os.getenv("TABDEAL_API_SECRET")
-    or ""
+TELEGRAM_CHAT_ID = os.getenv(
+    "TELEGRAM_CHAT_ID", ""
 ).strip()
-
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
-
-LIVE_TRADING = False
-
-# =========================================================
-# SESSION
-# =========================================================
 
 session = requests.Session()
 
 session.headers.update({
-    "User-Agent": "ATI-FUTURES-V7.5-DIAGNOSTIC",
+    "User-Agent": "ATI-FUTURES-V7.6",
     "Accept": "application/json",
-    "Connection": "keep-alive",
 })
-
-
-# =========================================================
-# TELEGRAM
-# =========================================================
-
-def telegram(message):
-    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        print("⚠️ Telegram secrets not configured")
-        return False
-
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-
-    try:
-        r = requests.post(
-            url,
-            json={
-                "chat_id": TELEGRAM_CHAT_ID,
-                "text": message,
-            },
-            timeout=15,
-        )
-
-        if r.ok:
-            return True
-
-        print("Telegram HTTP:", r.status_code)
-        print(r.text[:1000])
-        return False
-
-    except Exception as e:
-        print("Telegram error:", repr(e))
-        return False
 
 
 # =========================================================
 # TIME
 # =========================================================
 
-def utc_now():
-    return datetime.now(timezone.utc).strftime(
+def now():
+    return datetime.now(
+        timezone.utc
+    ).strftime(
         "%Y-%m-%d %H:%M:%S UTC"
     )
 
 
 # =========================================================
-# PUBLIC REQUEST
+# TELEGRAM
 # =========================================================
 
-def public_request(path, params=None):
+def telegram(text):
+
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+        return
+
+    try:
+        requests.post(
+            f"https://api.telegram.org/"
+            f"bot{TELEGRAM_TOKEN}/sendMessage",
+            json={
+                "chat_id": TELEGRAM_CHAT_ID,
+                "text": text,
+            },
+            timeout=8,
+        )
+
+    except Exception as e:
+        print(
+            "Telegram error:",
+            e
+        )
+
+
+# =========================================================
+# PUBLIC API
+# =========================================================
+
+def public_get(path, params=None):
 
     url = PUBLIC_BASE + path
 
-    print()
-    print("🌐 PUBLIC REQUEST")
-    print("URL:", url)
-    print("PARAMS:", params)
-
-    started = time.time()
-
-    try:
-
-        r = session.get(
-            url,
-            params=params or {},
-            timeout=TIMEOUT,
-        )
-
-        elapsed = time.time() - started
-
-        print("HTTP STATUS:", r.status_code)
-        print("TIME:", round(elapsed, 3), "sec")
-        print("CONTENT-TYPE:", r.headers.get("content-type"))
-
-        body = r.text[:3000]
-
-        print("RESPONSE:")
-        print(body)
-
-        if not r.ok:
-            raise RuntimeError(
-                f"HTTP {r.status_code}: {body}"
-            )
-
-        try:
-            data = r.json()
-        except Exception:
-            raise RuntimeError(
-                "JSON ERROR: response is not valid JSON"
-            )
-
-        return data
-
-    except requests.exceptions.ConnectTimeout as e:
-
-        print("❌ CONNECT TIMEOUT")
-        print(repr(e))
-        raise
-
-    except requests.exceptions.ReadTimeout as e:
-
-        print("❌ READ TIMEOUT")
-        print(repr(e))
-        raise
-
-    except requests.exceptions.ConnectionError as e:
-
-        print("❌ CONNECTION ERROR")
-        print(repr(e))
-        raise
-
-    except Exception as e:
-
-        print("❌ PUBLIC ERROR")
-        print(repr(e))
-        raise
-
-
-# =========================================================
-# SIGNATURE
-# =========================================================
-
-def signed_request(method, path, params=None):
-
-    params = dict(params or {})
-
-    params["timestamp"] = int(time.time() * 1000)
-    params["recvWindow"] = 5000
-
-    query = "&".join(
-        f"{k}={params[k]}"
-        for k in sorted(params)
+    r = session.get(
+        url,
+        params=params or {},
+        timeout=TIMEOUT,
     )
 
-    signature = hmac.new(
-        API_SECRET.encode(),
-        query.encode(),
-        hashlib.sha256,
-    ).hexdigest()
+    if r.status_code != 200:
 
-    params["signature"] = signature
-
-    url = PRIVATE_BASE + path
-
-    headers = {
-        "X-MBX-APIKEY": API_KEY,
-        "User-Agent": "ATI-FUTURES-V7.5-DIAGNOSTIC",
-        "Accept": "application/json",
-    }
-
-    print()
-    print("🔐 PRIVATE REQUEST")
-    print("URL:", url)
-    print("METHOD:", method)
-    print("PARAMS:", {
-        k: ("***" if k == "signature" else v)
-        for k, v in params.items()
-    })
-
-    started = time.time()
-
-    try:
-
-        if method.upper() == "GET":
-
-            r = session.get(
-                url,
-                params=params,
-                headers=headers,
-                timeout=TIMEOUT,
-            )
-
-        else:
-
-            r = session.post(
-                url,
-                params=params,
-                headers=headers,
-                timeout=TIMEOUT,
-            )
-
-        elapsed = time.time() - started
-
-        print("HTTP STATUS:", r.status_code)
-        print("TIME:", round(elapsed, 3), "sec")
-        print("CONTENT-TYPE:", r.headers.get("content-type"))
-
-        print("RESPONSE:")
-        print(r.text[:3000])
-
-        if not r.ok:
-            raise RuntimeError(
-                f"HTTP {r.status_code}: {r.text[:3000]}"
-            )
-
-        return r.json()
-
-    except requests.exceptions.ConnectTimeout as e:
-
-        print("❌ PRIVATE CONNECT TIMEOUT")
-        print(repr(e))
-        raise
-
-    except requests.exceptions.ReadTimeout as e:
-
-        print("❌ PRIVATE READ TIMEOUT")
-        print(repr(e))
-        raise
-
-    except requests.exceptions.ConnectionError as e:
-
-        print("❌ PRIVATE CONNECTION ERROR")
-        print(repr(e))
-        raise
-
-    except Exception as e:
-
-        print("❌ PRIVATE ERROR")
-        print(repr(e))
-        raise
-
-
-# =========================================================
-# EXCHANGE INFO
-# =========================================================
-
-def get_exchange_info():
-
-    print()
-    print("=" * 70)
-    print("1️⃣ EXCHANGE INFO TEST")
-    print("=" * 70)
-
-    data = public_request("exchangeInfo")
-
-    if not isinstance(data, dict):
         raise RuntimeError(
-            "exchangeInfo returned unexpected format"
+            f"HTTP {r.status_code}: "
+            f"{r.text[:300]}"
         )
 
-    symbols = data.get("symbols", [])
-
-    print()
-    print("📊 SYMBOL COUNT:", len(symbols))
-
-    if not symbols:
-        raise RuntimeError(
-            "exchangeInfo returned ZERO symbols"
-        )
-
-    active = []
-
-    for s in symbols:
-
-        symbol = s.get("symbol", "")
-        status = s.get("status", "")
-
-        if symbol and status:
-            active.append(
-                (symbol, status)
-            )
-
-    print("📈 FIRST 20 SYMBOLS:")
-
-    for symbol, status in active[:20]:
-        print(
-            f"   {symbol:<20} {status}"
-        )
-
-    return data
+    return r.json()
 
 
 # =========================================================
-# FIND TEST SYMBOL
+# SERVER
 # =========================================================
 
-def choose_test_symbol(exchange_info):
-
-    symbols = exchange_info.get("symbols", [])
-
-    preferred = [
-        "BTCUSDT",
-        "ETHUSDT",
-        "SOLUSDT",
-        "XRPUSDT",
-        "DOGEUSDT",
-    ]
-
-    available = {
-        s.get("symbol"): s
-        for s in symbols
-        if s.get("symbol")
-    }
-
-    for symbol in preferred:
-
-        if symbol in available:
-
-            print()
-            print("🎯 TEST SYMBOL:", symbol)
-
-            return symbol
-
-    for s in symbols:
-
-        symbol = s.get("symbol", "")
-
-        if symbol.endswith("USDT"):
-
-            print()
-            print("🎯 TEST SYMBOL:", symbol)
-
-            return symbol
-
-    raise RuntimeError(
-        "No USDT Futures symbol found"
-    )
-
-
-# =========================================================
-# KLINE TEST
-# =========================================================
-
-def test_kline(symbol):
-
-    print()
-    print("=" * 70)
-    print("2️⃣ FUTURES KLINE TEST")
-    print("=" * 70)
-
-    params = {
-        "symbol": symbol,
-        "interval": INTERVAL,
-        "limit": KLINE_LIMIT,
-    }
+def server_ok():
 
     try:
 
-        data = public_request(
-            "klines",
-            params,
-        )
-
-        print()
-        print("✅ KLINE REQUEST SUCCESS")
-
-        if isinstance(data, list):
-
-            print("📈 CANDLE COUNT:", len(data))
-
-            if data:
-
-                print()
-                print("🕯️ FIRST CANDLE:")
-                print(data[0])
-
-                print()
-                print("🕯️ LAST CANDLE:")
-                print(data[-1])
-
-            return True
-
-        print()
-        print("⚠️ KLINE RESPONSE IS NOT LIST")
-
-        return False
-
-    except Exception as e:
-
-        print()
-        print("❌ KLINE TEST FAILED")
-        print("EXACT ERROR:")
-        print(repr(e))
-
-        return False
-
-
-# =========================================================
-# RAW KLINE ALTERNATIVE DIAGNOSTIC
-# =========================================================
-
-def raw_endpoint_test(symbol):
-
-    print()
-    print("=" * 70)
-    print("3️⃣ RAW FUTURES ENDPOINT DIAGNOSTIC")
-    print("=" * 70)
-
-    candidates = [
-
-        (
-            "/r/fapi/v1/klines",
-            {
-                "symbol": symbol,
-                "interval": "5m",
-                "limit": 10,
-            },
-        ),
-
-        (
-            "/fapi/v1/klines",
-            {
-                "symbol": symbol,
-                "interval": "5m",
-                "limit": 10,
-            },
-        ),
-
-    ]
-
-    for path, params in candidates:
-
-        print()
-        print("-" * 70)
-        print("TEST URL:")
-        print(API_BASE + path)
-        print("PARAMS:", params)
-
-        try:
-
-            r = session.get(
-                API_BASE + path,
-                params=params,
-                timeout=TIMEOUT,
-            )
-
-            print("HTTP:", r.status_code)
-            print("CONTENT-TYPE:",
-                  r.headers.get("content-type"))
-
-            print("BODY:")
-            print(r.text[:2000])
-
-        except Exception as e:
-
-            print("ERROR:")
-            print(repr(e))
-
-
-# =========================================================
-# BALANCE TEST
-# =========================================================
-
-def test_balance():
-
-    print()
-    print("=" * 70)
-    print("4️⃣ FUTURES BALANCE TEST")
-    print("=" * 70)
-
-    if not API_KEY or not API_SECRET:
-
-        print("❌ API KEY / SECRET NOT FOUND")
-
-        return False
-
-    print("🔑 API KEY: PRESENT")
-    print("🔐 API SECRET: PRESENT")
-
-    try:
-
-        data = signed_request(
-            "GET",
-            "balance",
-        )
-
-        print()
-
-        if isinstance(data, list):
-
-            print("💰 BALANCE ASSETS:")
-
-            for item in data:
-
-                asset = item.get("asset", "")
-                balance = item.get("balance", "")
-                available = item.get(
-                    "availableBalance",
-                    "",
-                )
-
-                if asset in [
-                    "USDT",
-                    "USDC",
-                    "BUSD",
-                ]:
-
-                    print(
-                        f"{asset}: "
-                        f"balance={balance} "
-                        f"available={available}"
-                    )
-
-            return True
-
-        print("⚠️ Unexpected balance format")
-
-        return False
-
-    except Exception as e:
-
-        print()
-        print("❌ BALANCE TEST FAILED")
-        print(repr(e))
-
-        return False
-
-
-# =========================================================
-# SERVER TIME TEST
-# =========================================================
-
-def test_server_time():
-
-    print()
-    print("=" * 70)
-    print("5️⃣ FUTURES SERVER TIME TEST")
-    print("=" * 70)
-
-    try:
-
-        data = public_request(
+        data = public_get(
             "time"
         )
 
-        print()
-        print("🕐 SERVER RESPONSE:")
-        print(data)
-
-        if isinstance(data, dict):
-
-            server_time = data.get(
-                "serverTime"
-            )
-
-            if server_time:
-
-                local_ms = int(
-                    time.time() * 1000
-                )
-
-                diff = (
-                    server_time -
-                    local_ms
-                )
-
-                print()
-                print(
-                    "⏱️ SERVER-LOCAL DIFF:",
-                    diff,
-                    "ms"
-                )
-
-        return True
+        return bool(
+            data.get("serverTime")
+        )
 
     except Exception as e:
 
-        print()
-        print("❌ SERVER TIME FAILED")
-        print(repr(e))
+        print(
+            "Server error:",
+            e
+        )
 
         return False
 
 
 # =========================================================
-# TELEGRAM REPORT
+# SYMBOLS
 # =========================================================
 
-def send_report(
-    symbol,
-    kline_ok,
-    balance_ok,
-    server_ok,
+def get_symbols():
+
+    data = public_get(
+        "exchangeInfo"
+    )
+
+    result = []
+
+    for item in data.get(
+        "symbols",
+        []
+    ):
+
+        symbol = str(
+            item.get(
+                "symbol",
+                ""
+            )
+        ).upper()
+
+        symbol = (
+            symbol
+            .replace("_", "")
+            .replace("-", "")
+            .replace("/", "")
+        )
+
+        if not symbol.endswith(
+            "USDT"
+        ):
+            continue
+
+        status = str(
+            item.get(
+                "status",
+                "TRADING"
+            )
+        ).upper()
+
+        if status not in (
+            "TRADING",
+            "ACTIVE",
+            "ENABLED",
+            "1",
+        ):
+            continue
+
+        result.append(
+            symbol
+        )
+
+    return list(
+        dict.fromkeys(result)
+    )
+
+
+# =========================================================
+# KLINES
+# =========================================================
+
+def get_klines(symbol):
+
+    data = public_get(
+        "klines",
+        {
+            "symbol": symbol,
+            "interval": INTERVAL,
+            "limit": KLINE_LIMIT,
+        }
+    )
+
+    if not isinstance(
+        data,
+        list
+    ):
+
+        return None
+
+    if len(data) < 60:
+
+        return None
+
+    candles = []
+
+    for x in data:
+
+        candles.append({
+            "open": float(x[1]),
+            "high": float(x[2]),
+            "low": float(x[3]),
+            "close": float(x[4]),
+            "volume": float(x[5]),
+        })
+
+    return candles
+
+
+# =========================================================
+# MIDPOINT
+# =========================================================
+
+def midpoint(
+    candles,
+    period,
+    end=None
 ):
 
-    status = (
-        "✅"
-        if kline_ok
-        else "❌"
+    if end is None:
+        end = len(candles)
+
+    if end < period:
+        return None
+
+    section = candles[
+        end - period:end
+    ]
+
+    high = max(
+        x["high"]
+        for x in section
     )
 
-    balance_status = (
-        "✅"
-        if balance_ok
-        else "❌"
+    low = min(
+        x["low"]
+        for x in section
     )
 
-    server_status = (
-        "✅"
-        if server_ok
-        else "❌"
+    return (
+        high + low
+    ) / 2
+
+
+# =========================================================
+# ICHIMOKU
+# =========================================================
+
+def calculate(candles):
+
+    # Use CLOSED candle
+    i = len(candles) - 2
+
+    previous = i - 1
+
+    tenkan = midpoint(
+        candles,
+        TENKAN,
+        i + 1
     )
 
-    message = f"""
-🧪 ATI FUTURES V7.5 DIAGNOSTIC
+    kijun = midpoint(
+        candles,
+        KIJUN,
+        i + 1
+    )
 
-📡 TABDEAL FUTURES
-⏱️ TIMEFRAME: 5m
+    span_b = midpoint(
+        candles,
+        SENKOU_B,
+        i + 1
+    )
 
-🎯 TEST SYMBOL:
-{symbol}
+    old_tenkan = midpoint(
+        candles,
+        TENKAN,
+        previous + 1
+    )
 
-{status} KLINE TEST
-{balance_status} BALANCE TEST
-{server_status} SERVER TIME
+    old_kijun = midpoint(
+        candles,
+        KIJUN,
+        previous + 1
+    )
 
-🔒 REAL TRADING: OFF
-🚫 NO ORDERS WILL BE PLACED
+    if None in (
+        tenkan,
+        kijun,
+        span_b,
+        old_tenkan,
+        old_kijun,
+    ):
 
-🕐 {utc_now()}
-"""
+        return None
 
-    telegram(message)
+    span_a = (
+        tenkan + kijun
+    ) / 2
+
+    cloud_top = max(
+        span_a,
+        span_b
+    )
+
+    cloud_bottom = min(
+        span_a,
+        span_b
+    )
+
+    candle = candles[i]
+
+    price = candle["close"]
+
+    bullish = (
+        candle["close"]
+        >
+        candle["open"]
+    )
+
+    bearish = (
+        candle["close"]
+        <
+        candle["open"]
+    )
+
+    volume_avg = sum(
+        x["volume"]
+        for x in candles[
+            i - 20:i
+        ]
+    ) / 20
+
+    volume_ok = (
+        candle["volume"]
+        >=
+        volume_avg * 0.8
+    )
+
+    bullish_cross = (
+        old_tenkan <= old_kijun
+        and
+        tenkan > kijun
+    )
+
+    bearish_cross = (
+        old_tenkan >= old_kijun
+        and
+        tenkan < kijun
+    )
+
+    distance = (
+        abs(price - kijun)
+        /
+        kijun
+        *
+        100
+    )
+
+    # =====================================================
+    # BUY SCORE
+    # =====================================================
+
+    buy = 0
+
+    if price > cloud_top:
+        buy += 2.5
+
+    elif price > cloud_bottom:
+        buy += 1.5
+
+    if tenkan > kijun:
+        buy += 1.5
+
+    if span_a > span_b:
+        buy += 1.0
+
+    if bullish_cross:
+        buy += 2.0
+
+    if bullish:
+        buy += 0.5
+
+    if volume_ok:
+        buy += 0.5
+
+    # =====================================================
+    # SELL SCORE
+    # =====================================================
+
+    sell = 0
+
+    if price < cloud_bottom:
+        sell += 2.5
+
+    elif price < cloud_top:
+        sell += 1.5
+
+    if tenkan < kijun:
+        sell += 1.5
+
+    if span_a < span_b:
+        sell += 1.0
+
+    if bearish_cross:
+        sell += 2.0
+
+    if bearish:
+        sell += 0.5
+
+    if volume_ok:
+        sell += 0.5
+
+    # =====================================================
+    # KIJUN DISTANCE
+    # =====================================================
+
+    if distance > MAX_KIJUN_DISTANCE:
+
+        return {
+            "signal": None,
+            "reason": "far_kijun",
+        }
+
+    # =====================================================
+    # SIGNAL
+    # =====================================================
+
+    if buy >= MIN_SCORE and buy > sell:
+
+        return {
+            "signal": "BUY",
+            "score": buy,
+            "price": price,
+            "tenkan": tenkan,
+            "kijun": kijun,
+            "cloud_top": cloud_top,
+            "cloud_bottom": cloud_bottom,
+            "distance": distance,
+            "volume_ok": volume_ok,
+            "cross": bullish_cross,
+        }
+
+    if sell >= MIN_SCORE and sell > buy:
+
+        return {
+            "signal": "SELL",
+            "score": sell,
+            "price": price,
+            "tenkan": tenkan,
+            "kijun": kijun,
+            "cloud_top": cloud_top,
+            "cloud_bottom": cloud_bottom,
+            "distance": distance,
+            "volume_ok": volume_ok,
+            "cross": bearish_cross,
+        }
+
+    return {
+        "signal": None,
+        "buy": buy,
+        "sell": sell,
+    }
+
+
+# =========================================================
+# ANALYZE
+# =========================================================
+
+def analyze(symbol):
+
+    try:
+
+        candles = get_klines(
+            symbol
+        )
+
+        if not candles:
+
+            return {
+                "symbol": symbol,
+                "status": "error",
+            }
+
+        result = calculate(
+            candles
+        )
+
+        if not result:
+
+            return {
+                "symbol": symbol,
+                "status": "error",
+            }
+
+        if result.get(
+            "signal"
+        ):
+
+            return {
+                "symbol": symbol,
+                "status": "signal",
+                **result,
+            }
+
+        return {
+            "symbol": symbol,
+            "status": "no_signal",
+            **result,
+        }
+
+    except Exception as e:
+
+        return {
+            "symbol": symbol,
+            "status": "error",
+            "error": str(e)[:300],
+        }
+
+
+# =========================================================
+# SCAN
+# =========================================================
+
+def scan(symbols):
+
+    start = time.time()
+
+    results = []
+
+    with ThreadPoolExecutor(
+        max_workers=WORKERS
+    ) as executor:
+
+        jobs = {
+            executor.submit(
+                analyze,
+                s
+            ): s
+            for s in symbols
+        }
+
+        for future in as_completed(
+            jobs
+        ):
+
+            try:
+
+                results.append(
+                    future.result()
+                )
+
+            except Exception as e:
+
+                results.append({
+                    "symbol": jobs[future],
+                    "status": "error",
+                    "error": str(e),
+                })
+
+    return (
+        results,
+        time.time() - start
+    )
 
 
 # =========================================================
@@ -673,150 +599,256 @@ def send_report(
 def main():
 
     print()
-    print("=" * 70)
-    print("💓 ATI FUTURES V7.5")
-    print("🔎 FULL CONNECTION DIAGNOSTIC")
-    print("=" * 70)
+    print("=" * 65)
+    print("💓 ATI FUTURES V7.6")
+    print("⚡ ICHIMOKU 5M SIGNAL SCANNER")
+    print("=" * 65)
 
-    print()
-    print("📡 API:", API_BASE)
-    print("📊 PUBLIC:", PUBLIC_BASE)
-    print("🔐 PRIVATE:", PRIVATE_BASE)
-    print("⏱️ TIMEFRAME:", INTERVAL)
-    print("🔒 REAL TRADING:", LIVE_TRADING)
-    print("🕐", utc_now())
+    print(
+        "☁️ Ichimoku: 9 / 26 / 52"
+    )
+
+    print(
+        "🎯 Minimum score:",
+        MIN_SCORE
+    )
+
+    print(
+        "📏 Max Kijun distance:",
+        MAX_KIJUN_DISTANCE,
+        "%"
+    )
+
+    print(
+        "🕐",
+        now()
+    )
 
     telegram(
-        f"""
-💓 ATI FUTURES V7.5 START
+        f"""💓 ATI FUTURES V7.6
 
-🔎 FULL API DIAGNOSTIC
+⚡ ICHIMOKU 5M
+☁️ 9 / 26 / 52
+
+🎯 SIGNAL SCANNER ACTIVE
+
 📡 TABDEAL FUTURES
-⏱️ 5m
-🔒 REAL TRADING: OFF
-🚫 NO ORDERS
 
-🕐 {utc_now()}
-"""
+🕐 {now()}"""
     )
 
     # -----------------------------------------------------
-    # SERVER TIME
+    # SERVER
     # -----------------------------------------------------
 
-    server_ok = test_server_time()
+    if not server_ok():
 
-    # -----------------------------------------------------
-    # EXCHANGE INFO
-    # -----------------------------------------------------
-
-    try:
-
-        exchange_info = get_exchange_info()
-
-    except Exception as e:
-
-        print()
-        print("💥 EXCHANGE INFO FAILED")
-        print(repr(e))
+        print(
+            "🛑 API OFFLINE"
+        )
 
         telegram(
-            f"""
-❌ ATI FUTURES V7.5
+            f"""🛑 ATI V7.6
 
-EXCHANGE INFO FAILED
+❌ FUTURES API OFFLINE
 
-{repr(e)}
+🚫 NO SIGNAL
+🚫 NO ORDER
 
-🕐 {utc_now()}
-"""
+🕐 {now()}"""
         )
 
         return
 
     # -----------------------------------------------------
-    # SYMBOL
+    # SYMBOLS
     # -----------------------------------------------------
 
     try:
 
-        symbol = choose_test_symbol(
-            exchange_info
-        )
+        symbols = get_symbols()
 
     except Exception as e:
 
-        print()
-        print("💥 SYMBOL SELECTION FAILED")
-        print(repr(e))
+        print(
+            "❌ SYMBOL ERROR:",
+            e
+        )
+
+        telegram(
+            f"""🛑 ATI V7.6
+
+❌ MARKET DATA ERROR
+
+🚫 NO ORDER
+
+{str(e)[:500]}"""
+        )
 
         return
 
-    # -----------------------------------------------------
-    # KLINE
-    # -----------------------------------------------------
+    symbols = symbols[
+        :MAX_SYMBOLS
+    ]
 
-    kline_ok = test_kline(
-        symbol
+    print(
+        "📊 Markets:",
+        len(symbols)
     )
 
     # -----------------------------------------------------
-    # RAW ENDPOINT TEST
+    # SCAN
     # -----------------------------------------------------
 
-    if not kline_ok:
+    results, elapsed = scan(
+        symbols
+    )
 
-        raw_endpoint_test(
-            symbol
+    good = [
+        x for x in results
+        if x["status"] != "error"
+    ]
+
+    errors = [
+        x for x in results
+        if x["status"] == "error"
+    ]
+
+    signals = [
+        x for x in results
+        if x["status"] == "signal"
+    ]
+
+    print()
+    print(
+        "📡 Completed:",
+        len(results),
+        "/",
+        len(symbols)
+    )
+
+    print(
+        "📈 Klines OK:",
+        len(good)
+    )
+
+    print(
+        "🔥 Signals:",
+        len(signals)
+    )
+
+    print(
+        "❌ Errors:",
+        len(errors)
+    )
+
+    print(
+        "⏱️ Scan:",
+        f"{elapsed:.2f}s"
+    )
+
+    # -----------------------------------------------------
+    # API ERROR
+    # -----------------------------------------------------
+
+    if errors:
+
+        print(
+            "⚠️ API errors detected"
+        )
+
+        sample = errors[0]
+
+        print(
+            "Sample:",
+            sample
         )
 
     # -----------------------------------------------------
-    # BALANCE
+    # SIGNALS
     # -----------------------------------------------------
 
-    balance_ok = test_balance()
-
-    # -----------------------------------------------------
-    # TELEGRAM REPORT
-    # -----------------------------------------------------
-
-    send_report(
-        symbol,
-        kline_ok,
-        balance_ok,
-        server_ok,
+    signals.sort(
+        key=lambda x:
+        x.get(
+            "score",
+            0
+        ),
+        reverse=True,
     )
 
-    # -----------------------------------------------------
-    # FINAL
-    # -----------------------------------------------------
+    if signals:
 
-    print()
-    print("=" * 70)
-    print("🏁 V7.5 DIAGNOSTIC FINISHED")
-    print("=" * 70)
+        # Send up to 5 strongest signals
+        top = signals[:5]
 
-    print()
-    print("🎯 SYMBOL:", symbol)
-    print("📈 KLINE:", "OK" if kline_ok else "FAILED")
-    print("💰 BALANCE:", "OK" if balance_ok else "FAILED")
-    print("🕐 SERVER TIME:", "OK" if server_ok else "FAILED")
+        text = (
+            "🔥 ATI FUTURES V7.6\n\n"
+            "⚡ ICHIMOKU 5M SIGNALS\n\n"
+        )
 
-    if kline_ok:
+        for i, s in enumerate(
+            top,
+            1
+        ):
+
+            text += (
+                f"{i}️⃣ "
+                f"{s['symbol']}\n"
+                f"📌 {s['signal']}\n"
+                f"⭐ Score: "
+                f"{s['score']:.1f}\n"
+                f"💰 Price: "
+                f"{s['price']}\n"
+                f"📏 Kijun: "
+                f"{s['distance']:.2f}%\n"
+                f"☁️ Cloud: "
+                f"{s['cloud_bottom']:.6g}"
+                f" - "
+                f"{s['cloud_top']:.6g}\n"
+                f"🔀 TK Cross: "
+                f"{'YES' if s['cross'] else 'NO'}\n"
+                f"📊 Volume: "
+                f"{'OK' if s['volume_ok'] else 'LOW'}\n\n"
+            )
+
+        text += (
+            f"📊 Markets: {len(symbols)}\n"
+            f"⏱️ Scan: {elapsed:.2f}s\n"
+            f"🕐 {now()}"
+        )
 
         print()
-        print("🎉 KLINE ENDPOINT IS WORKING")
-        print("➡️ Next version can use the scanner.")
+        print(text)
+
+        telegram(
+            text
+        )
 
     else:
 
-        print()
-        print("🚨 KLINE ENDPOINT IS NOT WORKING")
-        print("➡️ EXACT HTTP RESPONSE ABOVE MUST BE USED")
-        print("➡️ DO NOT ENABLE REAL TRADING YET.")
+        text = f"""💓 ATI FUTURES V7.6
 
-    print()
-    print("🕐", utc_now())
+⚡ ICHIMOKU 5M
+
+📊 Markets: {len(symbols)}
+📈 Klines OK: {len(good)}
+🔥 Signals: 0
+❌ Errors: {len(errors)}
+
+⏱️ Scan: {elapsed:.2f}s
+
+☁️ NO SIGNAL THIS CYCLE
+
+🕐 {now()}"""
+
+        print(
+            text
+        )
+
+        telegram(
+            text
+        )
 
 
 if __name__ == "__main__":
