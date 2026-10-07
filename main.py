@@ -3,21 +3,23 @@ import time
 import hmac
 import hashlib
 import json
-from decimal import Decimal, ROUND_DOWN
 from urllib.parse import urlencode
 
 import requests
 
 
 # ============================================================
-# ATI FUTURES BOT
-# TABDEAL FUTURES REST
+# ATI FUTURES - TABDEAL
 #
-# GET /r/fapi/
-# POST /fapi/
-# DELETE /fapi/
+# Official Tabdeal Futures structure:
 #
-# NO tabdeal.future import
+# GET:
+#   https://api1.tabdeal.org/r/fapi/
+#
+# POST / DELETE:
+#   https://api1.tabdeal.org/fapi/
+#
+# No tabdeal.future import
 # ============================================================
 
 
@@ -48,25 +50,10 @@ TELEGRAM_CHAT_ID = os.getenv(
 ).strip()
 
 
-LIVE_TRADING = (
-    os.getenv(
-        "LIVE_TRADING",
-        "false"
-    ).lower()
-    == "true"
-)
-
-
 SYMBOL = os.getenv(
     "FUTURES_SYMBOL",
     "BTCUSDT"
-).upper()
-
-
-INTERVAL = os.getenv(
-    "FUTURES_INTERVAL",
-    "5m"
-)
+).upper().strip()
 
 
 LEVERAGE = int(
@@ -77,27 +64,18 @@ LEVERAGE = int(
 )
 
 
-ORDER_USDT = Decimal(
-    os.getenv(
-        "FUTURES_ORDER_USDT",
-        "2"
-    )
+ORDER_USDT = os.getenv(
+    "FUTURES_ORDER_USDT",
+    "2"
 )
 
 
-TP_PERCENT = Decimal(
+LIVE_TRADING = (
     os.getenv(
-        "FUTURES_TP_PERCENT",
-        "2"
-    )
-)
-
-
-SL_PERCENT = Decimal(
-    os.getenv(
-        "FUTURES_SL_PERCENT",
-        "1"
-    )
+        "LIVE_TRADING",
+        "false"
+    ).lower()
+    == "true"
 )
 
 
@@ -109,18 +87,14 @@ RECV_WINDOW = int(
 )
 
 
-# ============================================================
-# TABDEAL FUTURES BASE URL
-# ============================================================
-
 BASE_URL = "https://api1.tabdeal.org"
 
 READ_BASE = (
-    f"{BASE_URL}/r/fapi/"
+    BASE_URL + "/r/fapi/"
 )
 
 WRITE_BASE = (
-    f"{BASE_URL}/fapi/"
+    BASE_URL + "/fapi/"
 )
 
 
@@ -142,7 +116,7 @@ session.headers.update({
 
 def telegram(message):
 
-    print(message)
+    print("\n" + message)
 
     if not TELEGRAM_BOT_TOKEN:
         return
@@ -154,8 +128,8 @@ def telegram(message):
 
         url = (
             "https://api.telegram.org/bot"
-            f"{TELEGRAM_BOT_TOKEN}"
-            "/sendMessage"
+            + TELEGRAM_BOT_TOKEN
+            + "/sendMessage"
         )
 
         response = session.post(
@@ -171,7 +145,7 @@ def telegram(message):
 
             print(
                 "TELEGRAM ERROR:",
-                response.text
+                response.text[:1000]
             )
 
     except Exception as exc:
@@ -183,12 +157,15 @@ def telegram(message):
 
 
 # ============================================================
-# RESPONSE PARSER
+# RESPONSE HANDLER
 # ============================================================
 
-def parse_response(response):
+def handle_response(response):
 
-    text = response.text
+    print(
+        "HTTP STATUS:",
+        response.status_code
+    )
 
     try:
 
@@ -203,25 +180,20 @@ def parse_response(response):
 
         if isinstance(data, dict):
 
-            code = data.get(
-                "code",
-                ""
-            )
-
-            msg = data.get(
-                "msg",
-                data
-            )
-
             raise RuntimeError(
-                f"HTTP {response.status_code} | "
-                f"code={code} | "
-                f"msg={msg}"
+                "HTTP "
+                + str(response.status_code)
+                + " | code="
+                + str(data.get("code", ""))
+                + " | msg="
+                + str(data.get("msg", data))
             )
 
         raise RuntimeError(
-            f"HTTP {response.status_code}: "
-            f"{text[:2000]}"
+            "HTTP "
+            + str(response.status_code)
+            + ": "
+            + response.text[:2000]
         )
 
 
@@ -234,15 +206,30 @@ def parse_response(response):
 # ============================================================
 
 def public_get(
-    path,
+    endpoint,
     params=None
 ):
 
-    url = READ_BASE + path
+    url = (
+        READ_BASE
+        + endpoint
+    )
 
     print(
-        f"GET {url}"
+        "\n➡️ PUBLIC GET:"
     )
+
+    print(
+        url
+    )
+
+    if params:
+
+        print(
+            "PARAMS:",
+            params
+        )
+
 
     response = session.get(
         url,
@@ -250,7 +237,8 @@ def public_get(
         timeout=25,
     )
 
-    return parse_response(
+
+    return handle_response(
         response
     )
 
@@ -265,20 +253,23 @@ def public_get(
 
 def signed_request(
     method,
-    path,
+    endpoint,
     params=None
 ):
 
     if not API_KEY:
 
         raise RuntimeError(
-            "API KEY is empty."
+            "TABDIL_API_KEY / "
+            "TABDEAL_API_KEY is missing."
         )
+
 
     if not API_SECRET:
 
         raise RuntimeError(
-            "API SECRET is empty."
+            "TABDIL_API_SECRET / "
+            "TABDEAL_API_SECRET is missing."
         )
 
 
@@ -291,20 +282,17 @@ def signed_request(
         )
 
 
-    # Timestamp
-    data["timestamp"] = int(
-        time.time() * 1000
+    # Same signing concept as official Client
+    data["timestamp"] = (
+        int(time.time() * 1000)
     )
 
-
-    # Receive window
     data["recvWindow"] = (
         RECV_WINDOW
     )
 
 
-    # Build signature
-    query_string = urlencode(
+    query = urlencode(
         data
     )
 
@@ -313,20 +301,20 @@ def signed_request(
         API_SECRET.encode(
             "utf-8"
         ),
-        query_string.encode(
+        query.encode(
             "utf-8"
         ),
         hashlib.sha256
     ).hexdigest()
 
 
-    data["signature"] = signature
+    data["signature"] = (
+        signature
+    )
 
 
     headers = {
-        "X-MBX-APIKEY": API_KEY,
-        "Content-Type":
-            "application/x-www-form-urlencoded",
+        "X-MBX-APIKEY": API_KEY
     }
 
 
@@ -340,11 +328,16 @@ def signed_request(
     if method == "GET":
 
         url = (
-            READ_BASE + path
+            READ_BASE
+            + endpoint
         )
 
         print(
-            f"GET {url}"
+            "\n🔐 SIGNED GET:"
+        )
+
+        print(
+            url
         )
 
         response = session.get(
@@ -362,11 +355,16 @@ def signed_request(
     elif method == "POST":
 
         url = (
-            WRITE_BASE + path
+            WRITE_BASE
+            + endpoint
         )
 
         print(
-            f"POST {url}"
+            "\n🔐 SIGNED POST:"
+        )
+
+        print(
+            url
         )
 
         response = session.post(
@@ -384,11 +382,16 @@ def signed_request(
     elif method == "DELETE":
 
         url = (
-            WRITE_BASE + path
+            WRITE_BASE
+            + endpoint
         )
 
         print(
-            f"DELETE {url}"
+            "\n🔐 SIGNED DELETE:"
+        )
+
+        print(
+            url
         )
 
         response = session.delete(
@@ -402,17 +405,18 @@ def signed_request(
     else:
 
         raise RuntimeError(
-            f"Unsupported HTTP method: {method}"
+            "Unsupported method: "
+            + method
         )
 
 
-    return parse_response(
+    return handle_response(
         response
     )
 
 
 # ============================================================
-# PUBLIC FUTURES API
+# PUBLIC FUTURES
 # ============================================================
 
 def futures_ping():
@@ -429,10 +433,32 @@ def futures_time():
     )
 
 
-def exchange_info():
+def futures_exchange_info(
+    symbol
+):
+
+    # IMPORTANT:
+    # Official Future.exchange_info()
+    # supports direct symbol parameter.
 
     return public_get(
-        "v1/exchangeInfo"
+        "v1/exchangeInfo",
+        {
+            "symbol": symbol
+        }
+    )
+
+
+def futures_depth(
+    symbol
+):
+
+    return public_get(
+        "v1/depth",
+        {
+            "symbol": symbol,
+            "limit": 20
+        }
     )
 
 
@@ -440,7 +466,7 @@ def exchange_info():
 # ACCOUNT
 # ============================================================
 
-def get_account():
+def futures_account():
 
     return signed_request(
         "GET",
@@ -448,7 +474,7 @@ def get_account():
     )
 
 
-def get_balance():
+def futures_balance():
 
     return signed_request(
         "GET",
@@ -456,41 +482,33 @@ def get_balance():
     )
 
 
-def get_positions(
-    symbol=None
+# ============================================================
+# POSITION
+# ============================================================
+
+def futures_positions(
+    symbol
 ):
-
-    params = {}
-
-    if symbol:
-
-        params["symbol"] = (
-            symbol
-        )
 
     return signed_request(
         "GET",
         "v1/position",
-        params
+        {
+            "symbol": symbol
+        }
     )
 
 
-def get_position_risk(
-    symbol=None
+def futures_position_risk(
+    symbol
 ):
-
-    params = {}
-
-    if symbol:
-
-        params["symbol"] = (
-            symbol
-        )
 
     return signed_request(
         "GET",
         "v3/positionRisk",
-        params
+        {
+            "symbol": symbol
+        }
     )
 
 
@@ -498,7 +516,7 @@ def get_position_risk(
 # LEVERAGE
 # ============================================================
 
-def get_leverage(
+def futures_get_leverage(
     symbol
 ):
 
@@ -511,7 +529,7 @@ def get_leverage(
     )
 
 
-def change_leverage(
+def futures_set_leverage(
     symbol,
     leverage
 ):
@@ -521,563 +539,84 @@ def change_leverage(
         "v1/leverage",
         {
             "symbol": symbol,
-            "leverage": leverage,
+            "leverage": leverage
         }
     )
 
 
 # ============================================================
-# ORDER
+# POSITION PARSER
 # ============================================================
 
-def new_market_order(
-    symbol,
-    side,
-    quantity
-):
-
-    return signed_request(
-        "POST",
-        "v1/order",
-        {
-            "symbol": symbol,
-            "side": side,
-            "type": "MARKET",
-            "quantity": quantity,
-        }
-    )
-
-
-# ============================================================
-# SL / TP
-# ============================================================
-
-def set_position_sl_tp(
-    position_id,
-    symbol,
-    sl_price,
-    tp_price
-):
-
-    return signed_request(
-        "POST",
-        "v1/positionSlTp",
-        {
-            "positionId": position_id,
-            "symbol": symbol,
-            "slPrice": sl_price,
-            "tpPrice": tp_price,
-        }
-    )
-
-
-# ============================================================
-# DECIMAL HELPERS
-# ============================================================
-
-def decimal_from(
-    value,
-    default="0"
-):
-
-    try:
-
-        return Decimal(
-            str(value)
-        )
-
-    except Exception:
-
-        return Decimal(
-            default
-        )
-
-
-def decimal_string(
-    value
-):
-
-    value = Decimal(
-        value
-    )
-
-    result = format(
-        value,
-        "f"
-    )
-
-    if "." in result:
-
-        result = (
-            result
-            .rstrip("0")
-            .rstrip(".")
-        )
-
-    return result
-
-
-def floor_to_step(
-    value,
-    step
-):
-
-    if step <= 0:
-
-        return value
-
-    units = (
-        value / step
-    ).to_integral_value(
-        rounding=ROUND_DOWN
-    )
-
-    return units * step
-
-
-# ============================================================
-# EXCHANGE INFO PARSER
-# ============================================================
-
-def extract_symbols_container(
-    info
-):
-
-    """
-    Handles all likely Tabdeal response wrappers.
-
-    Possible forms:
-
-    {
-        "symbols": [...]
-    }
-
-    {
-        "data": {
-            "symbols": [...]
-        }
-    }
-
-    {
-        "result": {
-            "symbols": [...]
-        }
-    }
-
-    {
-        "data": [...]
-    }
-
-    {
-        "result": [...]
-    }
-
-    Or direct list.
-    """
-
-    if isinstance(
-        info,
-        list
-    ):
-
-        return info
-
-
-    if not isinstance(
-        info,
-        dict
-    ):
-
-        return []
-
-
-    # symbols directly
-    if isinstance(
-        info.get("symbols"),
-        list
-    ):
-
-        return info[
-            "symbols"
-        ]
-
-
-    # data
-    data = info.get(
-        "data"
-    )
-
-    if isinstance(
-        data,
-        list
-    ):
-
-        return data
-
-
-    if isinstance(
-        data,
-        dict
-    ):
-
-        if isinstance(
-            data.get("symbols"),
-            list
-        ):
-
-            return data[
-                "symbols"
-            ]
-
-
-    # result
-    result = info.get(
-        "result"
-    )
-
-    if isinstance(
-        result,
-        list
-    ):
-
-        return result
-
-
-    if isinstance(
-        result,
-        dict
-    ):
-
-        if isinstance(
-            result.get("symbols"),
-            list
-        ):
-
-            return result[
-                "symbols"
-            ]
-
-
-    return []
-
-
-def find_symbol_info(
-    info,
+def find_active_position(
+    data,
     symbol
 ):
 
-    symbol = (
-        str(symbol)
-        .upper()
-        .strip()
-    )
-
-
-    symbols = (
-        extract_symbols_container(
-            info
-        )
-    )
-
-
-    print(
-        "EXCHANGE SYMBOL COUNT:",
-        len(symbols)
-    )
-
-
-    # Exact symbol
-    for item in symbols:
-
-        if not isinstance(
-            item,
-            dict
-        ):
-            continue
-
-        item_symbol = str(
-            item.get(
-                "symbol",
-                ""
-            )
-        ).upper().strip()
-
-
-        if item_symbol == symbol:
-
-            return item
-
-
-    return None
-
-
-# ============================================================
-# SYMBOL DIAGNOSTIC
-# ============================================================
-
-def print_symbol_diagnostic(
-    info
-):
-
-    symbols = (
-        extract_symbols_container(
-            info
-        )
-    )
-
-
-    print(
-        "TOTAL SYMBOLS:",
-        len(symbols)
-    )
-
-
-    if not symbols:
-
-        print(
-            "EXCHANGE INFO RAW:"
-        )
-
-        print(
-            json.dumps(
-                info,
-                ensure_ascii=False
-            )[:8000]
-        )
-
-        return
-
-
-    names = []
-
-
-    for item in symbols:
-
-        if not isinstance(
-            item,
-            dict
-        ):
-            continue
-
-        name = item.get(
-            "symbol"
-        )
-
-        if name:
-
-            names.append(
-                str(name)
-            )
-
-
-    print(
-        "FIRST SYMBOLS:"
-    )
-
-    print(
-        names[:100]
-    )
-
-
-    # Find BTC-like names
-    btc_names = [
-        x for x in names
-        if "BTC" in x.upper()
-    ]
-
-
-    if btc_names:
-
-        print(
-            "BTC SYMBOLS:"
-        )
-
-        print(
-            btc_names[:50]
-        )
-
-
-# ============================================================
-# QUANTITY RULES
-# ============================================================
-
-def get_quantity_rules(
-    symbol_info
-):
-
-    step_size = Decimal(
-        "0.000001"
-    )
-
-    min_qty = Decimal(
-        "0"
-    )
-
-
-    if not isinstance(
-        symbol_info,
-        dict
-    ):
-
-        return (
-            step_size,
-            min_qty
-        )
-
-
-    filters = symbol_info.get(
-        "filters",
-        []
-    )
-
-
-    if not isinstance(
-        filters,
-        list
-    ):
-
-        return (
-            step_size,
-            min_qty
-        )
-
-
-    for item in filters:
-
-        if not isinstance(
-            item,
-            dict
-        ):
-            continue
-
-
-        filter_type = str(
-            item.get(
-                "filterType",
-                ""
-            )
-        ).upper()
-
-
-        if filter_type in (
-            "LOT_SIZE",
-            "MARKET_LOT_SIZE"
-        ):
-
-            if item.get(
-                "stepSize"
-            ) is not None:
-
-                step_size = (
-                    decimal_from(
-                        item[
-                            "stepSize"
-                        ],
-                        "0.000001"
-                    )
-                )
-
-
-            if item.get(
-                "minQty"
-            ) is not None:
-
-                min_qty = (
-                    decimal_from(
-                        item[
-                            "minQty"
-                        ],
-                        "0"
-                    )
-                )
-
-
-            break
-
-
-    return (
-        step_size,
-        min_qty
-    )
-
-
-# ============================================================
-# ACTIVE POSITION PARSER
-# ============================================================
-
-def extract_position_list(
-    data
-):
-
     if isinstance(
         data,
         list
     ):
 
-        return data
+        items = data
 
-
-    if not isinstance(
+    elif isinstance(
         data,
         dict
     ):
 
-        return []
+        items = []
 
-
-    for key in (
-        "positions",
-        "data",
-        "result",
-    ):
-
-        value = data.get(
-            key
-        )
-
-
-        if isinstance(
-            value,
-            list
+        for key in (
+            "positions",
+            "data",
+            "result"
         ):
 
-            return value
-
-
-        if isinstance(
-            value,
-            dict
-        ):
-
-            nested = extract_position_list(
-                value
+            value = data.get(
+                key
             )
 
-            if nested:
+            if isinstance(
+                value,
+                list
+            ):
 
-                return nested
+                items = value
+                break
+
+            if isinstance(
+                value,
+                dict
+            ):
+
+                for nested_key in (
+                    "positions",
+                    "data",
+                    "result"
+                ):
+
+                    nested = value.get(
+                        nested_key
+                    )
+
+                    if isinstance(
+                        nested,
+                        list
+                    ):
+
+                        items = nested
+                        break
+
+                if items:
+                    break
+
+    else:
+
+        items = []
 
 
-    return []
-
-
-def extract_active_position(
-    positions,
-    symbol
-):
-
-    symbol = (
-        str(symbol)
-        .upper()
-        .strip()
-    )
-
-
-    items = (
-        extract_position_list(
-            positions
-        )
-    )
+    symbol = symbol.upper()
 
 
     for item in items:
@@ -1094,34 +633,40 @@ def extract_active_position(
                 "symbol",
                 ""
             )
-        ).upper().strip()
+        ).upper()
 
 
         if item_symbol != symbol:
             continue
 
 
-        # Common Futures fields
-        for key in (
+        # Try common position amount fields
+        for field in (
             "positionAmt",
             "amount",
             "quantity",
             "positionQuantity",
-            "size",
+            "size"
         ):
 
-            if key in item:
+            if field in item:
 
-                amount = decimal_from(
-                    item[key]
-                )
+                try:
 
-                if amount != 0:
+                    amount = float(
+                        item[field]
+                    )
 
-                    return item
+                    if amount != 0:
+
+                        return item
+
+                except Exception:
+
+                    pass
 
 
-        # Alternate state
+        # Alternative active/state fields
         state = str(
             item.get(
                 "state",
@@ -1161,9 +706,8 @@ def main():
 
     telegram(
         "💓 ATI FUTURES ALIVE\n"
-        "⚡ API STRUCTURE FIXED\n"
+        "⚡ V2 DIRECT SYMBOL TEST\n"
         f"📡 {SYMBOL}\n"
-        f"⏱ {INTERVAL}\n"
         f"🔧 LEVERAGE: {LEVERAGE}x\n"
         f"💵 ORDER MARGIN: {ORDER_USDT} USDT\n"
         f"🔓 LIVE: {LIVE_TRADING}\n"
@@ -1175,13 +719,13 @@ def main():
     try:
 
         # ====================================================
-        # 1. PING
+        # STEP 1 - PING
         # ====================================================
 
         ping = futures_ping()
 
         print(
-            "✅ PING OK:"
+            "\n✅ FUTURES PING OK"
         )
 
         print(
@@ -1193,7 +737,7 @@ def main():
 
 
         # ====================================================
-        # 2. SERVER TIME
+        # STEP 2 - SERVER TIME
         # ====================================================
 
         server_time = (
@@ -1201,7 +745,7 @@ def main():
         )
 
         print(
-            "✅ SERVER TIME:"
+            "\n✅ FUTURES TIME OK"
         )
 
         print(
@@ -1213,196 +757,243 @@ def main():
 
 
         # ====================================================
-        # 3. EXCHANGE INFO
+        # STEP 3 - DIRECT BTCUSDT EXCHANGE INFO
         # ====================================================
-
-        info = exchange_info()
 
         print(
-            "✅ EXCHANGE INFO RECEIVED"
+            "\n🔎 DIRECT SYMBOL TEST:"
         )
 
-
-        print_symbol_diagnostic(
-            info
+        print(
+            SYMBOL
         )
 
-
-        # ====================================================
-        # 4. FIND SYMBOL
-        # ====================================================
 
         symbol_info = (
-            find_symbol_info(
-                info,
+            futures_exchange_info(
                 SYMBOL
             )
         )
 
 
-        if symbol_info is None:
-
-            telegram(
-                "❌ ATI FUTURES SYMBOL ERROR\n\n"
-                f"Requested: {SYMBOL}\n\n"
-                "ExchangeInfo دریافت شد، "
-                "اما این نماد در پاسخ پیدا نشد.\n\n"
-                "لیست نمادهای BTC در لاگ GitHub چاپ شده است."
-            )
-
-
-            raise RuntimeError(
-                f"Futures symbol not found: "
-                f"{SYMBOL}"
-            )
-
-
         print(
-            "✅ FUTURES SYMBOL FOUND:",
-            SYMBOL
-        )
-
-
-        print(
-            "SYMBOL INFO:"
+            "\n✅ EXCHANGE INFO RESPONSE:"
         )
 
         print(
             json.dumps(
                 symbol_info,
-                ensure_ascii=False
-            )[:6000]
+                ensure_ascii=False,
+                indent=2
+            )[:10000]
         )
 
 
         # ====================================================
-        # 5. AUTH CHECK
+        # IMPORTANT:
+        # Do NOT assume symbols[] exists.
+        # Direct symbol request itself is the test.
+        # ====================================================
+
+        print(
+            "\n✅ DIRECT SYMBOL REQUEST ACCEPTED:"
+        )
+
+        print(
+            SYMBOL
+        )
+
+
+        # ====================================================
+        # STEP 4 - DEPTH TEST
+        # ====================================================
+
+        depth = (
+            futures_depth(
+                SYMBOL
+            )
+        )
+
+
+        print(
+            "\n✅ DEPTH OK:"
+        )
+
+        print(
+            json.dumps(
+                depth,
+                ensure_ascii=False,
+                indent=2
+            )[:8000]
+        )
+
+
+        # ====================================================
+        # STEP 5 - API CREDENTIAL CHECK
         # ====================================================
 
         if not API_KEY:
 
             raise RuntimeError(
-                "TABDIL_API_KEY / "
-                "TABDEAL_API_KEY is missing."
+                "API KEY missing."
             )
 
 
         if not API_SECRET:
 
             raise RuntimeError(
-                "TABDIL_API_SECRET / "
-                "TABDEAL_API_SECRET is missing."
+                "API SECRET missing."
             )
 
 
+        # ====================================================
+        # STEP 6 - ACCOUNT
+        # ====================================================
+
         account = (
-            get_account()
+            futures_account()
         )
 
 
         print(
-            "✅ AUTH SUCCESS"
+            "\n✅ AUTH SUCCESS"
         )
-
 
         print(
             json.dumps(
                 account,
-                ensure_ascii=False
-            )[:5000]
+                ensure_ascii=False,
+                indent=2
+            )[:8000]
         )
 
 
         # ====================================================
-        # 6. BALANCE
+        # STEP 7 - BALANCE
         # ====================================================
 
         balance = (
-            get_balance()
+            futures_balance()
         )
 
 
         print(
-            "💰 FUTURES BALANCE:"
+            "\n💰 FUTURES BALANCE:"
         )
-
 
         print(
             json.dumps(
                 balance,
-                ensure_ascii=False
-            )[:6000]
+                ensure_ascii=False,
+                indent=2
+            )[:8000]
         )
 
 
         # ====================================================
-        # 7. CURRENT POSITION
+        # STEP 8 - POSITION
         # ====================================================
 
         positions = (
-            get_positions(
+            futures_positions(
                 SYMBOL
             )
         )
 
 
         print(
-            "📊 CURRENT POSITIONS:"
+            "\n📊 FUTURES POSITION:"
         )
-
 
         print(
             json.dumps(
                 positions,
-                ensure_ascii=False
-            )[:6000]
+                ensure_ascii=False,
+                indent=2
+            )[:8000]
         )
 
 
-        active_position = (
-            extract_active_position(
+        active = (
+            find_active_position(
                 positions,
                 SYMBOL
             )
         )
 
 
-        if active_position:
+        if active:
 
             telegram(
                 "📌 ATI FUTURES\n"
-                "⚠️ ACTIVE POSITION EXISTS\n"
+                "⚠️ ACTIVE POSITION FOUND\n\n"
                 f"📡 {SYMBOL}\n"
-                "🚫 New entry skipped.\n\n"
-                f"{json.dumps(active_position, ensure_ascii=False)[:2000]}"
+                "🚫 NO NEW ORDER\n\n"
+                + json.dumps(
+                    active,
+                    ensure_ascii=False
+                )[:2000]
             )
-
 
             return
 
 
         # ====================================================
-        # 8. LEVERAGE
+        # STEP 9 - POSITION RISK
         # ====================================================
 
         try:
 
-            current_leverage = (
-                get_leverage(
+            risk = (
+                futures_position_risk(
                     SYMBOL
                 )
             )
 
 
             print(
-                "CURRENT LEVERAGE:"
+                "\n📊 POSITION RISK:"
+            )
+
+            print(
+                json.dumps(
+                    risk,
+                    ensure_ascii=False,
+                    indent=2
+                )[:8000]
+            )
+
+
+        except Exception as exc:
+
+            print(
+                "\nPOSITION RISK WARNING:",
+                repr(exc)
+            )
+
+
+        # ====================================================
+        # STEP 10 - CURRENT LEVERAGE
+        # ====================================================
+
+        try:
+
+            leverage_info = (
+                futures_get_leverage(
+                    SYMBOL
+                )
             )
 
 
             print(
+                "\n🔧 CURRENT LEVERAGE:"
+            )
+
+            print(
                 json.dumps(
-                    current_leverage,
-                    ensure_ascii=False
+                    leverage_info,
+                    ensure_ascii=False,
+                    indent=2
                 )
             )
 
@@ -1410,106 +1001,89 @@ def main():
         except Exception as exc:
 
             print(
-                "LEVERAGE READ WARNING:",
+                "\nLEVERAGE READ WARNING:",
                 repr(exc)
             )
 
 
         # ====================================================
-        # 9. LIVE MODE
+        # STEP 11 - SET LEVERAGE ONLY IF LIVE
         # ====================================================
 
         if LIVE_TRADING:
 
             print(
-                "🔴 LIVE TRADING ENABLED"
+                "\n🔴 LIVE TRADING IS ON"
             )
 
 
-            try:
-
-                leverage_result = (
-                    change_leverage(
-                        SYMBOL,
-                        LEVERAGE
-                    )
+            leverage_result = (
+                futures_set_leverage(
+                    SYMBOL,
+                    LEVERAGE
                 )
+            )
 
 
-                print(
-                    "✅ LEVERAGE SET:"
+            print(
+                "\n✅ LEVERAGE SET:"
+            )
+
+            print(
+                json.dumps(
+                    leverage_result,
+                    ensure_ascii=False,
+                    indent=2
                 )
-
-
-                print(
-                    json.dumps(
-                        leverage_result,
-                        ensure_ascii=False
-                    )
-                )
-
-
-            except Exception as exc:
-
-                print(
-                    "LEVERAGE SET WARNING:",
-                    repr(exc)
-                )
+            )
 
 
         else:
 
             print(
-                "🟢 LIVE TRADING OFF"
+                "\n🟢 LIVE TRADING OFF"
             )
 
 
         # ====================================================
-        # 10. NO AUTO ENTRY YET
-        # ====================================================
-        #
-        # IMPORTANT:
-        # API validation is complete.
-        # We intentionally do not send an order from this
-        # diagnostic version.
-        #
-        # This prevents an accidental real Futures order
-        # while the symbol/API structure is being verified.
+        # FINAL
         # ====================================================
 
         telegram(
-            "✅ ATI FUTURES API OK\n\n"
+            "✅ ATI FUTURES API TEST PASSED\n\n"
             f"📡 SYMBOL: {SYMBOL}\n"
-            f"⏱ INTERVAL: {INTERVAL}\n"
             f"🔧 LEVERAGE: {LEVERAGE}x\n"
-            f"💰 ORDER MARGIN: {ORDER_USDT} USDT\n"
+            f"💵 ORDER MARGIN: {ORDER_USDT} USDT\n"
             f"🔓 LIVE: {LIVE_TRADING}\n\n"
-            "✅ PING OK\n"
-            "✅ SERVER TIME OK\n"
-            "✅ EXCHANGE INFO OK\n"
-            "✅ SYMBOL FOUND\n"
-            "✅ AUTH OK\n"
-            "✅ BALANCE READ OK\n"
-            "✅ POSITION READ OK\n\n"
+            "✅ PING\n"
+            "✅ SERVER TIME\n"
+            "✅ DIRECT EXCHANGE INFO\n"
+            "✅ DEPTH\n"
+            "✅ AUTH\n"
+            "✅ BALANCE\n"
+            "✅ POSITION\n\n"
             "🚫 NO ORDER SENT"
         )
 
 
     except Exception as exc:
 
-        error_message = (
+        error = (
             "❌ ATI FUTURES ERROR\n\n"
-            f"{type(exc).__name__}: {exc}"
+            + type(exc).__name__
+            + ": "
+            + str(exc)
         )
 
 
         print(
-            error_message
+            "\n"
+            + error
         )
 
 
         telegram(
-            error_message
+            error
         )
 
 
