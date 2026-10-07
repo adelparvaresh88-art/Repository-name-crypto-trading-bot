@@ -7,25 +7,13 @@ on:
 
 jobs:
   run-bot:
+
     runs-on: ubuntu-latest
 
-    env:
-      TABDIL_API_KEY: ${{ secrets.TABDIL_API_KEY }}
-      TABDIL_API_SECRET: ${{ secrets.TABDIL_API_SECRET }}
-
-      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-
-      LIVE_TRADING: ${{ secrets.LIVE_TRADING }}
-      ORDER_QTY: ${{ secrets.ORDER_QTY }}
-      LEVERAGE: ${{ secrets.LEVERAGE }}
-
-      MAX_NEW_TRADES: ${{ secrets.MAX_NEW_TRADES }}
-      SL_PERCENT: ${{ secrets.SL_PERCENT }}
-      TP_PERCENT: ${{ secrets.TP_PERCENT }}
-      SCAN_LIMIT: ${{ secrets.SCAN_LIMIT }}
+    timeout-minutes: 10
 
     steps:
+
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -40,5 +28,31 @@ jobs:
           pip install requests
 
       - name: Run ATI Futures
+        env:
+          TABDIL_API_KEY: ${{ secrets.TABDIL_API_KEY }}
+          TABDIL_API_SECRET: ${{ secrets.TABDIL_API_SECRET }}
+
+          TABDEAL_API_KEY: ${{ secrets.TABDEAL_API_KEY }}
+          TABDEAL_API_SECRET: ${{ secrets.TABDEAL_API_SECRET }}
+
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
+          LIVE_TRADING: ${{ secrets.LIVE_TRADING }}
+
+          ORDER_QTY: "2"
+          LEVERAGE: "3"
+
+          SL_PERCENT: "1"
+          TP_PERCENT: "2"
+
+          TIMEFRAME: "5m"
+          KLINE_LIMIT: "100"
+          SCAN_WORKERS: "12"
+          MIN_SIGNAL_SCORE: "5"
+          MAX_KIJUN_DISTANCE: "2.5"
+
+          SCAN_INTERVAL_SECONDS: "300"
+
         run: |
           python main.py
