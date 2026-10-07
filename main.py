@@ -7,11 +7,12 @@ from urllib.parse import urlencode
 from decimal import Decimal
 from datetime import datetime, timezone
 
+
 # =========================================================
-# ATI FUTURES REAL V5
+# ATI FUTURES REAL V6
 # =========================================================
 
-VERSION = "ATI-FUTURES-REAL-V5"
+VERSION = "ATI-FUTURES-REAL-V6"
 
 API_BASE = "https://api1.tabdeal.org"
 
@@ -21,38 +22,46 @@ WRITE_V1 = API_BASE + "/fapi/v1/"
 
 REQUEST_TIMEOUT = 10
 
+
 # =========================================================
-# ENV
+# ENV HELPERS
 # =========================================================
 
 def env_str(name, default=""):
-    v = os.getenv(name, "")
-    return v.strip() if v and v.strip() else default
+    value = os.getenv(name, "")
+    if value and value.strip():
+        return value.strip()
+    return default
 
 
 def env_int(name, default):
     try:
-        v = os.getenv(name, "").strip()
-        return int(v) if v else default
+        value = os.getenv(name, "").strip()
+        return int(value) if value else default
     except Exception:
         return default
 
 
 def env_float(name, default):
     try:
-        v = os.getenv(name, "").strip()
-        return float(v) if v else default
+        value = os.getenv(name, "").strip()
+        return float(value) if value else default
     except Exception:
         return default
 
 
 def env_bool(name, default=False):
-    v = os.getenv(name, "").strip().lower()
+    value = os.getenv(name, "").strip().lower()
 
-    if not v:
+    if not value:
         return default
 
-    return v in ("1", "true", "yes", "on")
+    return value in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
 
 
 # =========================================================
@@ -69,8 +78,13 @@ API_SECRET = env_str(
     env_str("TABDEAL_API_SECRET")
 )
 
-TELEGRAM_BOT_TOKEN = env_str("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = env_str("TELEGRAM_CHAT_ID")
+TELEGRAM_BOT_TOKEN = env_str(
+    "TELEGRAM_BOT_TOKEN"
+)
+
+TELEGRAM_CHAT_ID = env_str(
+    "TELEGRAM_CHAT_ID"
+)
 
 LIVE_TRADING = env_bool(
     "LIVE_TRADING",
@@ -102,49 +116,57 @@ TP_PERCENT = env_float(
     2.0
 )
 
-# =========================================================
-# NEW SCANNER SETTINGS
-# =========================================================
-
 # 0 = کل بازار
 SCAN_LIMIT = env_int(
     "SCAN_LIMIT",
     0
 )
 
-# حداقل حجم معاملات برای حذف بازارهای مرده
+# حداقل حجم 24 ساعته
 MIN_24H_QUOTE_VOLUME = env_float(
     "MIN_24H_QUOTE_VOLUME",
     10000.0
 )
 
-# حداقل فشار برای ورود
-BUY_PRESSURE = env_float(
-    "BUY_PRESSURE",
-    57.0
-)
-
-SELL_PRESSURE = env_float(
-    "SELL_PRESSURE",
-    43.0
-)
-
-# حداقل حرکت کوتاه مدت
+# فیلتر Momentum
 MIN_MOMENTUM = env_float(
     "MIN_MOMENTUM",
     0.08
 )
 
-# تعداد کاندیدهایی که بعد از مرحله اول بررسی می‌شوند
+# فشار Order Book
+BUY_PRESSURE = env_float(
+    "BUY_PRESSURE",
+    55.0
+)
+
+SELL_PRESSURE = env_float(
+    "SELL_PRESSURE",
+    45.0
+)
+
+# تعداد کاندیدهایی که Depth روی آنها بررسی می‌شود
 TOP_CANDIDATES = env_int(
     "TOP_CANDIDATES",
-    20
+    30
 )
+
+# حداکثر عمق Order Book
+DEPTH_LIMIT = env_int(
+    "DEPTH_LIMIT",
+    10
+)
+
+
+# =========================================================
+# HTTP SESSION
+# =========================================================
 
 session = requests.Session()
 
 session.headers.update({
-    "User-Agent": "ATI-Futures-Bot/5.0"
+    "User-Agent": "ATI-Futures-Bot/6.0",
+    "Accept": "application/json",
 })
 
 
@@ -154,27 +176,35 @@ session.headers.update({
 
 def telegram(message):
 
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+    if not TELEGRAM_BOT_TOKEN:
+        return
+
+    if not TELEGRAM_CHAT_ID:
         return
 
     try:
 
         url = (
-            f"https://api.telegram.org/bot"
-            f"{TELEGRAM_BOT_TOKEN}/sendMessage"
+            "https://api.telegram.org/bot"
+            + TELEGRAM_BOT_TOKEN
+            + "/sendMessage"
         )
 
         requests.post(
             url,
             data={
                 "chat_id": TELEGRAM_CHAT_ID,
-                "text": message
+                "text": str(message),
             },
-            timeout=8
+            timeout=8,
         )
 
-    except Exception:
-        pass
+    except Exception as e:
+
+        print(
+            "TELEGRAM ERROR:",
+            str(e)[:300]
+        )
 
 
 # =========================================================
@@ -214,7 +244,7 @@ def signed_params(params=None):
     signature = hmac.new(
         API_SECRET.encode(),
         query.encode(),
-        hashlib.sha256
+        hashlib.sha256,
     ).hexdigest()
 
     params["signature"] = signature
@@ -228,23 +258,32 @@ def signed_params(params=None):
 
 def public_get(
     url,
-    params=None
+    params=None,
 ):
 
-    r = session.get(
+    response = session.get(
         url,
         params=params or {},
-        timeout=REQUEST_TIMEOUT
+        timeout=REQUEST_TIMEOUT,
     )
 
-    if r.status_code != 200:
+    if response.status_code != 200:
 
         raise Exception(
-            f"HTTP {r.status_code}: "
-            f"{r.text[:500]}"
+            f"HTTP {response.status_code}: "
+            f"{response.text[:800]}"
         )
 
-    return r.json()
+    try:
+
+        return response.json()
+
+    except Exception:
+
+        raise Exception(
+            "INVALID JSON RESPONSE: "
+            + response.text[:800]
+        )
 
 
 # =========================================================
@@ -253,36 +292,49 @@ def public_get(
 
 def private_get(
     url,
-    params=None
+    params=None,
 ):
 
-    if not API_KEY or not API_SECRET:
-
+    if not API_KEY:
         raise Exception(
-            "API KEY/SECRET missing"
+            "API KEY missing"
         )
 
-    params = signed_params(
+    if not API_SECRET:
+        raise Exception(
+            "API SECRET missing"
+        )
+
+    signed = signed_params(
         params
     )
 
-    r = session.get(
+    response = session.get(
         url,
-        params=params,
+        params=signed,
         headers={
-            "X-MBX-APIKEY": API_KEY
+            "X-MBX-APIKEY": API_KEY,
         },
-        timeout=REQUEST_TIMEOUT
+        timeout=REQUEST_TIMEOUT,
     )
 
-    if r.status_code != 200:
+    if response.status_code != 200:
 
         raise Exception(
-            f"HTTP {r.status_code}: "
-            f"{r.text[:1000]}"
+            f"HTTP {response.status_code}: "
+            f"{response.text[:1200]}"
         )
 
-    return r.json()
+    try:
+
+        return response.json()
+
+    except Exception:
+
+        raise Exception(
+            "INVALID JSON RESPONSE: "
+            + response.text[:1200]
+        )
 
 
 # =========================================================
@@ -291,39 +343,52 @@ def private_get(
 
 def private_post(
     url,
-    params=None
+    params=None,
 ):
 
-    if not API_KEY or not API_SECRET:
-
+    if not API_KEY:
         raise Exception(
-            "API KEY/SECRET missing"
+            "API KEY missing"
         )
 
-    params = signed_params(
+    if not API_SECRET:
+        raise Exception(
+            "API SECRET missing"
+        )
+
+    signed = signed_params(
         params
     )
 
-    r = session.post(
+    response = session.post(
         url,
-        params=params,
+        params=signed,
         headers={
-            "X-MBX-APIKEY": API_KEY
+            "X-MBX-APIKEY": API_KEY,
         },
-        timeout=REQUEST_TIMEOUT
+        timeout=REQUEST_TIMEOUT,
     )
 
-    if r.status_code not in (
+    if response.status_code not in (
         200,
-        201
+        201,
     ):
 
         raise Exception(
-            f"HTTP {r.status_code}: "
-            f"{r.text[:1200]}"
+            f"HTTP {response.status_code}: "
+            f"{response.text[:1500]}"
         )
 
-    return r.json()
+    try:
+
+        return response.json()
+
+    except Exception:
+
+        raise Exception(
+            "INVALID JSON RESPONSE: "
+            + response.text[:1500]
+        )
 
 
 # =========================================================
@@ -350,14 +415,17 @@ def get_balance():
 
 def extract_usdt(data):
 
-    found = []
+    values = []
 
-    def walk(x):
+    def walk(obj):
 
-        if isinstance(x, dict):
+        if isinstance(obj, dict):
 
             asset = str(
-                x.get("asset", "")
+                obj.get(
+                    "asset",
+                    ""
+                )
             ).upper()
 
             if asset == "USDT":
@@ -368,58 +436,74 @@ def extract_usdt(data):
                     "free",
                     "walletBalance",
                     "balance",
-                    "crossWalletBalance"
+                    "crossWalletBalance",
                 ):
 
                     try:
 
-                        if x.get(key) is not None:
+                        value = obj.get(
+                            key
+                        )
 
-                            found.append(
-                                float(x[key])
+                        if value is not None:
+
+                            values.append(
+                                float(value)
                             )
 
                     except Exception:
                         pass
 
-            for value in x.values():
+            for value in obj.values():
+
                 walk(value)
 
-        elif isinstance(x, list):
+        elif isinstance(obj, list):
 
-            for item in x:
+            for item in obj:
+
                 walk(item)
 
     walk(data)
 
+    positive = [
+        x
+        for x in values
+        if x >= 0
+    ]
+
     return max(
-        [x for x in found if x >= 0],
+        positive,
         default=0.0
     )
 
 
 def get_usdt_balance():
 
-    values = []
+    results = []
 
     for func in (
         get_balance,
-        get_account
+        get_account,
     ):
 
         try:
 
-            values.append(
+            results.append(
                 extract_usdt(
                     func()
                 )
             )
 
-        except Exception:
-            pass
+        except Exception as e:
+
+            print(
+                "BALANCE SOURCE ERROR:",
+                str(e)[:300]
+            )
 
     return max(
-        values,
+        results,
         default=0.0
     )
 
@@ -443,24 +527,49 @@ def get_symbols():
 
     data = get_exchange_info()
 
-    result = []
-
-    for s in data.get(
-        "symbols",
-        []
+    if not isinstance(
+        data,
+        dict
     ):
 
-        symbol = s.get(
-            "symbol",
-            ""
+        raise Exception(
+            "exchangeInfo returned invalid data"
         )
 
+    symbols = data.get(
+        "symbols",
+        []
+    )
+
+    result = []
+
+    for item in symbols:
+
+        if not isinstance(
+            item,
+            dict
+        ):
+            continue
+
+        symbol = str(
+            item.get(
+                "symbol",
+                ""
+            )
+        ).upper()
+
         status = str(
-            s.get("status", "")
+            item.get(
+                "status",
+                ""
+            )
         ).upper()
 
         quote = str(
-            s.get("quoteAsset", "")
+            item.get(
+                "quoteAsset",
+                ""
+            )
         ).upper()
 
         if not symbol:
@@ -469,28 +578,110 @@ def get_symbols():
         if quote not in (
             "USDT",
             "USDC",
-            "USD"
+            "USD",
         ):
             continue
 
         if status not in (
             "TRADING",
             "ENABLED",
-            "OPEN"
+            "OPEN",
         ):
             continue
 
-        result.append(s)
+        result.append(
+            item
+        )
 
     if SCAN_LIMIT > 0:
 
-        return result[:SCAN_LIMIT]
+        return result[
+            :SCAN_LIMIT
+        ]
 
     return result
 
 
 # =========================================================
-# 24H TICKER
+# ALL 24H TICKERS
+# =========================================================
+
+def get_all_tickers():
+
+    return public_get(
+        PUBLIC_V1 + "ticker/24hr"
+    )
+
+
+# =========================================================
+# TICKER NORMALIZER
+# =========================================================
+
+def normalize_tickers(data):
+
+    result = {}
+
+    if isinstance(
+        data,
+        list
+    ):
+
+        for item in data:
+
+            if not isinstance(
+                item,
+                dict
+            ):
+                continue
+
+            symbol = str(
+                item.get(
+                    "symbol",
+                    ""
+                )
+            ).upper()
+
+            if symbol:
+
+                result[symbol] = item
+
+    elif isinstance(
+        data,
+        dict
+    ):
+
+        # بعض APIها ممکن است خروجی
+        # را داخل data قرار دهند.
+
+        nested = data.get(
+            "data"
+        )
+
+        if isinstance(
+            nested,
+            list
+        ):
+
+            return normalize_tickers(
+                nested
+            )
+
+        symbol = str(
+            data.get(
+                "symbol",
+                ""
+            )
+        ).upper()
+
+        if symbol:
+
+            result[symbol] = data
+
+    return result
+
+
+# =========================================================
+# SINGLE TICKER FALLBACK
 # =========================================================
 
 def get_ticker(symbol):
@@ -498,8 +689,8 @@ def get_ticker(symbol):
     return public_get(
         PUBLIC_V1 + "ticker/24hr",
         {
-            "symbol": symbol
-        }
+            "symbol": symbol,
+        },
     )
 
 
@@ -512,9 +703,18 @@ def get_price(symbol):
     data = public_get(
         PUBLIC_V1 + "ticker/price",
         {
-            "symbol": symbol
-        }
+            "symbol": symbol,
+        },
     )
+
+    if not isinstance(
+        data,
+        dict
+    ):
+
+        raise Exception(
+            "Invalid price response"
+        )
 
     return float(
         data["price"]
@@ -531,12 +731,25 @@ def get_depth(symbol):
         PUBLIC_V1 + "depth",
         {
             "symbol": symbol,
-            "limit": 10
-        }
+            "limit": DEPTH_LIMIT,
+        },
     )
 
 
-def calculate_pressure(data):
+# =========================================================
+# PRESSURE
+# =========================================================
+
+def calculate_pressure(
+    data
+):
+
+    if not isinstance(
+        data,
+        dict
+    ):
+
+        return 50.0
 
     bids = data.get(
         "bids",
@@ -551,17 +764,25 @@ def calculate_pressure(data):
     bid_volume = 0.0
     ask_volume = 0.0
 
-    for x in bids[:10]:
+    for item in bids:
 
         try:
-            bid_volume += float(x[1])
+
+            bid_volume += float(
+                item[1]
+            )
+
         except Exception:
             pass
 
-    for x in asks[:10]:
+    for item in asks:
 
         try:
-            ask_volume += float(x[1])
+
+            ask_volume += float(
+                item[1]
+            )
+
         except Exception:
             pass
 
@@ -571,6 +792,7 @@ def calculate_pressure(data):
     )
 
     if total <= 0:
+
         return 50.0
 
     return (
@@ -583,7 +805,9 @@ def calculate_pressure(data):
 # MOMENTUM
 # =========================================================
 
-def calculate_momentum(ticker):
+def calculate_momentum(
+    ticker
+):
 
     try:
 
@@ -601,11 +825,19 @@ def calculate_momentum(ticker):
             )
         )
 
-        if last <= 0 or open_price <= 0:
+        if (
+            last <= 0
+            or open_price <= 0
+        ):
+
             return 0.0
 
         return (
-            (last - open_price) /
+            (
+                last -
+                open_price
+            )
+            /
             open_price
         ) * 100.0
 
@@ -615,7 +847,40 @@ def calculate_momentum(ticker):
 
 
 # =========================================================
-# POSITION
+# 24H VOLUME
+# =========================================================
+
+def get_quote_volume(
+    ticker
+):
+
+    for key in (
+        "quoteVolume",
+        "quoteVolume24h",
+        "turnover",
+        "volumeQuote",
+    ):
+
+        try:
+
+            value = ticker.get(
+                key
+            )
+
+            if value is not None:
+
+                return float(
+                    value
+                )
+
+        except Exception:
+            pass
+
+    return 0.0
+
+
+# =========================================================
+# POSITIONS
 # =========================================================
 
 def get_positions():
@@ -633,15 +898,18 @@ def get_open_positions():
 
         result = []
 
-        if isinstance(data, list):
+        if isinstance(
+            data,
+            list
+        ):
 
-            for p in data:
+            for position in data:
 
                 try:
 
                     qty = abs(
                         float(
-                            p.get(
+                            position.get(
                                 "positionAmt",
                                 0
                             )
@@ -650,10 +918,13 @@ def get_open_positions():
 
                 except Exception:
 
-                    qty = 0
+                    qty = 0.0
 
                 if qty > 0:
-                    result.append(p)
+
+                    result.append(
+                        position
+                    )
 
         return result
 
@@ -661,7 +932,7 @@ def get_open_positions():
 
         print(
             "POSITION ERROR:",
-            e
+            str(e)[:500]
         )
 
         return []
@@ -671,14 +942,16 @@ def get_open_positions():
 # LEVERAGE
 # =========================================================
 
-def change_leverage(symbol):
+def change_leverage(
+    symbol
+):
 
     return private_post(
         WRITE_V1 + "leverage",
         {
             "symbol": symbol,
-            "leverage": LEVERAGE
-        }
+            "leverage": LEVERAGE,
+        },
     )
 
 
@@ -686,56 +959,75 @@ def change_leverage(symbol):
 # SYMBOL RULES
 # =========================================================
 
-def symbol_rules(info):
+def symbol_rules(
+    info
+):
 
     step = 0.0
     min_qty = 0.0
     min_notional = 0.0
 
-    for f in info.get(
+    filters = info.get(
         "filters",
         []
-    ):
+    )
 
-        typ = f.get(
+    for item in filters:
+
+        typ = item.get(
             "filterType"
         )
 
         if typ == "LOT_SIZE":
 
-            step = float(
-                f.get(
-                    "stepSize",
-                    0
-                )
-            )
+            try:
 
-            min_qty = float(
-                f.get(
-                    "minQty",
-                    0
-                )
-            )
-
-        elif typ in (
-            "MIN_NOTIONAL",
-            "NOTIONAL"
-        ):
-
-            min_notional = float(
-                f.get(
-                    "notional",
-                    f.get(
-                        "minNotional",
+                step = float(
+                    item.get(
+                        "stepSize",
                         0
                     )
                 )
-            )
+
+            except Exception:
+                pass
+
+            try:
+
+                min_qty = float(
+                    item.get(
+                        "minQty",
+                        0
+                    )
+                )
+
+            except Exception:
+                pass
+
+        elif typ in (
+            "MIN_NOTIONAL",
+            "NOTIONAL",
+        ):
+
+            try:
+
+                min_notional = float(
+                    item.get(
+                        "notional",
+                        item.get(
+                            "minNotional",
+                            0
+                        )
+                    )
+                )
+
+            except Exception:
+                pass
 
     return (
         step,
         min_qty,
-        min_notional
+        min_notional,
     )
 
 
@@ -748,12 +1040,17 @@ def make_quantity(
     info
 ):
 
-    step, min_qty, min_notional = (
-        symbol_rules(info)
-    )
-
     if price <= 0:
+
         return 0.0
+
+    (
+        step,
+        min_qty,
+        min_notional,
+    ) = symbol_rules(
+        info
+    )
 
     qty = (
         ORDER_USDT /
@@ -780,7 +1077,8 @@ def make_quantity(
 
     if (
         min_notional > 0
-        and qty * price < min_notional
+        and qty * price
+        < min_notional
     ):
 
         qty = (
@@ -821,8 +1119,8 @@ def market_order(
             "symbol": symbol,
             "side": side,
             "type": "MARKET",
-            "quantity": quantity
-        }
+            "quantity": quantity,
+        },
     )
 
 
@@ -830,7 +1128,9 @@ def market_order(
 # FIND POSITION
 # =========================================================
 
-def find_position(symbol):
+def find_position(
+    symbol
+):
 
     for _ in range(10):
 
@@ -843,18 +1143,21 @@ def find_position(symbol):
                 list
             ):
 
-                for p in positions:
+                for position in positions:
 
-                    if p.get(
-                        "symbol"
-                    ) != symbol:
+                    if (
+                        position.get(
+                            "symbol"
+                        )
+                        != symbol
+                    ):
 
                         continue
 
                     try:
 
                         qty = float(
-                            p.get(
+                            position.get(
                                 "positionAmt",
                                 0
                             )
@@ -862,11 +1165,11 @@ def find_position(symbol):
 
                     except Exception:
 
-                        qty = 0
+                        qty = 0.0
 
                     if abs(qty) > 0:
 
-                        return p
+                        return position
 
         except Exception:
             pass
@@ -884,15 +1187,15 @@ def set_position_sl_tp(
     position
 ):
 
-    symbol = position.get(
-        "symbol"
-    )
-
-    position_id = position.get(
-        "positionId"
-    )
-
     try:
+
+        symbol = position.get(
+            "symbol"
+        )
+
+        position_id = position.get(
+            "positionId"
+        )
 
         entry = float(
             position.get(
@@ -912,6 +1215,9 @@ def set_position_sl_tp(
 
         return None
 
+    if not symbol:
+        return None
+
     if entry <= 0:
         return None
 
@@ -919,158 +1225,226 @@ def set_position_sl_tp(
 
         sl = entry * (
             1 -
-            SL_PERCENT / 100
+            SL_PERCENT / 100.0
         )
 
         tp = entry * (
             1 +
-            TP_PERCENT / 100
+            TP_PERCENT / 100.0
         )
 
     else:
 
         sl = entry * (
             1 +
-            SL_PERCENT / 100
+            SL_PERCENT / 100.0
         )
 
         tp = entry * (
             1 -
-            TP_PERCENT / 100
+            TP_PERCENT / 100.0
         )
+
+    params = {
+        "positionId": position_id,
+        "symbol": symbol,
+        "slPrice": sl,
+        "tpPrice": tp,
+        "workingType": "MARK_PRICE",
+    }
 
     return private_post(
         WRITE_V1 + "positionSlTp",
-        {
-            "positionId": position_id,
-            "symbol": symbol,
-            "slPrice": sl,
-            "tpPrice": tp,
-            "workingType": "MARK_PRICE"
-        }
+        params,
     )
 
 
 # =========================================================
-# FAST MARKET SCANNER
+# FAST SCANNER
 # =========================================================
 
-def scan_market(symbols):
-
-    candidates = []
-
-    scanned = 0
-    volume_ok = 0
-    momentum_ok = 0
-    pressure_ok = 0
+def scan_market(
+    symbols
+):
 
     print()
-    print(
-        "⚡ FAST FUTURES SCANNER"
+    print("=" * 60)
+    print("⚡ ATI FAST FUTURES SCANNER")
+    print("=" * 60)
+
+    symbol_map = {}
+
+    for item in symbols:
+
+        symbol = str(
+            item.get(
+                "symbol",
+                ""
+            )
+        ).upper()
+
+        if symbol:
+
+            symbol_map[
+                symbol
+            ] = item
+
+    scanned = len(
+        symbol_map
     )
 
-    for info in symbols:
+    print(
+        f"📊 MARKET SYMBOLS: {scanned}"
+    )
 
-        symbol = info.get(
-            "symbol"
+    # -----------------------------------------------------
+    # GET ALL 24H TICKERS
+    # -----------------------------------------------------
+
+    try:
+
+        raw = get_all_tickers()
+
+        tickers = normalize_tickers(
+            raw
         )
 
-        scanned += 1
+        print(
+            f"📡 24H TICKERS: "
+            f"{len(tickers)}"
+        )
 
-        try:
+    except Exception as e:
 
-            ticker = get_ticker(
-                symbol
+        print(
+            "⚠️ ALL TICKER FAILED:"
+        )
+
+        print(
+            str(e)[:500]
+        )
+
+        tickers = {}
+
+    # -----------------------------------------------------
+    # FALLBACK
+    # -----------------------------------------------------
+
+    if not tickers:
+
+        print(
+            "⚠️ FALLBACK: "
+            "SINGLE TICKER MODE"
+        )
+
+        for index, info in enumerate(
+            symbols
+        ):
+
+            if index >= 100:
+                break
+
+            symbol = info.get(
+                "symbol"
             )
 
-            volume = float(
-                ticker.get(
-                    "quoteVolume",
-                    0
+            try:
+
+                tickers[
+                    symbol
+                ] = get_ticker(
+                    symbol
                 )
-            )
 
-            if volume < MIN_24H_QUOTE_VOLUME:
+            except Exception:
                 continue
 
-            volume_ok += 1
+    # -----------------------------------------------------
+    # FIRST FILTER
+    # -----------------------------------------------------
 
-            momentum = calculate_momentum(
-                ticker
-            )
+    volume_ok = 0
+    momentum_ok = 0
 
-            # جهت اولیه
-            if momentum >= MIN_MOMENTUM:
+    first_candidates = []
 
-                direction = "BUY"
+    for symbol, info in symbol_map.items():
 
-            elif momentum <= -MIN_MOMENTUM:
+        ticker = tickers.get(
+            symbol
+        )
 
-                direction = "SELL"
+        if not ticker:
+            continue
 
-            else:
+        volume = get_quote_volume(
+            ticker
+        )
 
-                continue
-
-            momentum_ok += 1
-
-            depth = get_depth(
-                symbol
-            )
-
-            p = calculate_pressure(
-                depth
-            )
-
-            if direction == "BUY":
-
-                if p < BUY_PRESSURE:
-                    continue
-
-                pressure_score = p
-
-                score = (
-                    abs(momentum) * 5
-                    + (p - 50)
-                )
-
-            else:
-
-                if p > SELL_PRESSURE:
-                    continue
-
-                pressure_score = (
-                    100 - p
-                )
-
-                score = (
-                    abs(momentum) * 5
-                    + (50 - p)
-                )
-
-            pressure_ok += 1
-
-            candidates.append({
-                "symbol": symbol,
-                "side": direction,
-                "momentum": momentum,
-                "pressure": pressure_score,
-                "volume": volume,
-                "score": score,
-                "info": info
-            })
-
-        except Exception:
+        if (
+            volume <
+            MIN_24H_QUOTE_VOLUME
+        ):
 
             continue
 
-    candidates.sort(
-        key=lambda x: x["score"],
+        volume_ok += 1
+
+        momentum = calculate_momentum(
+            ticker
+        )
+
+        if abs(momentum) < MIN_MOMENTUM:
+
+            continue
+
+        momentum_ok += 1
+
+        if momentum > 0:
+
+            direction = "BUY"
+
+        else:
+
+            direction = "SELL"
+
+        # preliminary score
+        preliminary_score = (
+            abs(momentum) * 10.0
+            + min(
+                volume /
+                max(
+                    MIN_24H_QUOTE_VOLUME,
+                    1
+                ),
+                100
+            ) * 0.05
+        )
+
+        first_candidates.append({
+            "symbol": symbol,
+            "side": direction,
+            "momentum": momentum,
+            "volume": volume,
+            "score": preliminary_score,
+            "info": info,
+            "ticker": ticker,
+        })
+
+    # -----------------------------------------------------
+    # TOP MOMENTUM
+    # -----------------------------------------------------
+
+    first_candidates.sort(
+        key=lambda x:
+        x["score"],
         reverse=True
     )
 
-    print(
-        f"📊 SCANNED: {scanned}"
+    first_candidates = (
+        first_candidates[
+            :TOP_CANDIDATES
+        ]
     )
 
     print(
@@ -1082,15 +1456,147 @@ def scan_market(symbols):
     )
 
     print(
-        f"🎯 PRESSURE OK: {pressure_ok}"
+        f"🎯 DEPTH CANDIDATES: "
+        f"{len(first_candidates)}"
     )
 
+    # -----------------------------------------------------
+    # DEPTH FILTER
+    # -----------------------------------------------------
+
+    final_candidates = []
+
+    pressure_ok = 0
+
+    for candidate in first_candidates:
+
+        symbol = candidate[
+            "symbol"
+        ]
+
+        try:
+
+            depth = get_depth(
+                symbol
+            )
+
+            pressure = calculate_pressure(
+                depth
+            )
+
+        except Exception as e:
+
+            print(
+                f"⚠️ DEPTH ERROR "
+                f"{symbol}: "
+                f"{str(e)[:180]}"
+            )
+
+            continue
+
+        side = candidate[
+            "side"
+        ]
+
+        if side == "BUY":
+
+            if pressure < BUY_PRESSURE:
+
+                continue
+
+            pressure_score = pressure
+
+            pressure_bonus = (
+                pressure -
+                50.0
+            )
+
+        else:
+
+            if pressure > SELL_PRESSURE:
+
+                continue
+
+            pressure_score = (
+                100.0 -
+                pressure
+            )
+
+            pressure_bonus = (
+                50.0 -
+                pressure
+            )
+
+        pressure_ok += 1
+
+        final_score = (
+            abs(
+                candidate[
+                    "momentum"
+                ]
+            ) * 10.0
+            + pressure_bonus * 1.5
+        )
+
+        candidate[
+            "pressure"
+        ] = pressure_score
+
+        candidate[
+            "score"
+        ] = final_score
+
+        final_candidates.append(
+            candidate
+        )
+
+    final_candidates.sort(
+        key=lambda x:
+        x["score"],
+        reverse=True
+    )
+
+    print(
+        f"🔥 PRESSURE OK: "
+        f"{pressure_ok}"
+    )
+
+    print(
+        f"🚨 FINAL SIGNALS: "
+        f"{len(final_candidates)}"
+    )
+
+    # -----------------------------------------------------
+    # PRINT TOP 5
+    # -----------------------------------------------------
+
+    if final_candidates:
+
+        print()
+        print(
+            "🏆 TOP CANDIDATES"
+        )
+
+        for index, item in enumerate(
+            final_candidates[:5],
+            start=1
+        ):
+
+            print(
+                f"{index}. "
+                f"{item['symbol']} | "
+                f"{item['side']} | "
+                f"Mom={item['momentum']:.3f}% | "
+                f"Pressure={item['pressure']:.2f}% | "
+                f"Score={item['score']:.2f}"
+            )
+
     return (
-        candidates[:TOP_CANDIDATES],
+        final_candidates,
         scanned,
         volume_ok,
         momentum_ok,
-        pressure_ok
+        pressure_ok,
     )
 
 
@@ -1101,12 +1607,16 @@ def scan_market(symbols):
 def main():
 
     print()
-    print("=" * 55)
-    print("💓 ATI FUTURES REAL V5")
-    print("=" * 55)
+    print("=" * 60)
+    print("💓 ATI FUTURES REAL V6")
+    print("=" * 60)
 
     print(
-        f"📡 TABDEAL FUTURES"
+        f"⚡ VERSION: {VERSION}"
+    )
+
+    print(
+        "📡 MARKET: TABDEAL FUTURES"
     )
 
     print(
@@ -1118,11 +1628,7 @@ def main():
     )
 
     print(
-        f"🟢 LIVE: {LIVE_TRADING}"
-    )
-
-    print(
-        f"🎯 SL: {SL_PERCENT}%"
+        f"🛑 SL: {SL_PERCENT}%"
     )
 
     print(
@@ -1130,14 +1636,23 @@ def main():
     )
 
     print(
+        f"🟢 LIVE TRADING: "
+        f"{LIVE_TRADING}"
+    )
+
+    print(
         f"🕐 {now_utc()}"
     )
 
-    print("=" * 55)
+    print("=" * 60)
+
+    # -----------------------------------------------------
+    # TELEGRAM START
+    # -----------------------------------------------------
 
     telegram(
-        f"💓 ATI FUTURES V5\n"
-        f"⚡ FAST MARKET SCANNER\n"
+        f"💓 ATI FUTURES V6\n"
+        f"⚡ FAST SCANNER STARTED\n"
         f"📡 TABDEAL FUTURES\n"
         f"⚙️ LEVERAGE: {LEVERAGE}x\n"
         f"💵 ORDER: {ORDER_USDT} USDT\n"
@@ -1146,43 +1661,65 @@ def main():
     )
 
     # -----------------------------------------------------
-    # AUTH
+    # API CREDENTIALS
     # -----------------------------------------------------
 
-    if not API_KEY or not API_SECRET:
+    if not API_KEY:
 
         print(
-            "❌ API KEY/SECRET missing"
+            "❌ API KEY missing"
         )
 
         telegram(
-            "❌ ATI FUTURES\n"
-            "API KEY/SECRET missing"
+            "❌ ATI FUTURES ERROR\n"
+            "API KEY missing"
         )
 
         return
+
+    if not API_SECRET:
+
+        print(
+            "❌ API SECRET missing"
+        )
+
+        telegram(
+            "❌ ATI FUTURES ERROR\n"
+            "API SECRET missing"
+        )
+
+        return
+
+    # -----------------------------------------------------
+    # AUTH
+    # -----------------------------------------------------
 
     try:
 
         account = get_account()
 
+        print()
         print(
             "✅ FUTURES AUTH SUCCESS"
         )
 
-        print(
-            "🔓 canTrade:",
-            account.get(
-                "canTrade"
-            )
+        can_trade = account.get(
+            "canTrade"
         )
 
-        if account.get(
-            "canTrade"
-        ) is False:
+        print(
+            f"🔓 canTrade: "
+            f"{can_trade}"
+        )
+
+        if can_trade is False:
+
+            print(
+                "❌ canTrade=False"
+            )
 
             telegram(
-                "❌ FUTURES ACCOUNT\n"
+                "❌ ATI FUTURES\n"
                 "canTrade=False"
             )
 
@@ -1190,14 +1727,18 @@ def main():
 
     except Exception as e:
 
+        print()
         print(
-            "❌ AUTH ERROR:",
-            e
+            "❌ FUTURES AUTH ERROR"
+        )
+
+        print(
+            str(e)
         )
 
         telegram(
             "❌ ATI FUTURES AUTH ERROR\n\n"
-            + str(e)[:1200]
+            + str(e)[:1500]
         )
 
         return
@@ -1206,24 +1747,47 @@ def main():
     # BALANCE
     # -----------------------------------------------------
 
-    balance = get_usdt_balance()
+    try:
 
+        balance = get_usdt_balance()
+
+    except Exception as e:
+
+        print(
+            "❌ BALANCE ERROR:",
+            str(e)
+        )
+
+        telegram(
+            "❌ FUTURES BALANCE ERROR\n\n"
+            + str(e)[:1200]
+        )
+
+        return
+
+    print()
     print(
-        f"💰 USDT AVAILABLE: {balance}"
+        f"💰 USDT AVAILABLE: "
+        f"{balance}"
     )
 
     if balance <= 0:
 
+        print(
+            "❌ USDT balance is zero."
+        )
+
         telegram(
             f"❌ ATI FUTURES\n"
-            f"USDT AVAILABLE: {balance}\n"
-            f"معامله انجام نشد."
+            f"💰 USDT AVAILABLE: "
+            f"{balance}\n"
+            f"🚫 NO TRADE"
         )
 
         return
 
     # -----------------------------------------------------
-    # POSITIONS
+    # OPEN POSITIONS
     # -----------------------------------------------------
 
     positions = get_open_positions()
@@ -1236,25 +1800,29 @@ def main():
     if len(positions) >= MAX_NEW_TRADES:
 
         print(
-            "⛔ MAX NEW TRADES"
+            "⛔ MAX NEW TRADES REACHED"
         )
 
         telegram(
             f"⛔ ATI FUTURES\n"
-            f"Open positions: {len(positions)}\n"
-            f"New trade skipped."
+            f"Open positions: "
+            f"{len(positions)}\n"
+            f"MAX: "
+            f"{MAX_NEW_TRADES}\n"
+            f"🚫 NEW TRADE SKIPPED"
         )
 
         return
 
     # -----------------------------------------------------
-    # EXCHANGE
+    # EXCHANGE INFO
     # -----------------------------------------------------
 
     try:
 
         symbols = get_symbols()
 
+        print()
         print(
             f"📊 FUTURES MARKETS: "
             f"{len(symbols)}"
@@ -1262,11 +1830,566 @@ def main():
 
     except Exception as e:
 
+        print()
         print(
-            "❌ EXCHANGE INFO ERROR:",
-            e
+            "❌ EXCHANGE INFO ERROR"
+        )
+
+        print(
+            str(e)
         )
 
         telegram(
-            "❌ FUTURES EXCHANGE INFO ERROR\n\n"
-            + str
+            "❌ ATI FUTURES EXCHANGE INFO ERROR\n\n"
+            + str(e)[:1500]
+        )
+
+        return
+
+    if not symbols:
+
+        print(
+            "❌ NO FUTURES SYMBOLS"
+        )
+
+        telegram(
+            "❌ ATI FUTURES\n"
+            "No Futures symbols received."
+        )
+
+        return
+
+    # -----------------------------------------------------
+    # SCAN
+    # -----------------------------------------------------
+
+    try:
+
+        (
+            candidates,
+            scanned,
+            volume_ok,
+            momentum_ok,
+            pressure_ok,
+        ) = scan_market(
+            symbols
+        )
+
+    except Exception as e:
+
+        print()
+        print(
+            "❌ SCANNER ERROR"
+        )
+
+        print(
+            str(e)
+        )
+
+        telegram(
+            "❌ ATI FUTURES SCANNER ERROR\n\n"
+            + str(e)[:1500]
+        )
+
+        return
+
+    # -----------------------------------------------------
+    # NO SIGNAL
+    # -----------------------------------------------------
+
+    if not candidates:
+
+        print()
+        print(
+            "=" * 60
+        )
+
+        print(
+            "❌ NO FINAL SIGNAL"
+        )
+
+        print(
+            f"📊 Scanned: {scanned}"
+        )
+
+        print(
+            f"💧 Volume OK: {volume_ok}"
+        )
+
+        print(
+            f"⚡ Momentum OK: {momentum_ok}"
+        )
+
+        print(
+            f"🔥 Pressure OK: {pressure_ok}"
+        )
+
+        print(
+            "=" * 60
+        )
+
+        telegram(
+            f"📊 ATI FUTURES V6\n"
+            f"Markets: {scanned}\n"
+            f"Volume OK: {volume_ok}\n"
+            f"Momentum OK: {momentum_ok}\n"
+            f"Pressure OK: {pressure_ok}\n"
+            f"❌ NO FINAL SIGNAL\n"
+            f"💰 USDT: {balance}\n"
+            f"🟢 LIVE: {LIVE_TRADING}\n"
+            f"🕐 {now_utc()}"
+        )
+
+        return
+
+    # -----------------------------------------------------
+    # BEST SIGNAL
+    # -----------------------------------------------------
+
+    best = candidates[0]
+
+    symbol = best[
+        "symbol"
+    ]
+
+    side = best[
+        "side"
+    ]
+
+    momentum = best[
+        "momentum"
+    ]
+
+    pressure = best[
+        "pressure"
+    ]
+
+    score = best[
+        "score"
+    ]
+
+    volume = best[
+        "volume"
+    ]
+
+    info = best[
+        "info"
+    ]
+
+    print()
+    print("=" * 60)
+    print("🚨 BEST FUTURES SIGNAL")
+    print("=" * 60)
+
+    print(
+        f"🪙 SYMBOL: {symbol}"
+    )
+
+    print(
+        f"📈 SIDE: {side}"
+    )
+
+    print(
+        f"⚡ MOMENTUM: "
+        f"{momentum:.3f}%"
+    )
+
+    print(
+        f"🔥 PRESSURE: "
+        f"{pressure:.2f}%"
+    )
+
+    print(
+        f"💧 24H VOLUME: "
+        f"{volume:.2f}"
+    )
+
+    print(
+        f"🏆 SCORE: "
+        f"{score:.2f}"
+    )
+
+    print("=" * 60)
+
+    # -----------------------------------------------------
+    # PRICE
+    # -----------------------------------------------------
+
+    try:
+
+        price = get_price(
+            symbol
+        )
+
+        quantity = make_quantity(
+            price,
+            info
+        )
+
+    except Exception as e:
+
+        print(
+            "❌ PRICE / QUANTITY ERROR"
+        )
+
+        print(
+            str(e)
+        )
+
+        telegram(
+            f"❌ PRICE / QUANTITY ERROR\n"
+            f"🪙 {symbol}\n\n"
+            f"{str(e)[:1200]}"
+        )
+
+        return
+
+    print(
+        f"💵 PRICE: {price}"
+    )
+
+    print(
+        f"📦 QTY: {quantity}"
+    )
+
+    if quantity <= 0:
+
+        print(
+            "❌ INVALID QUANTITY"
+        )
+
+        telegram(
+            f"❌ INVALID QUANTITY\n"
+            f"🪙 {symbol}"
+        )
+
+        return
+
+    # -----------------------------------------------------
+    # SIGNAL TELEGRAM
+    # -----------------------------------------------------
+
+    telegram(
+        f"🚨 ATI FUTURES SIGNAL\n\n"
+        f"🪙 {symbol}\n"
+        f"📈 SIDE: {side}\n"
+        f"⚡ Momentum: {momentum:.3f}%\n"
+        f"🔥 Pressure: {pressure:.2f}%\n"
+        f"🏆 Score: {score:.2f}\n"
+        f"💧 Volume: {volume:.2f}\n"
+        f"💵 Price: {price}\n"
+        f"📦 Qty: {quantity}\n"
+        f"⚙️ Leverage: {LEVERAGE}x\n"
+        f"🟢 LIVE: {LIVE_TRADING}\n"
+        f"🕐 {now_utc()}"
+    )
+
+    # -----------------------------------------------------
+    # PAPER MODE
+    # -----------------------------------------------------
+
+    if not LIVE_TRADING:
+
+        print()
+        print(
+            "🔴 LIVE_TRADING=False"
+        )
+
+        print(
+            "🚫 REAL ORDER NOT SENT"
+        )
+
+        telegram(
+            f"🟡 PAPER SIGNAL ONLY\n"
+            f"🪙 {symbol}\n"
+            f"📈 {side}\n"
+            f"💵 {price}\n"
+            f"🚫 REAL ORDER NOT SENT"
+        )
+
+        return
+
+    # -----------------------------------------------------
+    # REAL BALANCE CHECK
+    # -----------------------------------------------------
+
+    if balance < 0.5:
+
+        print(
+            "❌ BALANCE TOO LOW"
+        )
+
+        telegram(
+            f"❌ BALANCE TOO LOW\n"
+            f"💰 USDT: {balance}"
+        )
+
+        return
+
+    # -----------------------------------------------------
+    # LEVERAGE
+    # -----------------------------------------------------
+
+    try:
+
+        print()
+        print(
+            f"⚙️ SETTING "
+            f"{LEVERAGE}x LEVERAGE"
+        )
+
+        leverage_result = (
+            change_leverage(
+                symbol
+            )
+        )
+
+        print(
+            "✅ LEVERAGE OK"
+        )
+
+        print(
+            leverage_result
+        )
+
+    except Exception as e:
+
+        print()
+        print(
+            "❌ LEVERAGE ERROR"
+        )
+
+        print(
+            str(e)
+        )
+
+        telegram(
+            f"❌ LEVERAGE ERROR\n"
+            f"🪙 {symbol}\n\n"
+            f"{str(e)[:1500]}"
+        )
+
+        return
+
+    # -----------------------------------------------------
+    # REAL ORDER
+    # -----------------------------------------------------
+
+    try:
+
+        print()
+        print("=" * 60)
+        print(
+            "🚨 SENDING REAL FUTURES ORDER"
+        )
+        print("=" * 60)
+
+        order = market_order(
+            symbol,
+            side,
+            quantity
+        )
+
+        print(
+            "✅ REAL ORDER SUCCESS"
+        )
+
+        print(
+            order
+        )
+
+        telegram(
+            f"🚨 REAL FUTURES TRADE OPENED\n\n"
+            f"🪙 {symbol}\n"
+            f"📈 SIDE: {side}\n"
+            f"💵 PRICE: {price}\n"
+            f"📦 QTY: {quantity}\n"
+            f"⚙️ LEVERAGE: {LEVERAGE}x\n"
+            f"🆔 ORDER: "
+            f"{order.get('orderId')}\n"
+            f"🕐 {now_utc()}"
+        )
+
+    except Exception as e:
+
+        print()
+        print(
+            "❌ REAL ORDER ERROR"
+        )
+
+        print(
+            str(e)
+        )
+
+        telegram(
+            f"❌ REAL FUTURES ORDER ERROR\n\n"
+            f"🪙 {symbol}\n"
+            f"📈 SIDE: {side}\n\n"
+            f"{str(e)[:1800]}"
+        )
+
+        return
+
+    # -----------------------------------------------------
+    # FIND POSITION
+    # -----------------------------------------------------
+
+    print()
+    print(
+        "🔎 SEARCHING FOR POSITION..."
+    )
+
+    position = find_position(
+        symbol
+    )
+
+    if not position:
+
+        print(
+            "⚠️ POSITION NOT FOUND"
+        )
+
+        telegram(
+            f"⚠️ ORDER ACCEPTED\n"
+            f"BUT POSITION NOT FOUND\n\n"
+            f"🪙 {symbol}\n"
+            f"🚨 SL/TP NOT CONFIRMED"
+        )
+
+        return
+
+    entry = position.get(
+        "entryPrice"
+    )
+
+    position_qty = position.get(
+        "positionAmt"
+    )
+
+    print()
+    print(
+        "✅ POSITION OPEN"
+    )
+
+    print(
+        f"🪙 SYMBOL: {symbol}"
+    )
+
+    print(
+        f"📍 ENTRY: {entry}"
+    )
+
+    print(
+        f"📦 POSITION QTY: "
+        f"{position_qty}"
+    )
+
+    # -----------------------------------------------------
+    # SL / TP
+    # -----------------------------------------------------
+
+    try:
+
+        print()
+        print(
+            "🛡️ SETTING SL/TP..."
+        )
+
+        sltp_result = (
+            set_position_sl_tp(
+                position
+            )
+        )
+
+        if sltp_result:
+
+            print(
+                "✅ SL/TP SET SUCCESS"
+            )
+
+            print(
+                sltp_result
+            )
+
+            telegram(
+                f"🛡️ SL/TP SET\n"
+                f"🪙 {symbol}\n"
+                f"📍 Entry: {entry}\n"
+                f"🛑 SL: {SL_PERCENT}%\n"
+                f"🎯 TP: {TP_PERCENT}%"
+            )
+
+        else:
+
+            print(
+                "⚠️ SL/TP NOT CONFIRMED"
+            )
+
+            telegram(
+                f"🚨 WARNING\n"
+                f"POSITION OPENED\n"
+                f"🪙 {symbol}\n"
+                f"⚠️ SL/TP NOT CONFIRMED"
+            )
+
+    except Exception as e:
+
+        print()
+        print(
+            "❌ SL/TP ERROR"
+        )
+
+        print(
+            str(e)
+        )
+
+        telegram(
+            f"🚨 URGENT SL/TP ERROR\n\n"
+            f"🪙 {symbol}\n"
+            f"📍 Entry: {entry}\n\n"
+            f"{str(e)[:1800]}"
+        )
+
+        return
+
+    print()
+    print("=" * 60)
+    print(
+        "✅ ATI FUTURES V6 FINISHED"
+    )
+    print("=" * 60)
+
+
+# =========================================================
+# GLOBAL RUNNER
+# =========================================================
+
+if __name__ == "__main__":
+
+    try:
+
+        main()
+
+    except KeyboardInterrupt:
+
+        print(
+            "STOPPED BY USER"
+        )
+
+    except Exception as e:
+
+        print()
+        print("=" * 60)
+        print(
+            "❌ ATI FATAL ERROR"
+        )
+        print("=" * 60)
+
+        print(
+            str(e)
+        )
+
+        telegram(
+            "❌ ATI FUTURES FATAL ERROR\n\n"
+            + str(e)[:1800]
+        )
