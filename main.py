@@ -2,22 +2,19 @@ import os
 import time
 import hmac
 import hashlib
-from urllib.parse import urlencode
-
 import requests
+from urllib.parse import urlencode
+from decimal import Decimal, ROUND_DOWN
 
 
 # =========================================================
-# ATI FUTURES MULTI-COIN
-# AUTO SYMBOL DISCOVERY
-# NO BTCUSDT FIXED SYMBOL
-# DIAGNOSTIC VERSION - NO REAL ORDER
+# ATI FUTURES REAL MULTI-COIN
 # =========================================================
 
 API_BASE = "https://api1.tabdeal.org"
 
-READ_BASE = f"{API_BASE}/r/fapi/v1/"
-WRITE_BASE = f"{API_BASE}/fapi/v1/"
+READ_BASE = API_BASE + "/r/fapi/v1/"
+WRITE_BASE = API_BASE + "/fapi/v1/"
 
 API_KEY = (
     os.getenv("TABDIL_API_KEY")
@@ -31,16 +28,43 @@ API_SECRET = (
     or ""
 ).strip()
 
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+
+
+# =========================================================
+# REAL SETTINGS
+# =========================================================
+
+REAL_TRADING = True
+
+LEVERAGE = int(os.getenv("FUTURES_LEVERAGE", "3"))
+
+ORDER_USDT = Decimal(
+    os.getenv("ORDER_USDT", "2")
+)
+
+TP_PERCENT = Decimal(
+    os.getenv("TP_PERCENT", "2.0")
+)
+
+SL_PERCENT = Decimal(
+    os.getenv("SL_PERCENT", "1.0")
+)
+
 RECV_WINDOW = 5000
 TIMEOUT = 15
 
-# فعلاً فقط تست و کشف بازار
-# هیچ سفارش واقعی ارسال نمی‌شود.
-REAL_TRADING = False
+# حداکثر تعداد نماد برای بررسی
+MAX_SYMBOLS = int(
+    os.getenv("MAX_FUTURES_SYMBOLS", "75")
+)
 
-SESSION = requests.Session()
-SESSION.headers.update({
-    "User-Agent": "ATI-Futures-Bot/1.0",
+
+session = requests.Session()
+
+session.headers.update({
+    "User-Agent": "ATI-FUTURES-REAL/1.0",
     "Accept": "application/json",
 })
 
@@ -49,49 +73,48 @@ SESSION.headers.update({
 # TELEGRAM
 # =========================================================
 
-BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+def tg(text):
 
+    print(text)
 
-def telegram(message):
-    if not BOT_TOKEN or not CHAT_ID:
-        print(message)
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         return
 
     try:
-        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
 
-        SESSION.post(
+        url = (
+            f"https://api.telegram.org/"
+            f"bot{TELEGRAM_TOKEN}/sendMessage"
+        )
+
+        session.post(
             url,
             data={
-                "chat_id": CHAT_ID,
-                "text": message,
+                "chat_id": TELEGRAM_CHAT_ID,
+                "text": text,
             },
             timeout=10,
         )
+
     except Exception as e:
+
         print("Telegram error:", e)
 
-    print(message)
-
 
 # =========================================================
-# HELPERS
+# JSON
 # =========================================================
 
-def pretty_number(value):
-    try:
-        return f"{float(value):,.8f}".rstrip("0").rstrip(".")
-    except Exception:
-        return str(value)
+def json_response(r):
 
-
-def extract_json(response):
     try:
-        return response.json()
+        return r.json()
+
     except Exception:
+
         raise RuntimeError(
-            f"HTTP {response.status_code}: {response.text[:1000]}"
+            f"HTTP {r.status_code}: "
+            f"{r.text[:1000]}"
         )
 
 
@@ -100,413 +123,527 @@ def extract_json(response):
 # =========================================================
 
 def public_get(endpoint, params=None):
-    url = READ_BASE + endpoint
 
-    r = SESSION.get(
-        url,
+    r = session.get(
+        READ_BASE + endpoint,
         params=params or {},
         timeout=TIMEOUT,
     )
 
     if r.status_code >= 400:
+
         raise RuntimeError(
-            f"HTTP {r.status_code}: {r.text[:1000]}"
+            f"HTTP {r.status_code}: "
+            f"{r.text[:1000]}"
         )
 
-    return extract_json(r)
+    return json_response(r)
 
 
 # =========================================================
-# SIGNED GET
+# SIGN
 # =========================================================
 
-def signed_get(endpoint, params=None):
+def signature(data):
+
+    query = urlencode(data)
+
+    return hmac.new(
+        API_SECRET.encode(),
+        query.encode(),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+# =========================================================
+# PRIVATE GET
+# =========================================================
+
+def private_get(endpoint, params=None):
+
     if not API_KEY or not API_SECRET:
+
         raise RuntimeError(
-            "TABDIL_API_KEY / TABDIL_API_SECRET not found"
+            "TABDIL_API_KEY / TABDIL_API_SECRET missing"
         )
 
     data = dict(params or {})
 
-    data["timestamp"] = int(time.time() * 1000)
+    data["timestamp"] = int(
+        time.time() * 1000
+    )
+
     data["recvWindow"] = RECV_WINDOW
 
-    query = urlencode(data)
-
-    signature = hmac.new(
-        API_SECRET.encode("utf-8"),
-        query.encode("utf-8"),
-        hashlib.sha256,
-    ).hexdigest()
-
-    data["signature"] = signature
+    data["signature"] = signature(data)
 
     headers = {
-        "X-MBX-APIKEY": API_KEY,
+        "X-MBX-APIKEY": API_KEY
     }
 
-    url = READ_BASE + endpoint
-
-    r = SESSION.get(
-        url,
+    r = session.get(
+        READ_BASE + endpoint,
         params=data,
         headers=headers,
         timeout=TIMEOUT,
     )
 
     if r.status_code >= 400:
+
         raise RuntimeError(
-            f"HTTP {r.status_code}: {r.text[:1000]}"
+            f"HTTP {r.status_code}: "
+            f"{r.text[:1000]}"
         )
 
-    return extract_json(r)
+    return json_response(r)
 
 
 # =========================================================
-# DISCOVER ALL FUTURES SYMBOLS
+# PRIVATE POST
 # =========================================================
 
-def discover_symbols():
+def private_post(endpoint, params):
 
-    print("\n" + "=" * 60)
-    print("🔎 FUTURES EXCHANGE INFO")
-    print("=" * 60)
+    if not API_KEY or not API_SECRET:
 
-    data = public_get("exchangeInfo")
+        raise RuntimeError(
+            "API KEY / SECRET missing"
+        )
 
-    print("RAW TYPE:", type(data).__name__)
+    data = dict(params)
+
+    data["timestamp"] = int(
+        time.time() * 1000
+    )
+
+    data["recvWindow"] = RECV_WINDOW
+
+    data["signature"] = signature(data)
+
+    headers = {
+        "X-MBX-APIKEY": API_KEY,
+        "Content-Type": "application/x-www-form-urlencoded",
+    }
+
+    r = session.post(
+        WRITE_BASE + endpoint,
+        data=data,
+        headers=headers,
+        timeout=TIMEOUT,
+    )
+
+    if r.status_code >= 400:
+
+        raise RuntimeError(
+            f"HTTP {r.status_code}: "
+            f"{r.text[:1500]}"
+        )
+
+    return json_response(r)
+
+
+# =========================================================
+# EXCHANGE INFO
+# =========================================================
+
+def exchange_info():
+
+    data = public_get(
+        "exchangeInfo"
+    )
+
+    if isinstance(data, dict):
+
+        if isinstance(
+            data.get("symbols"),
+            list
+        ):
+            return data["symbols"]
+
+        if isinstance(
+            data.get("data"),
+            list
+        ):
+            return data["data"]
+
+        if isinstance(
+            data.get("result"),
+            list
+        ):
+            return data["result"]
+
+        if isinstance(
+            data.get("data"),
+            dict
+        ):
+
+            if isinstance(
+                data["data"].get("symbols"),
+                list
+            ):
+                return data["data"]["symbols"]
+
+        if isinstance(
+            data.get("result"),
+            dict
+        ):
+
+            if isinstance(
+                data["result"].get("symbols"),
+                list
+            ):
+                return data["result"]["symbols"]
+
+    if isinstance(data, list):
+        return data
+
+    return []
+
+
+# =========================================================
+# SYMBOL LIST
+# =========================================================
+
+def get_symbols():
+
+    rows = exchange_info()
 
     symbols = []
 
-    # -----------------------------------------
-    # حالت‌های مختلف پاسخ API
-    # -----------------------------------------
+    for row in rows:
 
-    if isinstance(data, list):
-        symbols = data
+        if isinstance(row, str):
 
-    elif isinstance(data, dict):
+            symbol = row.upper()
 
-        if isinstance(data.get("symbols"), list):
-            symbols = data["symbols"]
+        elif isinstance(row, dict):
 
-        elif isinstance(data.get("data"), list):
-            symbols = data["data"]
-
-        elif isinstance(data.get("result"), list):
-            symbols = data["result"]
-
-        elif isinstance(data.get("data"), dict):
-
-            nested = data["data"]
-
-            if isinstance(nested.get("symbols"), list):
-                symbols = nested["symbols"]
-
-        elif isinstance(data.get("result"), dict):
-
-            nested = data["result"]
-
-            if isinstance(nested.get("symbols"), list):
-                symbols = nested["symbols"]
-
-    if not symbols:
-        print("\n❌ هیچ نماد Futures پیدا نشد.")
-        print("RAW RESPONSE:")
-        print(data)
-        return []
-
-    print(f"\n✅ تعداد رکوردهای Futures: {len(symbols)}")
-
-    result = []
-
-    for item in symbols:
-
-        if isinstance(item, str):
-            symbol = item.upper().strip()
-
-        elif isinstance(item, dict):
-            symbol = (
-                item.get("symbol")
-                or item.get("contract")
-                or item.get("name")
-                or item.get("pair")
+            symbol = str(
+                row.get("symbol")
+                or row.get("contract")
+                or row.get("pair")
                 or ""
-            )
+            ).upper()
 
-            symbol = str(symbol).upper().strip()
+            status = str(
+                row.get("status")
+                or ""
+            ).upper()
+
+            if status:
+
+                allowed = [
+                    "TRADING",
+                    "OPEN",
+                    "ACTIVE",
+                    "1",
+                ]
+
+                if status not in allowed:
+                    continue
 
         else:
             continue
 
-        if symbol:
-            result.append(symbol)
+        if not symbol:
+            continue
 
-    result = sorted(set(result))
+        if not (
+            symbol.endswith("USDT")
+            or symbol.endswith("USDC")
+            or symbol.endswith("USD")
+        ):
+            continue
 
-    print(f"✅ تعداد نمادهای قابل استخراج: {len(result)}")
+        blocked = [
+            "INDEX",
+            "MARK",
+            "TEST",
+        ]
+
+        if any(
+            x in symbol
+            for x in blocked
+        ):
+            continue
+
+        symbols.append(symbol)
+
+    return sorted(
+        set(symbols)
+    )
+
+
+# =========================================================
+# ORDER BOOK
+# =========================================================
+
+def depth(symbol):
+
+    return public_get(
+        "depth",
+        {
+            "symbol": symbol,
+            "limit": 5,
+        },
+    )
+
+
+# =========================================================
+# PRICE
+# =========================================================
+
+def get_price(symbol):
+
+    data = depth(symbol)
+
+    bids = data.get(
+        "bids",
+        []
+    )
+
+    asks = data.get(
+        "asks",
+        []
+    )
+
+    if not bids or not asks:
+        return None
+
+    bid = Decimal(
+        str(bids[0][0])
+    )
+
+    ask = Decimal(
+        str(asks[0][0])
+    )
+
+    return (
+        bid + ask
+    ) / Decimal("2")
+
+
+# =========================================================
+# SIMPLE PRICE-ACTION SIGNAL
+# =========================================================
+
+def signal(symbol):
+
+    try:
+
+        data = depth(symbol)
+
+        bids = data.get(
+            "bids",
+            []
+        )
+
+        asks = data.get(
+            "asks",
+            []
+        )
+
+        if not bids or not asks:
+            return None
+
+        bid_price = Decimal(
+            str(bids[0][0])
+        )
+
+        ask_price = Decimal(
+            str(asks[0][0])
+        )
+
+        bid_qty = Decimal(
+            str(bids[0][1])
+        )
+
+        ask_qty = Decimal(
+            str(asks[0][1])
+        )
+
+        if bid_qty <= 0 or ask_qty <= 0:
+            return None
+
+        total = (
+            bid_qty + ask_qty
+        )
+
+        bid_pressure = (
+            bid_qty / total
+        ) * Decimal("100")
+
+        ask_pressure = (
+            ask_qty / total
+        ) * Decimal("100")
+
+        price = (
+            bid_price + ask_price
+        ) / Decimal("2")
+
+        # فقط وقتی فشار واضح باشد
+        if bid_pressure >= Decimal("65"):
+
+            return {
+                "symbol": symbol,
+                "side": "BUY",
+                "price": price,
+                "pressure": bid_pressure,
+            }
+
+        if ask_pressure >= Decimal("65"):
+
+            return {
+                "symbol": symbol,
+                "side": "SELL",
+                "price": price,
+                "pressure": ask_pressure,
+            }
+
+    except Exception as e:
+
+        print(
+            f"{symbol} signal error:",
+            e
+        )
+
+    return None
+
+
+# =========================================================
+# FIND OPEN POSITIONS
+# =========================================================
+
+def open_positions():
+
+    data = private_get(
+        "positionRisk"
+    )
+
+    if not isinstance(data, list):
+        return []
+
+    result = []
+
+    for p in data:
+
+        try:
+
+            qty = Decimal(
+                str(
+                    p.get("positionAmt")
+                    or p.get("quantity")
+                    or p.get("qty")
+                    or "0"
+                )
+            )
+
+        except Exception:
+
+            qty = Decimal("0")
+
+        if qty != 0:
+
+            result.append(p)
 
     return result
 
 
 # =========================================================
-# FIND BEST TRADABLE SYMBOLS
+# SET LEVERAGE
 # =========================================================
 
-def find_candidates(symbols):
+def set_leverage(symbol):
 
-    print("\n" + "=" * 60)
-    print("📊 FUTURES SYMBOLS")
-    print("=" * 60)
+    return private_post(
+        "leverage",
+        {
+            "symbol": symbol,
+            "leverage": LEVERAGE,
+        },
+    )
 
-    # حذف مواردی که احتمالاً قابل معامله نیستند
-    blocked_words = [
-        "INDEX",
-        "MARK",
-        "TEST",
-        "NULL",
-    ]
 
-    candidates = []
+# =========================================================
+# FIND STEP SIZE
+# =========================================================
 
-    for symbol in symbols:
+def symbol_rules(symbol):
 
-        if any(word in symbol for word in blocked_words):
+    rows = exchange_info()
+
+    for row in rows:
+
+        if not isinstance(row, dict):
             continue
 
-        candidates.append(symbol)
+        s = str(
+            row.get("symbol")
+            or ""
+        ).upper()
 
-    print(f"✅ قابل بررسی: {len(candidates)}")
+        if s != symbol:
+            continue
 
-    # نمایش حداکثر 100 نماد
-    for i, symbol in enumerate(candidates[:100], 1):
-        print(f"{i:03d}  {symbol}")
-
-    if len(candidates) > 100:
-        print(
-            f"... و {len(candidates) - 100} نماد دیگر"
+        step = (
+            row.get("stepSize")
+            or row.get("quantityStep")
+            or row.get("qtyStep")
+            or "0.000001"
         )
 
-    return candidates
-
-
-# =========================================================
-# VERIFY SYMBOL
-# =========================================================
-
-def verify_symbol(symbol):
-
-    print("\n" + "=" * 60)
-    print(f"🔍 VERIFY: {symbol}")
-    print("=" * 60)
-
-    try:
-
-        data = public_get(
-            "depth",
-            {
-                "symbol": symbol,
-                "limit": 5,
-            },
+        min_qty = (
+            row.get("minQty")
+            or row.get("minQuantity")
+            or "0"
         )
 
-        print("✅ SYMBOL VALID")
-
-        if isinstance(data, dict):
-
-            bids = data.get("bids", [])
-            asks = data.get("asks", [])
-
-            print("BIDS:", len(bids))
-            print("ASKS:", len(asks))
-
-            if bids:
-                print("BEST BID:", bids[0])
-
-            if asks:
-                print("BEST ASK:", asks[0])
-
-        return True
-
-    except Exception as e:
-
-        print(f"❌ INVALID SYMBOL: {symbol}")
-        print("ERROR:", e)
-
-        return False
-
-
-# =========================================================
-# FIND USDT / USD FUTURES
-# =========================================================
-
-def find_quote_symbols(symbols):
-
-    preferred = []
-
-    for symbol in symbols:
-
-        s = symbol.upper()
-
-        if (
-            s.endswith("USDT")
-            or s.endswith("USDC")
-            or s.endswith("USD")
-        ):
-            preferred.append(s)
-
-    return sorted(set(preferred))
-
-
-# =========================================================
-# ACCOUNT TEST
-# =========================================================
-
-def account_test():
-
-    print("\n" + "=" * 60)
-    print("🔐 FUTURES ACCOUNT")
-    print("=" * 60)
-
-    data = signed_get("account")
-
-    if isinstance(data, dict):
-
-        print("✅ AUTH SUCCESS")
-
-        print(
-            "canTrade:",
-            data.get("canTrade")
+        return (
+            Decimal(str(step)),
+            Decimal(str(min_qty)),
         )
 
-        print(
-            "canWithdraw:",
-            data.get("canWithdraw")
-        )
-
-        print(
-            "canDeposit:",
-            data.get("canDeposit")
-        )
-
-        assets = data.get("assets", [])
-
-        if isinstance(assets, list):
-
-            print("\n💰 BALANCES:")
-
-            shown = 0
-
-            for asset in assets:
-
-                if not isinstance(asset, dict):
-                    continue
-
-                name = asset.get("asset", "")
-
-                wallet = (
-                    asset.get("walletBalance")
-                    or asset.get("balance")
-                    or "0"
-                )
-
-                available = (
-                    asset.get("availableBalance")
-                    or asset.get("available")
-                    or "0"
-                )
-
-                try:
-                    available_float = float(available)
-                except Exception:
-                    available_float = 0
-
-                if available_float != 0 or name in [
-                    "USDT",
-                    "USDC",
-                ]:
-
-                    print(
-                        f"{name}: "
-                        f"wallet={wallet} "
-                        f"available={available}"
-                    )
-
-                    shown += 1
-
-            if shown == 0:
-                print("موجودی قابل نمایش پیدا نشد.")
+    return (
+        Decimal("0.000001"),
+        Decimal("0"),
+    )
 
 
 # =========================================================
-# POSITION TEST
+# ROUND QUANTITY
 # =========================================================
 
-def positions_test():
+def round_qty(qty, step):
 
-    print("\n" + "=" * 60)
-    print("📌 OPEN FUTURES POSITIONS")
-    print("=" * 60)
+    if step <= 0:
+        return qty
 
-    data = signed_get("positionRisk")
+    return (
+        qty / step
+    ).to_integral_value(
+        rounding=ROUND_DOWN
+    ) * step
 
-    if isinstance(data, list):
 
-        open_positions = []
+# =========================================================
+# REAL MARKET ORDER
+# =========================================================
 
-        for p in data:
+def market_order(
+    symbol,
+    side,
+    quantity,
+):
 
-            if not isinstance(p, dict):
-                continue
-
-            amount = (
-                p.get("positionAmt")
-                or p.get("quantity")
-                or p.get("qty")
-                or "0"
-            )
-
-            try:
-                amount_float = float(amount)
-            except Exception:
-                amount_float = 0
-
-            if amount_float != 0:
-                open_positions.append(p)
-
-        if not open_positions:
-            print("✅ هیچ پوزیشن بازی وجود ندارد.")
-
-        else:
-
-            for p in open_positions:
-
-                print(
-                    "\nSYMBOL:",
-                    p.get("symbol")
-                )
-
-                print(
-                    "POSITION:",
-                    p.get("positionAmt")
-                    or p.get("quantity")
-                    or p.get("qty")
-                )
-
-                print(
-                    "ENTRY:",
-                    p.get("entryPrice")
-                )
-
-                print(
-                    "MARK:",
-                    p.get("markPrice")
-                )
-
-                print(
-                    "UNREALIZED:",
-                    p.get("unRealizedProfit")
-                )
+    return private_post(
+        "order",
+        {
+            "symbol": symbol,
+            "side": side,
+            "type": "MARKET",
+            "quantity": str(quantity),
+        },
+    )
 
 
 # =========================================================
@@ -515,27 +652,80 @@ def positions_test():
 
 def main():
 
-    telegram(
-        "💓 ATI FUTURES\n"
-        "⚡ MULTI-COIN AUTO DISCOVERY\n"
-        "📡 TABDEAL FUTURES\n"
-        "🔒 REAL ORDER: OFF\n"
-        "🔎 BTC ثابت نیست"
+    tg(
+        "💓 ATI FUTURES REAL\n"
+        "🔥 REAL TRADING = ON\n"
+        "📊 MULTI-COIN\n"
+        f"⚙️ LEVERAGE = {LEVERAGE}x\n"
+        f"💵 ORDER = {ORDER_USDT} USDT"
     )
 
-    print("\nATI FUTURES MULTI-COIN START")
+    if not API_KEY or not API_SECRET:
 
-    # -----------------------------------------
-    # 1. Discover
-    # -----------------------------------------
+        tg(
+            "❌ API KEY/SECRET موجود نیست."
+        )
+
+        return
+
+    # -----------------------------------------------------
+    # ACCOUNT
+    # -----------------------------------------------------
 
     try:
-        symbols = discover_symbols()
+
+        account = private_get(
+            "account"
+        )
+
+        tg(
+            "✅ FUTURES AUTH SUCCESS\n"
+            f"🔓 canTrade={account.get('canTrade')}"
+        )
 
     except Exception as e:
 
-        telegram(
-            "❌ FUTURES EXCHANGE INFO ERROR\n\n"
+        tg(
+            "❌ FUTURES AUTH ERROR\n\n"
+            + str(e)
+        )
+
+        return
+
+    # -----------------------------------------------------
+    # POSITIONS
+    # -----------------------------------------------------
+
+    try:
+
+        positions = open_positions()
+
+        tg(
+            "📌 OPEN POSITIONS: "
+            + str(len(positions))
+        )
+
+    except Exception as e:
+
+        tg(
+            "❌ POSITION ERROR\n\n"
+            + str(e)
+        )
+
+        return
+
+    # -----------------------------------------------------
+    # SYMBOLS
+    # -----------------------------------------------------
+
+    try:
+
+        symbols = get_symbols()
+
+    except Exception as e:
+
+        tg(
+            "❌ EXCHANGE INFO ERROR\n\n"
             + str(e)
         )
 
@@ -543,130 +733,207 @@ def main():
 
     if not symbols:
 
-        telegram(
+        tg(
             "❌ هیچ Futures Symbol پیدا نشد."
         )
 
         return
 
-    # -----------------------------------------
-    # 2. All tradable candidates
-    # -----------------------------------------
+    symbols = symbols[:MAX_SYMBOLS]
 
-    candidates = find_candidates(symbols)
-
-    # -----------------------------------------
-    # 3. USDT / USD market list
-    # -----------------------------------------
-
-    quote_symbols = find_quote_symbols(candidates)
-
-    print("\n" + "=" * 60)
-    print("💵 USDT / USD FUTURES")
-    print("=" * 60)
-
-    print(
-        f"تعداد: {len(quote_symbols)}"
+    tg(
+        "📊 FUTURES MARKET\n"
+        f"TOTAL SYMBOLS = {len(symbols)}\n"
+        "🔎 SCANNING..."
     )
 
-    for symbol in quote_symbols[:150]:
-        print(symbol)
+    # -----------------------------------------------------
+    # SCAN
+    # -----------------------------------------------------
 
-    if len(quote_symbols) > 150:
-        print(
-            f"... {len(quote_symbols)-150} مورد دیگر"
-        )
+    candidates = []
 
-    # -----------------------------------------
-    # 4. Verify several real symbols
-    # -----------------------------------------
+    open_symbols = set()
 
-    print("\n" + "=" * 60)
-    print("🧪 VERIFY REAL FUTURES MARKETS")
-    print("=" * 60)
+    for p in positions:
 
-    verified = []
+        s = str(
+            p.get("symbol")
+            or ""
+        ).upper()
 
-    # اول نمادهای USDT
-    test_list = quote_symbols[:20]
+        if s:
+            open_symbols.add(s)
 
-    for symbol in test_list:
+    for symbol in symbols:
 
-        if verify_symbol(symbol):
-            verified.append(symbol)
+        # پوزیشن باز را دوباره وارد نکن
+        if symbol in open_symbols:
+            continue
 
-    # -----------------------------------------
-    # 5. Account
-    # -----------------------------------------
+        sig = signal(symbol)
 
-    if API_KEY and API_SECRET:
+        if not sig:
+            continue
 
-        try:
-            account_test()
-
-        except Exception as e:
-
-            print(
-                "\n❌ ACCOUNT ERROR:"
-            )
-
-            print(e)
-
-        try:
-            positions_test()
-
-        except Exception as e:
-
-            print(
-                "\n❌ POSITION ERROR:"
-            )
-
-            print(e)
-
-    else:
+        candidates.append(sig)
 
         print(
-            "\n⚠️ API KEY/SECRET موجود نیست."
+            "SIGNAL",
+            symbol,
+            sig["side"],
+            sig["pressure"]
         )
 
-    # -----------------------------------------
-    # FINAL
-    # -----------------------------------------
+    if not candidates:
 
-    print("\n" + "=" * 60)
-    print("✅ ATI FUTURES DISCOVERY FINISHED")
-    print("=" * 60)
+        tg(
+            "ℹ️ فعلاً سیگنال قدرتمند پیدا نشد.\n"
+            f"📊 SCANNED: {len(symbols)}\n"
+            "🔒 NO ORDER"
+        )
 
-    print(
-        f"📊 TOTAL SYMBOLS: {len(symbols)}"
+        return
+
+    # -----------------------------------------------------
+    # BEST SIGNAL
+    # -----------------------------------------------------
+
+    candidates.sort(
+        key=lambda x: x["pressure"],
+        reverse=True,
     )
 
-    print(
-        f"💵 USDT/USD SYMBOLS: {len(quote_symbols)}"
+    best = candidates[0]
+
+    symbol = best["symbol"]
+    side = best["side"]
+    price = best["price"]
+    pressure = best["pressure"]
+
+    tg(
+        "🚨 BEST FUTURES SIGNAL\n\n"
+        f"🪙 {symbol}\n"
+        f"📍 {side}\n"
+        f"💰 PRICE: {price}\n"
+        f"💪 PRESSURE: {pressure:.2f}%\n"
+        f"⚙️ LEVERAGE: {LEVERAGE}x\n"
+        f"💵 MARGIN: {ORDER_USDT} USDT\n"
+        "🔥 REAL ORDER: ON"
     )
 
-    print(
-        f"🟢 VERIFIED SYMBOLS: {len(verified)}"
-    )
+    # -----------------------------------------------------
+    # LEVERAGE
+    # -----------------------------------------------------
 
-    if verified:
+    try:
 
-        print("\nنمادهای تأییدشده:")
+        lev = set_leverage(
+            symbol
+        )
 
-        for s in verified:
-            print("✅", s)
+        print(
+            "LEVERAGE RESULT:",
+            lev
+        )
 
-    print(
-        "\n🔒 REAL ORDER = OFF"
-    )
+    except Exception as e:
 
-    telegram(
-        "✅ ATI FUTURES SCAN OK\n"
-        f"📊 TOTAL: {len(symbols)}\n"
-        f"💵 USDT/USD: {len(quote_symbols)}\n"
-        f"🟢 VERIFIED: {len(verified)}\n"
-        "🔒 REAL ORDER: OFF"
-    )
+        tg(
+            "❌ LEVERAGE ERROR\n\n"
+            + str(e)
+        )
+
+        return
+
+    # -----------------------------------------------------
+    # QUANTITY
+    # -----------------------------------------------------
+
+    try:
+
+        step, min_qty = symbol_rules(
+            symbol
+        )
+
+        if price <= 0:
+
+            raise RuntimeError(
+                "Invalid price"
+            )
+
+        # مقدار اسمی پوزیشن:
+        # margin × leverage
+        notional = (
+            ORDER_USDT
+            * Decimal(LEVERAGE)
+        )
+
+        quantity = (
+            notional / price
+        )
+
+        quantity = round_qty(
+            quantity,
+            step,
+        )
+
+        if quantity <= 0:
+
+            raise RuntimeError(
+                "Calculated quantity is zero"
+            )
+
+        if quantity < min_qty:
+
+            raise RuntimeError(
+                f"Quantity {quantity} "
+                f"< minimum {min_qty}"
+            )
+
+    except Exception as e:
+
+        tg(
+            "❌ QUANTITY ERROR\n\n"
+            + str(e)
+        )
+
+        return
+
+    # -----------------------------------------------------
+    # REAL ORDER
+    # -----------------------------------------------------
+
+    try:
+
+        order = market_order(
+            symbol,
+            side,
+            quantity,
+        )
+
+        tg(
+            "🔥🔥 REAL FUTURES ORDER SENT 🔥🔥\n\n"
+            f"🪙 {symbol}\n"
+            f"📍 {side}\n"
+            f"💰 ENTRY ≈ {price}\n"
+            f"📦 QTY = {quantity}\n"
+            f"⚙️ LEVERAGE = {LEVERAGE}x\n"
+            f"💵 MARGIN ≈ {ORDER_USDT} USDT\n\n"
+            f"ORDER RESPONSE:\n{str(order)[:1500]}"
+        )
+
+    except Exception as e:
+
+        tg(
+            "❌ REAL ORDER FAILED\n\n"
+            f"{symbol}\n"
+            f"{side}\n"
+            f"QTY={quantity}\n\n"
+            f"{e}"
+        )
+
+        return
 
 
 if __name__ == "__main__":
