@@ -1,20 +1,31 @@
-name: ATI Futures Bot
+name: Run ATI Futures Bot
 
 on:
   workflow_dispatch:
-
   schedule:
     - cron: "*/5 * * * *"
 
 jobs:
   run-bot:
-
     runs-on: ubuntu-latest
 
-    timeout-minutes: 4
+    env:
+      TABDIL_API_KEY: ${{ secrets.TABDIL_API_KEY }}
+      TABDIL_API_SECRET: ${{ secrets.TABDIL_API_SECRET }}
+
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
+      LIVE_TRADING: ${{ secrets.LIVE_TRADING }}
+      ORDER_QTY: ${{ secrets.ORDER_QTY }}
+      LEVERAGE: ${{ secrets.LEVERAGE }}
+
+      MAX_NEW_TRADES: ${{ secrets.MAX_NEW_TRADES }}
+      SL_PERCENT: ${{ secrets.SL_PERCENT }}
+      TP_PERCENT: ${{ secrets.TP_PERCENT }}
+      SCAN_LIMIT: ${{ secrets.SCAN_LIMIT }}
 
     steps:
-
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -23,47 +34,11 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install dependencies
+      - name: Install requests
         run: |
           python -m pip install --upgrade pip
           pip install requests
-          pip install tabdeal-python
 
       - name: Run ATI Futures
-        env:
-
-          TABDIL_API_KEY: ${{ secrets.TABDIL_API_KEY }}
-          TABDIL_API_SECRET: ${{ secrets.TABDIL_API_SECRET }}
-
-          TABDEAL_API_KEY: ${{ secrets.TABDEAL_API_KEY }}
-          TABDEAL_API_SECRET: ${{ secrets.TABDEAL_API_SECRET }}
-
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-
-          # ------------------------------------------------
-          # IMPORTANT:
-          # ابتدا FALSE بماند.
-          # ------------------------------------------------
-          LIVE_TRADING: "false"
-
-          # اهرم
-          LEVERAGE: "3"
-
-          # مقدار مارجین هر معامله
-          ORDER_QTY: "2"
-
-          # حد سود و حد ضرر
-          TP_PERCENT: "2.0"
-          SL_PERCENT: "1.0"
-
-          # حداکثر تعداد پوزیشن همزمان
-          MAX_OPEN_POSITIONS: "1"
-
-          # تعداد بازارهایی که بررسی می‌شود
-          SCAN_UNIVERSE: "30"
-
-          # ------------------------------------------------
-
         run: |
           python main.py
