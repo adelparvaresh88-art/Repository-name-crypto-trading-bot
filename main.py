@@ -5,33 +5,75 @@ import math
 import hmac
 import hashlib
 import requests
-from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+
 # ============================================================
-# ATI FUTURES V10
-# REAL FUTURES + ICHIMOKU 9/26/52
+# ATI FUTURES V11
+# REAL TABDEAL FUTURES API
+# 5M KLINES
+# ICHIMOKU 9 / 26 / 52
 # NO EMA
 # ============================================================
 
-BASE_URL = os.getenv("BASE_URL", "https://api1.tabdeal.org").rstrip("/")
+BASE_URL = os.getenv(
+    "BASE_URL",
+    "https://api1.tabdeal.org"
+).rstrip("/")
 
-ORDER_USDT = float(os.getenv("ORDER_USDT", "2"))
-LEVERAGE = int(os.getenv("LEVERAGE", "3"))
+ORDER_USDT = float(
+    os.getenv("ORDER_USDT", "2")
+)
 
-REAL_TRADING = os.getenv("REAL_TRADING", "false").lower() == "true"
+LEVERAGE = int(
+    os.getenv("LEVERAGE", "3")
+)
 
-TP_PCT = float(os.getenv("TP_PCT", "0.02"))
-SL_PCT = float(os.getenv("SL_PCT", "0.01"))
+REAL_TRADING = (
+    os.getenv(
+        "REAL_TRADING",
+        "false"
+    ).lower() == "true"
+)
 
-SCAN_UNIVERSE = int(os.getenv("SCAN_UNIVERSE", "75"))
-MIN_SCORE = int(os.getenv("MIN_SCORE", "6"))
+TP_PCT = float(
+    os.getenv("TP_PCT", "0.02")
+)
 
-REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", "8"))
-MAX_WORKERS = int(os.getenv("MAX_WORKERS", "20"))
-RECV_WINDOW = int(os.getenv("RECV_WINDOW", "5000"))
+SL_PCT = float(
+    os.getenv("SL_PCT", "0.01")
+)
+
+SCAN_UNIVERSE = int(
+    os.getenv("SCAN_UNIVERSE", "75")
+)
+
+MIN_SCORE = int(
+    os.getenv("MIN_SCORE", "6")
+)
+
+REQUEST_TIMEOUT = int(
+    os.getenv("REQUEST_TIMEOUT", "10")
+)
+
+MAX_WORKERS = int(
+    os.getenv("MAX_WORKERS", "15")
+)
+
+RECV_WINDOW = int(
+    os.getenv("RECV_WINDOW", "5000")
+)
+
+KLINE_LIMIT = int(
+    os.getenv("KLINE_LIMIT", "100")
+)
 
 STATE_FILE = "ati_futures_state.json"
+
+
+# ============================================================
+# API KEYS
+# ============================================================
 
 API_KEY = (
     os.getenv("TABDEAL_API_KEY")
@@ -49,10 +91,32 @@ API_SECRET = (
     or ""
 )
 
-TG_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-TG_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+
+# ============================================================
+# TELEGRAM
+# ============================================================
+
+TG_TOKEN = os.getenv(
+    "TELEGRAM_BOT_TOKEN",
+    ""
+)
+
+TG_CHAT_ID = os.getenv(
+    "TELEGRAM_CHAT_ID",
+    ""
+)
+
+
+# ============================================================
+# SESSION
+# ============================================================
 
 session = requests.Session()
+
+session.headers.update({
+    "User-Agent": "ATI-Futures-V11",
+    "Accept": "application/json",
+})
 
 
 # ============================================================
@@ -60,11 +124,17 @@ session = requests.Session()
 # ============================================================
 
 def telegram(text):
+
     if not TG_TOKEN or not TG_CHAT_ID:
         return
 
     try:
-        url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
+
+        url = (
+            "https://api.telegram.org/"
+            f"bot{TG_TOKEN}/sendMessage"
+        )
+
         requests.post(
             url,
             json={
@@ -73,15 +143,17 @@ def telegram(text):
             },
             timeout=10,
         )
+
     except Exception:
         pass
 
 
 # ============================================================
-# HTTP
+# PUBLIC REQUEST
 # ============================================================
 
 def public_get(path, params=None):
+
     url = BASE_URL + path
 
     r = session.get(
@@ -90,19 +162,50 @@ def public_get(path, params=None):
         timeout=REQUEST_TIMEOUT,
     )
 
-    r.raise_for_status()
-    return r.json()
+    if r.status_code >= 400:
+
+        raise RuntimeError(
+            f"HTTP {r.status_code}: "
+            f"{r.text[:250]}"
+        )
+
+    try:
+
+        return r.json()
+
+    except Exception:
+
+        raise RuntimeError(
+            f"INVALID JSON: {r.text[:250]}"
+        )
 
 
-def signed_request(method, path, params=None):
+# ============================================================
+# SIGNED REQUEST
+# ============================================================
+
+def signed_request(
+    method,
+    path,
+    params=None
+):
+
     if not API_KEY or not API_SECRET:
-        raise RuntimeError("API KEY/SECRET missing")
+
+        raise RuntimeError(
+            "API KEY/SECRET missing"
+        )
 
     data = dict(params or {})
 
-    data["timestamp"] = int(time.time() * 1000)
+    data["timestamp"] = int(
+        time.time() * 1000
+    )
+
     data["recvWindow"] = RECV_WINDOW
 
+    # IMPORTANT:
+    # Keep insertion order exactly.
     query = "&".join(
         f"{k}={data[k]}"
         for k in data
@@ -123,13 +226,16 @@ def signed_request(method, path, params=None):
     url = BASE_URL + path
 
     if method.upper() == "GET":
+
         r = session.get(
             url,
             params=data,
             headers=headers,
             timeout=REQUEST_TIMEOUT,
         )
-    else:
+
+    elif method.upper() == "POST":
+
         r = session.post(
             url,
             data=data,
@@ -137,12 +243,28 @@ def signed_request(method, path, params=None):
             timeout=REQUEST_TIMEOUT,
         )
 
-    if r.status_code >= 400:
+    else:
+
         raise RuntimeError(
-            f"HTTP {r.status_code}: {r.text[:500]}"
+            f"Unsupported HTTP method: {method}"
         )
 
-    return r.json()
+    if r.status_code >= 400:
+
+        raise RuntimeError(
+            f"HTTP {r.status_code}: "
+            f"{r.text[:500]}"
+        )
+
+    try:
+
+        return r.json()
+
+    except Exception:
+
+        raise RuntimeError(
+            f"INVALID JSON: {r.text[:500]}"
+        )
 
 
 # ============================================================
@@ -151,13 +273,28 @@ def signed_request(method, path, params=None):
 
 def get_markets():
 
+    # V11 FIX:
+    # Tabdeal uses /r/api/v1/
+    # NOT /r/fapi/v1/
+
     data = public_get(
-        "/r/fapi/v1/exchangeInfo"
+        "/r/api/v1/exchangeInfo"
     )
+
+    symbols = data.get(
+        "symbols",
+        []
+    )
+
+    if not isinstance(symbols, list):
+
+        raise RuntimeError(
+            "exchangeInfo symbols is not a list"
+        )
 
     markets = []
 
-    for s in data.get("symbols", []):
+    for s in symbols:
 
         symbol = str(
             s.get("symbol", "")
@@ -171,247 +308,169 @@ def get_markets():
             s.get("quoteAsset", "")
         ).upper()
 
-        if (
-            symbol
-            and status in ("TRADING", "ACTIVE", "")
-            and quote == "USDT"
+        contract = str(
+            s.get(
+                "contractType",
+                ""
+            )
+        ).upper()
+
+        # Futures USDT markets
+        if not symbol:
+            continue
+
+        if quote != "USDT":
+            continue
+
+        if status not in (
+            "",
+            "TRADING",
+            "ACTIVE",
         ):
-            markets.append(s)
+            continue
+
+        markets.append(s)
 
     markets.sort(
-        key=lambda x: x.get("symbol", "")
+        key=lambda x:
+        x.get("symbol", "")
     )
 
     return markets[:SCAN_UNIVERSE]
 
 
 # ============================================================
-# SYMBOL RULES
+# KLINES
 # ============================================================
 
-def symbol_rules(info):
+def parse_klines(data):
 
-    quantity_step = 1.0
-    min_qty = 0.0
-    tick_size = 0.0
+    candles = []
 
-    for f in info.get("filters", []):
+    if not isinstance(data, list):
+        return candles
 
-        typ = str(
-            f.get("filterType", "")
-        )
+    for row in data:
 
-        if typ in ("LOT_SIZE", "MARKET_LOT_SIZE"):
+        if not isinstance(row, list):
+            continue
 
-            step = f.get("stepSize")
+        if len(row) < 6:
+            continue
 
-            if step:
-                quantity_step = float(step)
+        try:
 
-            mq = f.get("minQty")
+            candles.append({
+                "time": int(row[0]),
+                "open": float(row[1]),
+                "high": float(row[2]),
+                "low": float(row[3]),
+                "close": float(row[4]),
+                "volume": float(row[5]),
+            })
 
-            if mq:
-                min_qty = float(mq)
+        except Exception:
 
-        if typ == "PRICE_FILTER":
+            continue
 
-            ts = f.get("tickSize")
-
-            if ts:
-                tick_size = float(ts)
-
-    return quantity_step, min_qty, tick_size
-
-
-def floor_step(value, step):
-
-    if step <= 0:
-        return value
-
-    return math.floor(
-        value / step
-    ) * step
+    return candles
 
 
-def round_tick(value, tick):
+def fetch_5m_klines(symbol):
 
-    if tick <= 0:
-        return value
+    errors = []
 
-    return round(
-        math.floor(value / tick) * tick,
-        12,
-    )
-
-
-# ============================================================
-# PRICE
-# ============================================================
-
-def fetch_depth(symbol):
-
-    data = public_get(
-        "/r/fapi/v1/depth",
-        {
-            "symbol": symbol,
-            "limit": 20,
-        },
-    )
-
-    bids = data.get("bids", [])
-    asks = data.get("asks", [])
-
-    if not bids or not asks:
-        return None
-
-    bid = float(bids[0][0])
-    ask = float(asks[0][0])
-
-    if bid <= 0 or ask <= 0:
-        return None
-
-    mid = (bid + ask) / 2.0
-
-    return {
-        "symbol": symbol,
-        "bid": bid,
-        "ask": ask,
-        "price": mid,
-        "time": int(time.time() * 1000),
-    }
-
-
-# ============================================================
-# OPTIONAL REAL TRADES
-#
-# If the Futures public trade endpoint is available on the
-# current Tabdeal deployment, use it.
-#
-# If unavailable, we safely fall back to depth.
-# ============================================================
-
-def fetch_recent_trades(symbol):
+    # --------------------------------------------------------
+    # METHOD 1
+    # Official Tabdeal read API
+    # --------------------------------------------------------
 
     try:
 
         data = public_get(
-            "/r/fapi/v1/trades",
+            "/r/api/v1/klines",
             {
                 "symbol": symbol,
-                "limit": 1000,
+                "interval": "5m",
+                "limit": KLINE_LIMIT,
             },
         )
 
-        if not isinstance(data, list):
-            return []
+        candles = parse_klines(data)
 
-        trades = []
+        if candles:
 
-        for x in data:
+            return candles, "r/api/v1/klines"
 
-            price = x.get("price")
-            qty = x.get("qty")
+        errors.append(
+            "KLINES_EMPTY"
+        )
 
-            if price is None:
-                price = x.get("p")
+    except Exception as e:
 
-            if qty is None:
-                qty = x.get("q")
+        errors.append(
+            str(e)[:180]
+        )
 
-            tm = x.get("time")
+    # --------------------------------------------------------
+    # METHOD 2
+    # Some deployments may expose the
+    # endpoint under /api/v1/
+    # --------------------------------------------------------
 
-            if tm is None:
-                tm = x.get("T")
+    try:
 
-            if (
-                price is None
-                or qty is None
-                or tm is None
-            ):
-                continue
+        data = public_get(
+            "/api/v1/klines",
+            {
+                "symbol": symbol,
+                "interval": "5m",
+                "limit": KLINE_LIMIT,
+            },
+        )
 
-            trades.append(
-                {
-                    "price": float(price),
-                    "qty": float(qty),
-                    "time": int(tm),
-                }
-            )
+        candles = parse_klines(data)
 
-        return trades
+        if candles:
 
-    except Exception:
-        return []
+            return candles, "api/v1/klines"
+
+        errors.append(
+            "API_KLINES_EMPTY"
+        )
+
+    except Exception as e:
+
+        errors.append(
+            str(e)[:180]
+        )
+
+    raise RuntimeError(
+        " | ".join(errors)
+    )
 
 
 # ============================================================
-# 5M CANDLES FROM REAL TRADES
+# REMOVE OPEN CANDLE
 # ============================================================
 
-def trades_to_5m(trades):
+def closed_candles(candles):
 
-    if not trades:
+    if not candles:
         return []
 
-    buckets = {}
+    now_ms = int(
+        time.time() * 1000
+    )
 
-    for t in trades:
-
-        ts = int(t["time"])
-
-        bucket = (
-            ts // 300000
-        ) * 300000
-
-        price = float(t["price"])
-        qty = float(t["qty"])
-
-        if bucket not in buckets:
-
-            buckets[bucket] = {
-                "time": bucket,
-                "open": price,
-                "high": price,
-                "low": price,
-                "close": price,
-                "volume": qty,
-            }
-
-        else:
-
-            c = buckets[bucket]
-
-            c["high"] = max(
-                c["high"],
-                price
-            )
-
-            c["low"] = min(
-                c["low"],
-                price
-            )
-
-            c["close"] = price
-
-            c["volume"] += qty
-
-    candles = [
-        buckets[k]
-        for k in sorted(buckets)
-    ]
-
-    # آخرین کندل هنوز ممکن است بسته نشده باشد
-    now_bucket = (
-        int(time.time() * 1000)
-        // 300000
+    current_bucket = (
+        now_ms // 300000
     ) * 300000
 
-    candles = [
+    return [
         c for c in candles
-        if c["time"] < now_bucket
+        if c["time"] < current_bucket
     ]
-
-    return candles
 
 
 # ============================================================
@@ -420,7 +479,9 @@ def trades_to_5m(trades):
 
 def load_state():
 
-    if not os.path.exists(STATE_FILE):
+    if not os.path.exists(
+        STATE_FILE
+    ):
         return {}
 
     try:
@@ -461,52 +522,213 @@ def save_state(state):
 
 
 # ============================================================
+# SYMBOL RULES
+# ============================================================
+
+def symbol_rules(info):
+
+    quantity_step = 0.0
+    min_qty = 0.0
+    tick_size = 0.0
+
+    for f in info.get(
+        "filters",
+        []
+    ):
+
+        typ = str(
+            f.get(
+                "filterType",
+                ""
+            )
+        )
+
+        if typ in (
+            "LOT_SIZE",
+            "MARKET_LOT_SIZE",
+        ):
+
+            try:
+
+                quantity_step = float(
+                    f.get(
+                        "stepSize",
+                        0
+                    )
+                )
+
+            except Exception:
+                pass
+
+            try:
+
+                min_qty = float(
+                    f.get(
+                        "minQty",
+                        0
+                    )
+                )
+
+            except Exception:
+                pass
+
+        elif typ == "PRICE_FILTER":
+
+            try:
+
+                tick_size = float(
+                    f.get(
+                        "tickSize",
+                        0
+                    )
+                )
+
+            except Exception:
+                pass
+
+    return (
+        quantity_step,
+        min_qty,
+        tick_size,
+    )
+
+
+def floor_step(
+    value,
+    step
+):
+
+    if step <= 0:
+        return value
+
+    return (
+        math.floor(
+            value / step
+        ) * step
+    )
+
+
+def round_tick(
+    value,
+    tick
+):
+
+    if tick <= 0:
+        return value
+
+    decimals = 12
+
+    try:
+
+        decimals = max(
+            0,
+            int(
+                -math.floor(
+                    math.log10(tick)
+                )
+            ) + 2
+        )
+
+    except Exception:
+        pass
+
+    return round(
+        math.floor(
+            value / tick
+        ) * tick,
+        decimals,
+    )
+
+
+# ============================================================
 # ICHIMOKU
 # ============================================================
 
 def ichimoku(candles):
 
-    if len(candles) < 53:
+    # Need enough candles for 52-period cloud
+    # plus previous candle.
+    if len(candles) < 54:
         return None
 
     highs = [
-        float(x["high"])
-        for x in candles
+        float(c["high"])
+        for c in candles
     ]
 
     lows = [
-        float(x["low"])
-        for x in candles
+        float(c["low"])
+        for c in candles
     ]
 
     closes = [
-        float(x["close"])
-        for x in candles
+        float(c["close"])
+        for c in candles
     ]
 
-    def midpoint(period, end):
+    def midpoint(
+        period,
+        end
+    ):
 
-        h = max(
-            highs[end - period + 1:end + 1]
+        start = (
+            end - period + 1
         )
 
-        l = min(
-            lows[end - period + 1:end + 1]
+        if start < 0:
+            return None
+
+        hh = max(
+            highs[start:end + 1]
         )
 
-        return (max(h) + min(l)) / 2.0
+        ll = min(
+            lows[start:end + 1]
+        )
+
+        return (
+            hh + ll
+        ) / 2.0
 
     i = len(candles) - 1
 
     tenkan = midpoint(9, i)
     kijun = midpoint(26, i)
+    span_b = midpoint(52, i)
 
-    # Current cloud values
+    prev_tenkan = midpoint(
+        9,
+        i - 1
+    )
+
+    prev_kijun = midpoint(
+        26,
+        i - 1
+    )
+
+    prev_span_b = midpoint(
+        52,
+        i - 1
+    )
+
+    if (
+        tenkan is None
+        or kijun is None
+        or span_b is None
+        or prev_tenkan is None
+        or prev_kijun is None
+        or prev_span_b is None
+    ):
+        return None
+
     span_a = (
         tenkan + kijun
     ) / 2.0
 
-    span_b = midpoint(52, i)
+    prev_span_a = (
+        prev_tenkan
+        + prev_kijun
+    ) / 2.0
 
     price = closes[i]
 
@@ -520,119 +742,166 @@ def ichimoku(candles):
         span_b
     )
 
-    # Previous values
-    prev_tenkan = midpoint(9, i - 1)
-    prev_kijun = midpoint(26, i - 1)
+    buy_score = 0
+    sell_score = 0
 
-    prev_span_a = (
-        prev_tenkan + prev_kijun
-    ) / 2.0
+    buy_reasons = []
+    sell_reasons = []
 
-    prev_span_b = midpoint(52, i - 1)
+    # --------------------------------------------------------
+    # PRICE / CLOUD
+    # --------------------------------------------------------
 
-    score_buy = 0
-    score_sell = 0
-
-    reasons_buy = []
-    reasons_sell = []
-
-    # PRICE VS CLOUD
     if price > cloud_top:
-        score_buy += 2
-        reasons_buy.append(
+
+        buy_score += 2
+
+        buy_reasons.append(
             "PRICE_ABOVE_CLOUD"
         )
 
-    if price < cloud_bottom:
-        score_sell += 2
-        reasons_sell.append(
+    elif price < cloud_bottom:
+
+        sell_score += 2
+
+        sell_reasons.append(
             "PRICE_BELOW_CLOUD"
         )
 
+    # --------------------------------------------------------
     # TENKAN / KIJUN
+    # --------------------------------------------------------
+
     if tenkan > kijun:
-        score_buy += 2
-        reasons_buy.append(
+
+        buy_score += 2
+
+        buy_reasons.append(
             "TENKAN_GT_KIJUN"
         )
 
-    if tenkan < kijun:
-        score_sell += 2
-        reasons_sell.append(
+    elif tenkan < kijun:
+
+        sell_score += 2
+
+        sell_reasons.append(
             "TENKAN_LT_KIJUN"
         )
 
-    # CLOUD DIRECTION
+    # --------------------------------------------------------
+    # CLOUD
+    # --------------------------------------------------------
+
     if span_a > span_b:
-        score_buy += 1
-        reasons_buy.append(
+
+        buy_score += 1
+
+        buy_reasons.append(
             "BULLISH_CLOUD"
         )
 
-    if span_a < span_b:
-        score_sell += 1
-        reasons_sell.append(
+    elif span_a < span_b:
+
+        sell_score += 1
+
+        sell_reasons.append(
             "BEARISH_CLOUD"
         )
 
+    # --------------------------------------------------------
     # MOMENTUM
+    # --------------------------------------------------------
+
     if closes[i] > closes[i - 1]:
-        score_buy += 1
-        reasons_buy.append(
+
+        buy_score += 1
+
+        buy_reasons.append(
             "MOMENTUM_UP"
         )
 
-    if closes[i] < closes[i - 1]:
-        score_sell += 1
-        reasons_sell.append(
+    elif closes[i] < closes[i - 1]:
+
+        sell_score += 1
+
+        sell_reasons.append(
             "MOMENTUM_DOWN"
         )
 
+    # --------------------------------------------------------
     # KIJUN DIRECTION
+    # --------------------------------------------------------
+
     if kijun > prev_kijun:
-        score_buy += 1
-        reasons_buy.append(
+
+        buy_score += 1
+
+        buy_reasons.append(
             "KIJUN_RISING"
         )
 
-    if kijun < prev_kijun:
-        score_sell += 1
-        reasons_sell.append(
+    elif kijun < prev_kijun:
+
+        sell_score += 1
+
+        sell_reasons.append(
             "KIJUN_FALLING"
         )
 
+    # --------------------------------------------------------
+    # CLOUD DIRECTION
+    # --------------------------------------------------------
+
+    if span_a > prev_span_a:
+
+        buy_score += 1
+
+        buy_reasons.append(
+            "CLOUD_RISING"
+        )
+
+    elif span_a < prev_span_a:
+
+        sell_score += 1
+
+        sell_reasons.append(
+            "CLOUD_FALLING"
+        )
+
+    # --------------------------------------------------------
+    # SIGNAL
+    # --------------------------------------------------------
+
+    signal = None
+    score = max(
+        buy_score,
+        sell_score
+    )
+    reasons = []
+
     if (
-        score_buy >= MIN_SCORE
-        and score_buy > score_sell
+        buy_score >= MIN_SCORE
+        and buy_score > sell_score
     ):
 
         signal = "BUY"
-        score = score_buy
-        reasons = reasons_buy
+        score = buy_score
+        reasons = buy_reasons
 
     elif (
-        score_sell >= MIN_SCORE
-        and score_sell > score_buy
+        sell_score >= MIN_SCORE
+        and sell_score > buy_score
     ):
 
         signal = "SELL"
-        score = score_sell
-        reasons = reasons_sell
-
-    else:
-
-        signal = None
-        score = max(
-            score_buy,
-            score_sell,
-        )
-        reasons = []
+        score = sell_score
+        reasons = sell_reasons
 
     return {
         "signal": signal,
         "score": score,
-        "buy_score": score_buy,
-        "sell_score": score_sell,
+        "buy_score": buy_score,
+        "sell_score": sell_score,
         "price": price,
         "tenkan": tenkan,
         "kijun": kijun,
@@ -645,139 +914,121 @@ def ichimoku(candles):
 
 
 # ============================================================
-# SCAN ONE SYMBOL
+# SCAN SYMBOL
 # ============================================================
 
-def scan_symbol(info, state):
+def scan_symbol(
+    info,
+    state
+):
 
     symbol = str(
-        info.get("symbol", "")
+        info.get(
+            "symbol",
+            ""
+        )
     ).upper()
 
     if not symbol:
-        return None
 
-    trades = fetch_recent_trades(
-        symbol
-    )
+        return {
+            "symbol": "",
+            "ready": False,
+            "candles": 0,
+            "error": "EMPTY_SYMBOL",
+        }
 
-    candles = trades_to_5m(
-        trades
-    )
+    try:
 
-    # If public trade endpoint isn't
-    # available, preserve previous candles
-    # and add current real depth snapshot.
-    if len(candles) < 53:
-
-        old = state.get(
-            symbol,
-            []
+        candles, source = (
+            fetch_5m_klines(symbol)
         )
 
-        if old:
-            candles = old[-120:]
+        candles = closed_candles(
+            candles
+        )
 
-        depth = fetch_depth(symbol)
+        candles = candles[-120:]
 
-        if depth:
+        state[symbol] = candles
 
-            bucket = (
-                depth["time"]
-                // 300000
-            ) * 300000
+        count = len(candles)
 
-            p = depth["price"]
+        if count < 54:
 
-            if candles:
+            return {
+                "symbol": symbol,
+                "ready": False,
+                "candles": count,
+                "source": source,
+                "error": (
+                    f"ONLY_{count}_CLOSED_CANDLES"
+                ),
+            }
 
-                last = candles[-1]
+        result = ichimoku(
+            candles
+        )
 
-                if last["time"] == bucket:
+        if not result:
 
-                    last["high"] = max(
-                        last["high"],
-                        p
-                    )
+            return {
+                "symbol": symbol,
+                "ready": False,
+                "candles": count,
+                "source": source,
+                "error": "ICHIMOKU_FAILED",
+            }
 
-                    last["low"] = min(
-                        last["low"],
-                        p
-                    )
+        result["symbol"] = symbol
+        result["ready"] = True
+        result["candles"] = count
+        result["source"] = source
+        result["info"] = info
 
-                    last["close"] = p
+        return result
 
-                elif last["time"] < bucket:
-
-                    candles.append(
-                        {
-                            "time": bucket,
-                            "open": p,
-                            "high": p,
-                            "low": p,
-                            "close": p,
-                            "volume": 0,
-                        }
-                    )
-
-            else:
-
-                candles = [
-                    {
-                        "time": bucket,
-                        "open": p,
-                        "high": p,
-                        "low": p,
-                        "close": p,
-                        "volume": 0,
-                    }
-                ]
-
-    candles = candles[-120:]
-
-    state[symbol] = candles
-
-    if len(candles) < 53:
+    except Exception as e:
 
         return {
             "symbol": symbol,
             "ready": False,
-            "candles": len(candles),
+            "candles": 0,
+            "error": str(e)[:300],
         }
 
-    result = ichimoku(
-        candles
-    )
-
-    if not result:
-        return None
-
-    result["symbol"] = symbol
-    result["ready"] = True
-    result["candles"] = len(candles)
-
-    return result
-
 
 # ============================================================
-# REAL ORDER
+# REAL FUTURES ORDER
 # ============================================================
 
-def place_real_trade(signal):
+def place_real_trade(
+    signal
+):
 
     symbol = signal["symbol"]
     side = signal["signal"]
-    price = float(signal["price"])
+    price = float(
+        signal["price"]
+    )
 
     info = signal["info"]
 
-    step, min_qty, tick = symbol_rules(
-        info
-    )
+    (
+        step,
+        min_qty,
+        tick,
+    ) = symbol_rules(info)
 
-    # Futures notional with leverage
+    if step <= 0:
+
+        raise RuntimeError(
+            "No valid quantity step"
+        )
+
     quantity = (
-        ORDER_USDT * LEVERAGE
+        ORDER_USDT
+        * LEVERAGE
     ) / price
 
     quantity = floor_step(
@@ -786,13 +1037,19 @@ def place_real_trade(signal):
     )
 
     if quantity <= 0:
+
         raise RuntimeError(
             "Calculated quantity is zero"
         )
 
-    if quantity < min_qty:
+    if (
+        min_qty > 0
+        and quantity < min_qty
+    ):
+
         raise RuntimeError(
-            f"Quantity {quantity} < minQty {min_qty}"
+            f"Quantity {quantity} "
+            f"< minQty {min_qty}"
         )
 
     quantity_text = (
@@ -801,19 +1058,26 @@ def place_real_trade(signal):
         .rstrip(".")
     )
 
-    # Set leverage first
+    # --------------------------------------------------------
+    # LEVERAGE
+    # --------------------------------------------------------
+
     signed_request(
         "POST",
-        "/fapi/v1/leverage",
+        "/api/v1/leverage",
         {
             "symbol": symbol,
             "leverage": LEVERAGE,
         },
     )
 
+    # --------------------------------------------------------
+    # MARKET ORDER
+    # --------------------------------------------------------
+
     order = signed_request(
         "POST",
-        "/fapi/v1/order",
+        "/api/v1/order",
         {
             "symbol": symbol,
             "side": side,
@@ -821,113 +1085,6 @@ def place_real_trade(signal):
             "quantity": quantity_text,
         },
     )
-
-    time.sleep(1)
-
-    # Find position
-    positions = signed_request(
-        "GET",
-        "/fapi/v1/position",
-        {
-            "symbol": symbol,
-        },
-    )
-
-    position_id = None
-    entry_price = price
-
-    if isinstance(positions, list):
-
-        for p in positions:
-
-            try:
-
-                amt = float(
-                    p.get("positionAmt", 0)
-                )
-
-            except Exception:
-
-                amt = 0
-
-            if abs(amt) > 0:
-
-                position_id = p.get(
-                    "positionId"
-                )
-
-                try:
-                    entry_price = float(
-                        p.get(
-                            "entryPrice",
-                            price
-                        )
-                    )
-                except Exception:
-                    pass
-
-                break
-
-    elif isinstance(positions, dict):
-
-        try:
-            position_id = positions.get(
-                "positionId"
-            )
-
-            entry_price = float(
-                positions.get(
-                    "entryPrice",
-                    price
-                )
-            )
-
-        except Exception:
-            pass
-
-    # Protection
-    if position_id is not None:
-
-        if side == "BUY":
-
-            sl = entry_price * (
-                1 - SL_PCT
-            )
-
-            tp = entry_price * (
-                1 + TP_PCT
-            )
-
-        else:
-
-            sl = entry_price * (
-                1 + SL_PCT
-            )
-
-            tp = entry_price * (
-                1 - TP_PCT
-            )
-
-        sl = round_tick(
-            sl,
-            tick
-        )
-
-        tp = round_tick(
-            tp,
-            tick
-        )
-
-        signed_request(
-            "POST",
-            "/fapi/v1/positionSlTp",
-            {
-                "positionId": position_id,
-                "symbol": symbol,
-                "slPrice": str(sl),
-                "tpPrice": str(tp),
-            },
-        )
 
     return order
 
@@ -941,11 +1098,15 @@ def main():
     started = time.time()
 
     print(
-        "💓 ATI FUTURES V10"
+        "💓 ATI FUTURES V11"
     )
 
     print(
-        "⚡ REAL FUTURES + ICHIMOKU"
+        "⚡ TABDEAL REAL FUTURES"
+    )
+
+    print(
+        "📊 5M KLINES"
     )
 
     print(
@@ -961,10 +1122,14 @@ def main():
     )
 
     print(
-        f"🔒 REAL TRADING: {REAL_TRADING}"
+        f"🔒 REAL: {REAL_TRADING}"
     )
 
     state = load_state()
+
+    # --------------------------------------------------------
+    # MARKETS
+    # --------------------------------------------------------
 
     try:
 
@@ -973,12 +1138,14 @@ def main():
     except Exception as e:
 
         msg = (
-            "❌ ATI FUTURES V10 ERROR\n\n"
+            "❌ ATI FUTURES V11 ERROR\n\n"
+            "MARKET DISCOVERY FAILED\n\n"
             f"{e}"
         )
 
         print(msg)
         telegram(msg)
+
         return
 
     print(
@@ -987,13 +1154,11 @@ def main():
 
     results = []
 
-    errors = 0
-
     with ThreadPoolExecutor(
         max_workers=MAX_WORKERS
     ) as executor:
 
-        futures = {
+        jobs = {
             executor.submit(
                 scan_symbol,
                 info,
@@ -1003,28 +1168,39 @@ def main():
         }
 
         for future in as_completed(
-            futures
+            jobs
         ):
 
-            info = futures[future]
+            info = jobs[future]
 
             try:
 
-                result = future.result()
+                result = (
+                    future.result()
+                )
 
                 if result:
-                    result["info"] = info
-                    results.append(result)
+                    results.append(
+                        result
+                    )
 
             except Exception as e:
 
-                errors += 1
-
-                print(
-                    f"ERROR {info.get('symbol')}: {e}"
-                )
+                results.append({
+                    "symbol": info.get(
+                        "symbol",
+                        "UNKNOWN"
+                    ),
+                    "ready": False,
+                    "candles": 0,
+                    "error": str(e)[:300],
+                })
 
     save_state(state)
+
+    # --------------------------------------------------------
+    # STATISTICS
+    # --------------------------------------------------------
 
     ready = [
         r for r in results
@@ -1036,15 +1212,24 @@ def main():
         if r.get("signal")
     ]
 
-    elapsed = (
-        time.time() - started
-    )
+    errors = [
+        r for r in results
+        if r.get("error")
+    ]
 
     max_candles = max(
         [
-            r.get("candles", 0)
+            r.get(
+                "candles",
+                0
+            )
             for r in results
         ] or [0]
+    )
+
+    elapsed = (
+        time.time()
+        - started
     )
 
     print(
@@ -1056,11 +1241,11 @@ def main():
     )
 
     print(
-        f"❌ Errors: {errors}"
+        f"❌ Errors: {len(errors)}"
     )
 
     print(
-        f"📚 Max closed candles: {max_candles}"
+        f"📚 Max candles: {max_candles}"
     )
 
     print(
@@ -1068,39 +1253,77 @@ def main():
     )
 
     # --------------------------------------------------------
-    # TELEGRAM
+    # ERROR SAMPLE
+    # --------------------------------------------------------
+
+    error_lines = []
+
+    for r in errors[:5]:
+
+        error_lines.append(
+            f"❌ {r.get('symbol')}: "
+            f"{r.get('error', 'UNKNOWN')}"
+        )
+
+    error_text = ""
+
+    if error_lines:
+
+        error_text = (
+            "\n\n".join(
+                error_lines
+            )
+        )
+
+    # --------------------------------------------------------
+    # NO SIGNAL
     # --------------------------------------------------------
 
     if not signals:
 
         msg = (
-            "💓 ATI FUTURES V10\n\n"
+            "💓 ATI FUTURES V11\n\n"
             "☁️ NO SIGNAL THIS CYCLE\n\n"
             f"📊 Markets: {len(markets)}\n"
             f"📈 Ready: {len(ready)}\n"
             f"📚 Max candles: {max_candles}\n"
-            f"❌ Errors: {errors}\n"
+            f"❌ Errors: {len(errors)}\n"
             f"⏱️ Scan: {elapsed:.2f}s\n\n"
             f"💵 ORDER: {ORDER_USDT} USDT\n"
             f"⚡ LEVERAGE: {LEVERAGE}x\n"
             f"🔒 REAL: {REAL_TRADING}"
         )
 
+        if error_text:
+
+            msg += (
+                "\n\n"
+                "🔎 ERROR SAMPLE:\n"
+                + error_text
+            )
+
         print(msg)
         telegram(msg)
 
         return
 
-    # Best signal first
+    # --------------------------------------------------------
+    # BEST SIGNAL
+    # --------------------------------------------------------
+
     signals.sort(
-        key=lambda x: x["score"],
+        key=lambda x:
+        x.get(
+            "score",
+            0
+        ),
         reverse=True
     )
 
     best = signals[0]
 
     msg = (
-        "🔥 ATI FUTURES V10 SIGNAL\n\n"
+        "🔥 ATI FUTURES V11 SIGNAL\n\n"
         f"🪙 {best['symbol']}\n"
         f"📌 {best['signal']}\n"
         f"⭐ SCORE: {best['score']}\n"
@@ -1110,6 +1333,7 @@ def main():
         f"☁️ Span A: {best['span_a']}\n"
         f"☁️ Span B: {best['span_b']}\n\n"
         f"🧠 {' / '.join(best['reasons'])}\n\n"
+        f"📚 Candles: {best['candles']}\n"
         f"💵 ORDER: {ORDER_USDT} USDT\n"
         f"⚡ LEVERAGE: {LEVERAGE}x\n"
         f"🔒 REAL: {REAL_TRADING}"
@@ -1119,16 +1343,21 @@ def main():
     telegram(msg)
 
     # --------------------------------------------------------
-    # REAL TRADE
+    # TEST MODE
     # --------------------------------------------------------
 
     if not REAL_TRADING:
 
         print(
-            "🧪 TEST MODE - NO REAL ORDER"
+            "🧪 TEST MODE - "
+            "NO REAL ORDER"
         )
 
         return
+
+    # --------------------------------------------------------
+    # REAL ORDER
+    # --------------------------------------------------------
 
     try:
 
@@ -1141,13 +1370,11 @@ def main():
             f"🪙 {best['symbol']}\n"
             f"📌 {best['signal']}\n"
             f"⭐ SCORE: {best['score']}\n"
-            f"💰 ENTRY: {best['price']}\n"
+            f"💰 PRICE: {best['price']}\n"
             f"⚡ LEVERAGE: {LEVERAGE}x\n"
             f"💵 ORDER: {ORDER_USDT} USDT\n\n"
             f"🆔 ORDER ID: "
-            f"{order.get('orderId', 'N/A')}\n\n"
-            f"🛡️ TP: +{TP_PCT * 100:.2f}%\n"
-            f"🛑 SL: -{SL_PCT * 100:.2f}%"
+            f"{order.get('orderId', 'N/A')}"
         )
 
         print(order_msg)
@@ -1166,5 +1393,75 @@ def main():
         telegram(error_msg)
 
 
+# ============================================================
+# RUN
+# ============================================================
+
 if __name__ == "__main__":
     main()
+
+"main.yml" کامل
+
+:::writing{variant="document" id="74106" title="ATI FUTURES V11 — main.yml"}
+
+name: ATI Futures Bot
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "*/5 * * * *"
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests
+
+      - name: Run ATI Futures V11
+        env:
+          BASE_URL: https://api1.tabdeal.org
+
+          ORDER_USDT: "2"
+          LEVERAGE: "3"
+
+          # فعلاً خاموش نگه می‌داریم
+          REAL_TRADING: "false"
+
+          TP_PCT: "0.02"
+          SL_PCT: "0.01"
+
+          SCAN_UNIVERSE: "75"
+          MIN_SCORE: "6"
+
+          REQUEST_TIMEOUT: "10"
+          MAX_WORKERS: "15"
+          KLINE_LIMIT: "100"
+          RECV_WINDOW: "5000"
+
+          TABDEAL_API_KEY: ${{ secrets.TABDEAL_API_KEY }}
+          TABDEAL_API_SECRET: ${{ secrets.TABDEAL_API_SECRET }}
+
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
+        run: |
+          python main.py
+
+این نسخه را فعلاً با "REAL_TRADING: "false"" اجرا کن.
+یعنی حتی اگر سیگنال پیدا کند، هیچ معامله واقعی باز نمی‌کند.
+
+نکته مهم V11 این است که دیگر خطای دیتا را قایم نمی‌کند. اگر endpoint اشتباه باشد، تلگرام نمونه خطا را نشان می‌دهد. همچنین از API رسمی Tabdeal استفاده می‌کنیم؛ مستندات رسمی/SDK خود Tabdeal وجود Futures API را تأیید می‌کنند.
+
+بعد از اجرا، فقط پیام تلگرام V11 را برای من بفرست. اگر مثلاً "Ready: 75" شد، می‌رویم سراغ بهینه‌سازی سیگنال Ichimoku؛ اگر خطا شد، از روی ERROR SAMPLE دقیقاً همان endpoint را اصلاح می‌کنیم.
