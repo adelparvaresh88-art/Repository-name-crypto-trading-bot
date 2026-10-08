@@ -1,4 +1,4 @@
-name: ATI Futures Bot V9.4
+name: ATI Futures V10
 
 on:
   workflow_dispatch:
@@ -6,35 +6,29 @@ on:
   schedule:
     - cron: "*/5 * * * *"
 
-permissions:
-  contents: write
-
 jobs:
-
   run-bot:
 
     runs-on: ubuntu-latest
 
-    timeout-minutes: 4
+    timeout-minutes: 10
 
     steps:
 
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
 
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Install requests
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install requests
 
-      - name: Run ATI Futures V9.4
+      - name: Run ATI Futures V10
         env:
 
           TABDEAL_API_KEY: ${{ secrets.TABDEAL_API_KEY }}
@@ -52,40 +46,37 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
 
-          REAL_TRADING: "true"
+          BASE_URL: "https://api1.tabdeal.org"
 
           ORDER_USDT: "2"
-
           LEVERAGE: "3"
 
           TP_PCT: "0.02"
           SL_PCT: "0.01"
 
           SCAN_UNIVERSE: "75"
-
-          MAX_WORKERS: "20"
+          MIN_SCORE: "6"
 
           REQUEST_TIMEOUT: "8"
-
+          MAX_WORKERS: "20"
           RECV_WINDOW: "5000"
+
+          # IMPORTANT:
+          # First test with false.
+          REAL_TRADING: "false"
 
         run: |
           python main.py
 
-      - name: Save persistent 5M state
+      - name: Save ATI state
         if: always()
         run: |
+          git config user.name "ATI Bot"
+          git config user.email "ati-bot@users.noreply.github.com"
 
-          if [ -f ati_futures_state.json ]; then
+          git add ati_futures_state.json || true
 
-            git config user.name "ATI Futures Bot"
-            git config user.email "ati-futures-bot@users.noreply.github.com"
+          git diff --cached --quiet || \
+            git commit -m "ATI Futures V10 state update"
 
-            git add ati_futures_state.json
-
-            if ! git diff --cached --quiet; then
-              git commit -m "ATI Futures V9.4 state update"
-              git push || true
-            fi
-
-          fi
+          git push || true
