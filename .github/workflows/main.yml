@@ -1,20 +1,15 @@
-name: ATI Futures V10
+name: ATI Futures Bot
 
 on:
   workflow_dispatch:
-
   schedule:
     - cron: "*/5 * * * *"
 
 jobs:
   run-bot:
-
     runs-on: ubuntu-latest
 
-    timeout-minutes: 10
-
     steps:
-
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -28,28 +23,15 @@ jobs:
           python -m pip install --upgrade pip
           pip install requests
 
-      - name: Run ATI Futures V10
+      - name: Run ATI Futures V11
         env:
-
-          TABDEAL_API_KEY: ${{ secrets.TABDEAL_API_KEY }}
-          TABDEAL_API_SECRET: ${{ secrets.TABDEAL_API_SECRET }}
-
-          TABDIL_API_KEY: ${{ secrets.TABDIL_API_KEY }}
-          TABDIL_API_SECRET: ${{ secrets.TABDIL_API_SECRET }}
-
-          TABDEAL_KEY: ${{ secrets.TABDEAL_KEY }}
-          TABDEAL_SECRET: ${{ secrets.TABDEAL_SECRET }}
-
-          TABDIL_KEY: ${{ secrets.TABDIL_KEY }}
-          TABDIL_SECRET: ${{ secrets.TABDIL_SECRET }}
-
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-
-          BASE_URL: "https://api1.tabdeal.org"
+          BASE_URL: https://api1.tabdeal.org
 
           ORDER_USDT: "2"
           LEVERAGE: "3"
+
+          # فعلاً خاموش نگه می‌داریم
+          REAL_TRADING: "false"
 
           TP_PCT: "0.02"
           SL_PCT: "0.01"
@@ -57,26 +39,16 @@ jobs:
           SCAN_UNIVERSE: "75"
           MIN_SCORE: "6"
 
-          REQUEST_TIMEOUT: "8"
-          MAX_WORKERS: "20"
+          REQUEST_TIMEOUT: "10"
+          MAX_WORKERS: "15"
+          KLINE_LIMIT: "100"
           RECV_WINDOW: "5000"
 
-          # IMPORTANT:
-          # First test with false.
-          REAL_TRADING: "false"
+          TABDEAL_API_KEY: ${{ secrets.TABDEAL_API_KEY }}
+          TABDEAL_API_SECRET: ${{ secrets.TABDEAL_API_SECRET }}
+
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
 
         run: |
           python main.py
-
-      - name: Save ATI state
-        if: always()
-        run: |
-          git config user.name "ATI Bot"
-          git config user.email "ati-bot@users.noreply.github.com"
-
-          git add ati_futures_state.json || true
-
-          git diff --cached --quiet || \
-            git commit -m "ATI Futures V10 state update"
-
-          git push || true
