@@ -1,10 +1,13 @@
-name: ATI Futures V8
+name: ATI Futures V9.2 REAL
 
 on:
   workflow_dispatch:
 
   schedule:
     - cron: "*/5 * * * *"
+
+permissions:
+  contents: write
 
 jobs:
 
@@ -14,26 +17,99 @@ jobs:
 
     steps:
 
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Python
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Install
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install requests
 
-      - name: Run ATI Futures V8
+      - name: Run ATI Futures V9.2
         env:
+
+          # ==================================================
+          # EXISTING SECRET NAMES
+          # ==================================================
+
+          TABDIL_API_KEY: ${{ secrets.TABDIL_API_KEY }}
+          TABDIL_API_SECRET: ${{ secrets.TABDIL_API_SECRET }}
+
+          TABDIL_KEY: ${{ secrets.TABDIL_KEY }}
+          TABDIL_SECRET: ${{ secrets.TABDIL_SECRET }}
+
+          # ==================================================
+          # ALSO SUPPORT TABDEAL NAMES
+          # ==================================================
+
+          TABDEAL_API_KEY: ${{ secrets.TABDEAL_API_KEY }}
+          TABDEAL_API_SECRET: ${{ secrets.TABDEAL_API_SECRET }}
+
+          TABDEAL_KEY: ${{ secrets.TABDEAL_KEY }}
+          TABDEAL_SECRET: ${{ secrets.TABDEAL_SECRET }}
+
+          # ==================================================
+          # TELEGRAM
+          # ==================================================
+
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
+          # ==================================================
+          # TRADING
+          # ==================================================
+
+          REAL_TRADING: "true"
+
+          ORDER_USDT: "2"
+          LEVERAGE: "3"
+
+          # ==================================================
+          # SCANNER
+          # ==================================================
 
           SCAN_UNIVERSE: "75"
           MAX_WORKERS: "20"
 
+          MIN_SCORE: "6"
+
+          # ==================================================
+          # RISK
+          # ==================================================
+
+          TP_PCT: "0.02"
+          SL_PCT: "0.01"
+
+          RECV_WINDOW: "5000"
+
+          REQUEST_TIMEOUT: "10"
+
         run: |
           python main.py
+
+      - name: Save ATI 5M state
+        run: |
+
+          if [ ! -f ati_futures_state.json ]; then
+            echo "No state file created."
+            exit 0
+          fi
+
+          git config user.name "ATI Futures Bot"
+          git config user.email "actions@github.com"
+
+          git add ati_futures_state.json
+
+          if git diff --cached --quiet; then
+            echo "No state changes."
+          else
+            git commit -m "ATI Futures 5M state update"
+            git push
+          fi
