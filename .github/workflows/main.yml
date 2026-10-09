@@ -23,15 +23,14 @@ jobs:
           python -m pip install --upgrade pip
           pip install requests
 
-      - name: Run ATI Futures V11
+      - name: Run ATI Futures
         env:
           BASE_URL: https://api1.tabdeal.org
 
-          ORDER_USDT: "2"
+          ORDER_QTY: "2"
           LEVERAGE: "3"
 
-          # فعلاً خاموش نگه می‌داریم
-          REAL_TRADING: "false"
+          LIVE_TRADING: "false"
 
           TP_PCT: "0.02"
           SL_PCT: "0.01"
@@ -50,5 +49,4 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
 
-        run: |
-          python main.py
+        run: python main.py
