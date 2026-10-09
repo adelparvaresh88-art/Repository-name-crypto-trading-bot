@@ -8,6 +8,7 @@ on:
 jobs:
   run-bot:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
 
     steps:
       - name: Checkout
@@ -18,10 +19,17 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install dependencies
+      - name: Install official Tabdeal SDK
         run: |
-          python -m pip install --upgrade pip
-          pip install requests
+          python -m pip install --upgrade pip setuptools wheel
+          python -m pip install requests websocket-client
+          python -m pip install --no-cache-dir git+https://github.com/Tabdeal-Exchange/tabdeal-python.git
+
+      - name: Verify Tabdeal SDK
+        run: |
+          python -c "import tabdeal; print('Tabdeal SDK import OK')"
+          python -c "from tabdeal.future import Future; print('Future import OK')"
+          python -c "from tabdeal.enums import OrderSides, OrderTypes; print('Order enums OK')"
 
       - name: Run ATI Futures
         env:
@@ -36,12 +44,9 @@ jobs:
           SL_PCT: "0.01"
 
           SCAN_UNIVERSE: "75"
-          MIN_SCORE: "6"
-
-          REQUEST_TIMEOUT: "10"
-          MAX_WORKERS: "15"
+          MAX_WORKERS: "12"
           KLINE_LIMIT: "100"
-          RECV_WINDOW: "5000"
+          REQUEST_TIMEOUT: "10"
 
           TABDEAL_API_KEY: ${{ secrets.TABDEAL_API_KEY }}
           TABDEAL_API_SECRET: ${{ secrets.TABDEAL_API_SECRET }}
