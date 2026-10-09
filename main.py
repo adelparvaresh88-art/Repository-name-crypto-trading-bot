@@ -5,38 +5,70 @@ import concurrent.futures
 from datetime import datetime, timezone
 
 # =========================================================
-# ATI FUTURES V15
-# MARKET DISCOVERY FIX + ICHIMOKU 5M
+# ATI FUTURES V16
+# FUTURES TRADES -> 5M CANDLES -> ICHIMOKU
 # =========================================================
 
-VERSION = "ATI FUTURES V15"
+VERSION = "ATI FUTURES V16"
 
 BASE_URL = os.getenv(
     "BASE_URL",
     "https://api1.tabdeal.org"
 ).rstrip("/")
 
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+TELEGRAM_BOT_TOKEN = os.getenv(
+    "TELEGRAM_BOT_TOKEN",
+    ""
+)
 
-SCAN_UNIVERSE = int(os.getenv("SCAN_UNIVERSE", "75"))
-MAX_WORKERS = int(os.getenv("MAX_WORKERS", "10"))
-REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", "12"))
-KLINE_LIMIT = int(os.getenv("KLINE_LIMIT", "100"))
+TELEGRAM_CHAT_ID = os.getenv(
+    "TELEGRAM_CHAT_ID",
+    ""
+)
 
-INTERVAL = "5m"
+SCAN_UNIVERSE = int(
+    os.getenv("SCAN_UNIVERSE", "75")
+)
 
-ORDER_USDT = float(os.getenv("ORDER_USDT", "2"))
-LEVERAGE = int(os.getenv("LEVERAGE", "3"))
+MAX_WORKERS = int(
+    os.getenv("MAX_WORKERS", "20")
+)
 
-# SAFETY:
-# This version does NOT place real orders.
+REQUEST_TIMEOUT = int(
+    os.getenv("REQUEST_TIMEOUT", "8")
+)
+
+TRADE_LIMIT = int(
+    os.getenv("TRADE_LIMIT", "5000")
+)
+
+INTERVAL_SECONDS = 300
+
+ORDER_USDT = float(
+    os.getenv("ORDER_USDT", "2")
+)
+
+LEVERAGE = int(
+    os.getenv("LEVERAGE", "3")
+)
+
+# =========================================================
+# SAFETY
+# =========================================================
+
+# DO NOT CHANGE THIS YET.
+# This version only scans.
 LIVE_TRADING = False
+
+
+# =========================================================
+# SESSION
+# =========================================================
 
 session = requests.Session()
 
 session.headers.update({
-    "User-Agent": "ATI-Futures-Bot/15.0",
+    "User-Agent": "ATI-Futures-Bot/16.0",
     "Accept": "application/json",
 })
 
@@ -47,7 +79,10 @@ session.headers.update({
 
 def telegram_send(message):
 
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+    if (
+        not TELEGRAM_BOT_TOKEN
+        or not TELEGRAM_CHAT_ID
+    ):
 
         print(
             "Telegram secrets are missing.",
@@ -120,12 +155,24 @@ def utc_now():
 # HTTP
 # =========================================================
 
-def get_json(url, params=None):
+def get_json(
+    path,
+    params=None,
+    timeout=None
+):
+
+    if timeout is None:
+        timeout = REQUEST_TIMEOUT
+
+    url = (
+        BASE_URL
+        + path
+    )
 
     response = session.get(
         url,
         params=params,
-        timeout=REQUEST_TIMEOUT
+        timeout=timeout
     )
 
     response.raise_for_status()
@@ -134,70 +181,26 @@ def get_json(url, params=None):
 
 
 # =========================================================
-# GENERIC LIST EXTRACTION
-# =========================================================
-
-def find_lists(data, depth=0):
-
-    """
-    Recursively searches nested dictionaries/lists
-    for market-like lists.
-
-    This avoids assuming a single exchangeInfo structure.
-    """
-
-    if depth > 5:
-        return []
-
-    found = []
-
-    if isinstance(data, list):
-
-        if data:
-            found.append(data)
-
-        for item in data[:20]:
-
-            if isinstance(item, (dict, list)):
-
-                found.extend(
-                    find_lists(
-                        item,
-                        depth + 1
-                    )
-                )
-
-    elif isinstance(data, dict):
-
-        for key, value in data.items():
-
-            if isinstance(value, (dict, list)):
-
-                found.extend(
-                    find_lists(
-                        value,
-                        depth + 1
-                    )
-                )
-
-    return found
-
-
-# =========================================================
-# SYMBOL EXTRACTION
+# SYMBOL
 # =========================================================
 
 def normalize_symbol(item):
 
-    if isinstance(item, str):
+    if isinstance(
+        item,
+        str
+    ):
 
         return item.strip().upper()
 
-    if not isinstance(item, dict):
+    if not isinstance(
+        item,
+        dict
+    ):
 
         return ""
 
-    possible_keys = (
+    for key in (
         "symbol",
         "s",
         "market",
@@ -208,16 +211,16 @@ def normalize_symbol(item):
         "instrument_id",
         "contract",
         "code",
-    )
-
-    for key in possible_keys:
+    ):
 
         value = item.get(key)
 
         if value is None:
             continue
 
-        value = str(value).strip().upper()
+        value = str(
+            value
+        ).strip().upper()
 
         if value:
             return value
@@ -227,54 +230,102 @@ def normalize_symbol(item):
 
 def clean_symbol(symbol):
 
-    symbol = str(symbol).strip().upper()
-
-    symbol = symbol.replace(
-        "/",
-        ""
+    return (
+        str(symbol)
+        .strip()
+        .upper()
+        .replace("/", "")
+        .replace("-", "")
+        .replace("_", "")
     )
-
-    symbol = symbol.replace(
-        "-",
-        ""
-    )
-
-    symbol = symbol.replace(
-        "_",
-        ""
-    )
-
-    return symbol
 
 
 # =========================================================
-# MARKET ELIGIBILITY
+# EXCHANGE INFO UNWRAP
+# =========================================================
+
+def collect_lists(
+    data,
+    depth=0
+):
+
+    if depth > 6:
+        return []
+
+    result = []
+
+    if isinstance(
+        data,
+        list
+    ):
+
+        result.append(
+            data
+        )
+
+        for item in data[:100]:
+
+            if isinstance(
+                item,
+                (dict, list)
+            ):
+
+                result.extend(
+                    collect_lists(
+                        item,
+                        depth + 1
+                    )
+                )
+
+    elif isinstance(
+        data,
+        dict
+    ):
+
+        for value in data.values():
+
+            if isinstance(
+                value,
+                (dict, list)
+            ):
+
+                result.extend(
+                    collect_lists(
+                        value,
+                        depth + 1
+                    )
+                )
+
+    return result
+
+
+# =========================================================
+# MARKET FILTER
 # =========================================================
 
 def is_usdt_market(item):
 
-    symbol = normalize_symbol(item)
+    symbol = clean_symbol(
+        normalize_symbol(item)
+    )
 
     if not symbol:
         return False
 
-    clean = clean_symbol(symbol)
-
-    # We need USDT quoted markets.
-    if not clean.endswith("USDT"):
+    if not symbol.endswith(
+        "USDT"
+    ):
         return False
 
-    # Avoid weird empty/base-only values.
-    if len(clean) <= 4:
+    if len(symbol) <= 4:
         return False
 
-    # -----------------------------------------------------
-    # STATUS
-    # -----------------------------------------------------
+    if isinstance(
+        item,
+        dict
+    ):
 
-    if isinstance(item, dict):
-
-        status_value = None
+        status = None
 
         for key in (
             "status",
@@ -285,73 +336,58 @@ def is_usdt_market(item):
 
             if key in item:
 
-                status_value = item.get(key)
+                status = item.get(
+                    key
+                )
 
                 break
 
-        # IMPORTANT:
-        # If status does not exist, DO NOT reject market.
-        if status_value is not None:
+        if status is not None:
 
             status = str(
-                status_value
-            ).strip().upper()
+                status
+            ).upper()
 
-            disabled_values = (
+            if status in (
                 "CLOSED",
                 "DISABLED",
-                "OFF",
-                "HALT",
                 "HALTED",
-                "BREAK",
+                "HALT",
+                "OFF",
                 "INACTIVE",
                 "0",
-            )
-
-            if status in disabled_values:
+            ):
 
                 return False
 
-    # -----------------------------------------------------
-    # CONTRACT TYPE
-    # -----------------------------------------------------
-
-    if isinstance(item, dict):
-
-        contract_value = None
+        contract = None
 
         for key in (
             "contractType",
             "contract_type",
-            "contractTypeName",
             "type",
             "instrumentType",
         ):
 
             if key in item:
 
-                contract_value = item.get(key)
+                contract = item.get(
+                    key
+                )
 
                 break
 
-        # IMPORTANT:
-        # If contract type does not exist,
-        # DO NOT reject the market.
-        if contract_value is not None:
+        if contract is not None:
 
             contract = str(
-                contract_value
-            ).strip().upper()
+                contract
+            ).upper()
 
-            # Reject obvious spot/non-futures types
-            # only when explicitly reported.
-            reject_types = (
+            if contract in (
                 "SPOT",
                 "MARGIN",
                 "OPTION",
-            )
-
-            if contract in reject_types:
+            ):
 
                 return False
 
@@ -359,7 +395,7 @@ def is_usdt_market(item):
 
 
 # =========================================================
-# EXCHANGE INFO
+# MARKET DISCOVERY
 # =========================================================
 
 def discover_markets():
@@ -371,269 +407,119 @@ def discover_markets():
 
     errors = []
 
-    diagnostic_samples = []
-
     for path in paths:
-
-        url = BASE_URL + path
 
         try:
 
-            data = get_json(url)
-
-            print(
-                "\n========== EXCHANGE INFO ==========",
-                flush=True
+            data = get_json(
+                path
             )
 
-            print(
-                "PATH:",
-                path,
-                flush=True
+            lists = collect_lists(
+                data
             )
 
-            print(
-                "TYPE:",
-                type(data).__name__,
-                flush=True
-            )
+            best = []
+            best_count = -1
 
-            print(
-                "RAW SAMPLE:",
-                str(data)[:2000],
-                flush=True
-            )
+            for candidate in lists:
 
-            print(
-                "===================================\n",
-                flush=True
-            )
+                count = 0
 
-            # -------------------------------------------------
-            # Direct list
-            # -------------------------------------------------
+                for item in candidate:
 
-            candidate_lists = find_lists(data)
+                    if is_usdt_market(
+                        item
+                    ):
 
-            # If root itself is a list, guarantee it is tested.
-            if isinstance(data, list):
+                        count += 1
 
-                candidate_lists.insert(
-                    0,
-                    data
-                )
+                if count > best_count:
 
-            # -------------------------------------------------
-            # Find best market list
-            # -------------------------------------------------
+                    best_count = count
+                    best = candidate
 
-            best_markets = []
-            best_score = -1
-
-            for candidate in candidate_lists:
-
-                if not isinstance(candidate, list):
-                    continue
-
-                score = 0
-                valid_count = 0
-
-                for item in candidate[:3000]:
-
-                    symbol = normalize_symbol(item)
-
-                    if symbol:
-
-                        score += 1
-
-                    if is_usdt_market(item):
-
-                        valid_count += 1
-
-                # Prefer lists containing USDT symbols.
-                combined_score = (
-                    valid_count * 10000
-                    + score
-                )
-
-                if combined_score > best_score:
-
-                    best_score = combined_score
-
-                    best_markets = candidate
-
-            # -------------------------------------------------
-            # Extract USDT markets
-            # -------------------------------------------------
-
-            valid = []
+            markets = []
 
             seen = set()
 
-            for item in best_markets:
+            for item in best:
 
-                symbol = normalize_symbol(item)
+                if not is_usdt_market(
+                    item
+                ):
 
-                if not symbol:
                     continue
 
-                clean = clean_symbol(symbol)
+                symbol = clean_symbol(
+                    normalize_symbol(item)
+                )
 
-                if clean in seen:
+                if (
+                    not symbol
+                    or symbol in seen
+                ):
+
                     continue
 
-                if not is_usdt_market(item):
-                    continue
+                seen.add(
+                    symbol
+                )
 
-                seen.add(clean)
+                if isinstance(
+                    item,
+                    dict
+                ):
 
-                # Preserve original item.
-                if isinstance(item, dict):
+                    copied = dict(
+                        item
+                    )
 
-                    copied = dict(item)
+                    copied[
+                        "symbol"
+                    ] = symbol
 
-                    # Guarantee normalized symbol.
-                    copied["symbol"] = clean
-
-                    valid.append(copied)
+                    markets.append(
+                        copied
+                    )
 
                 else:
 
-                    valid.append({
-                        "symbol": clean
+                    markets.append({
+                        "symbol": symbol
                     })
 
-            # -------------------------------------------------
-            # Fallback recursive extraction
-            # -------------------------------------------------
+            if not markets:
 
-            if not valid:
-
-                print(
-                    "Primary market list produced 0 markets.",
-                    flush=True
+                raise ValueError(
+                    "No USDT Futures markets."
                 )
 
-                all_symbols = []
+            markets.sort(
+                key=lambda x:
+                normalize_symbol(x)
+            )
 
-                def recursive_extract(obj):
+            print(
+                "MARKET DISCOVERY OK",
+                path,
+                "markets:",
+                len(markets),
+                flush=True
+            )
 
-                    if isinstance(obj, dict):
-
-                        symbol = normalize_symbol(obj)
-
-                        if symbol:
-
-                            all_symbols.append(obj)
-
-                        for value in obj.values():
-
-                            if isinstance(
-                                value,
-                                (dict, list)
-                            ):
-
-                                recursive_extract(value)
-
-                    elif isinstance(obj, list):
-
-                        for value in obj:
-
-                            if isinstance(
-                                value,
-                                (dict, list)
-                            ):
-
-                                recursive_extract(value)
-
-                recursive_extract(data)
-
-                for item in all_symbols:
-
-                    symbol = normalize_symbol(item)
-
-                    clean = clean_symbol(symbol)
-
-                    if (
-                        clean.endswith("USDT")
-                        and clean not in seen
-                        and is_usdt_market(item)
-                    ):
-
-                        seen.add(clean)
-
-                        copied = dict(item)
-
-                        copied["symbol"] = clean
-
-                        valid.append(copied)
-
-            # -------------------------------------------------
-            # SUCCESS
-            # -------------------------------------------------
-
-            if valid:
-
-                valid.sort(
-                    key=lambda x:
+            print(
+                "FIRST SYMBOLS:",
+                ", ".join(
                     normalize_symbol(x)
-                )
-
-                print(
-                    "====================================",
-                    flush=True
-                )
-
-                print(
-                    "MARKET DISCOVERY SUCCESS",
-                    flush=True
-                )
-
-                print(
-                    "Endpoint:",
-                    path,
-                    flush=True
-                )
-
-                print(
-                    "Markets:",
-                    len(valid),
-                    flush=True
-                )
-
-                print(
-                    "Symbols:",
-                    ", ".join(
-                        normalize_symbol(x)
-                        for x in valid[:30]
-                    ),
-                    flush=True
-                )
-
-                print(
-                    "====================================",
-                    flush=True
-                )
-
-                return valid[:SCAN_UNIVERSE]
-
-            # -------------------------------------------------
-            # Diagnostic sample
-            # -------------------------------------------------
-
-            sample = str(data)[:1800]
-
-            diagnostic_samples.append(
-                path
-                + "\n"
-                + sample
+                    for x in markets[:20]
+                ),
+                flush=True
             )
 
-            raise ValueError(
-                "exchangeInfo returned data, "
-                "but no USDT Futures markets "
-                "could be identified."
-            )
+            return markets[
+                :SCAN_UNIVERSE
+            ]
 
         except Exception as exc:
 
@@ -642,229 +528,52 @@ def discover_markets():
                 + " -> "
                 + type(exc).__name__
                 + ": "
-                + str(exc).replace(
-                    "\n",
-                    " "
-                )[:500]
+                + str(exc)[:500]
             )
 
-            errors.append(error)
+            errors.append(
+                error
+            )
 
             print(
-                "[MARKET ERROR]",
+                "[DISCOVERY ERROR]",
                 error,
                 flush=True
             )
 
-    # ---------------------------------------------------------
-    # FINAL FAILURE
-    # ---------------------------------------------------------
-
-    diagnostic_text = ""
-
-    if diagnostic_samples:
-
-        diagnostic_text = (
-            "\n\nRAW API SAMPLE:\n"
-            + diagnostic_samples[0][:3500]
-        )
-
     raise RuntimeError(
-        "Market discovery failed:\n"
-        + "\n".join(errors)
-        + diagnostic_text
+        "Market discovery failed: "
+        + " || ".join(errors)
     )
 
 
 # =========================================================
-# CANDLE PARSING
+# FUTURES TRADES
 # =========================================================
 
-def parse_candle_array(row):
+def get_futures_trades(
+    symbol
+):
 
-    if not isinstance(
-        row,
-        (list, tuple)
-    ):
-        return None
+    """
+    IMPORTANT:
+    V15 used /klines and got HTTP 404.
 
-    if len(row) < 6:
-        return None
+    V16 does NOT use klines.
 
-    try:
-
-        return {
-            "time": int(float(row[0])),
-            "open": float(row[1]),
-            "high": float(row[2]),
-            "low": float(row[3]),
-            "close": float(row[4]),
-            "volume": float(row[5]),
-        }
-
-    except (
-        TypeError,
-        ValueError
-    ):
-
-        return None
-
-
-def parse_candle_dict(row):
-
-    if not isinstance(row, dict):
-        return None
-
-    try:
-
-        time_value = (
-            row.get("openTime")
-            or row.get("open_time")
-            or row.get("timestamp")
-            or row.get("time")
-            or row.get("t")
-            or 0
-        )
-
-        open_value = (
-            row.get("open")
-            if row.get("open") is not None
-            else row.get("o")
-        )
-
-        high_value = (
-            row.get("high")
-            if row.get("high") is not None
-            else row.get("h")
-        )
-
-        low_value = (
-            row.get("low")
-            if row.get("low") is not None
-            else row.get("l")
-        )
-
-        close_value = (
-            row.get("close")
-            if row.get("close") is not None
-            else row.get("c")
-        )
-
-        volume_value = (
-            row.get("volume")
-            if row.get("volume") is not None
-            else row.get("v", 0)
-        )
-
-        return {
-            "time": int(float(time_value)),
-            "open": float(open_value),
-            "high": float(high_value),
-            "low": float(low_value),
-            "close": float(close_value),
-            "volume": float(volume_value),
-        }
-
-    except (
-        TypeError,
-        ValueError
-    ):
-
-        return None
-
-
-def normalize_candles(data):
-
-    if isinstance(data, dict):
-
-        for key in (
-            "data",
-            "result",
-            "klines",
-            "candles",
-            "rows",
-            "list",
-        ):
-
-            if key in data:
-
-                return normalize_candles(
-                    data[key]
-                )
-
-        raise ValueError(
-            "Unknown candle dictionary format: "
-            + str(
-                list(data.keys())
-            )[:500]
-        )
-
-    if not isinstance(data, list):
-
-        raise ValueError(
-            "Candle response is not a list: "
-            + type(data).__name__
-        )
-
-    candles = []
-
-    for row in data:
-
-        candle = parse_candle_array(row)
-
-        if candle is None:
-
-            candle = parse_candle_dict(row)
-
-        if candle is None:
-            continue
-
-        if (
-            candle["open"] > 0
-            and candle["high"] > 0
-            and candle["low"] > 0
-            and candle["close"] > 0
-        ):
-
-            candles.append(candle)
-
-    candles.sort(
-        key=lambda x:
-        x["time"]
-    )
-
-    unique = {}
-
-    for candle in candles:
-
-        unique[
-            candle["time"]
-        ] = candle
-
-    return list(
-        unique.values()
-    )
-
-
-# =========================================================
-# FUTURES CANDLES
-# =========================================================
-
-def get_futures_candles(symbol):
+    We try the public Futures trades endpoint.
+    """
 
     paths = [
-        "/r/fapi/v1/klines",
-        "/fapi/v1/klines",
-        "/r/fapi/v1/candles",
-        "/fapi/v1/candles",
+        "/r/fapi/v1/trades",
+        "/fapi/v1/trades",
     ]
 
     errors = []
 
     params = {
         "symbol": symbol,
-        "interval": INTERVAL,
-        "limit": KLINE_LIMIT,
+        "limit": TRADE_LIMIT,
     }
 
     for path in paths:
@@ -872,23 +581,23 @@ def get_futures_candles(symbol):
         try:
 
             data = get_json(
-                BASE_URL + path,
+                path,
                 params=params
             )
 
-            candles = normalize_candles(
+            trades = normalize_trades(
                 data
             )
 
-            if len(candles) < 60:
+            if len(trades) < 20:
 
                 raise ValueError(
                     "Only "
-                    + str(len(candles))
-                    + " valid candles returned."
+                    + str(len(trades))
+                    + " trades returned."
                 )
 
-            return candles, path
+            return trades, path
 
         except Exception as exc:
 
@@ -897,39 +606,231 @@ def get_futures_candles(symbol):
                 + " -> "
                 + type(exc).__name__
                 + ": "
-                + str(exc).replace(
-                    "\n",
-                    " "
-                )[:250]
+                + str(exc)[:300]
             )
 
     raise RuntimeError(
-        "No usable 5m candle endpoint. "
+        "No usable Futures trades endpoint. "
         + " || ".join(errors)
     )
 
 
 # =========================================================
-# ICHIMOKU
+# TRADE NORMALIZATION
 # =========================================================
 
-def midpoint(candles, period):
+def normalize_trades(
+    data
+):
+
+    if isinstance(
+        data,
+        dict
+    ):
+
+        for key in (
+            "data",
+            "result",
+            "trades",
+            "rows",
+            "list",
+        ):
+
+            if key in data:
+
+                return normalize_trades(
+                    data[key]
+                )
+
+        raise ValueError(
+            "Unknown trades response: "
+            + str(
+                list(data.keys())
+            )[:500]
+        )
+
+    if not isinstance(
+        data,
+        list
+    ):
+
+        raise ValueError(
+            "Trades response is not list."
+        )
 
     result = []
 
-    for index in range(
+    for row in data:
+
+        if not isinstance(
+            row,
+            dict
+        ):
+
+            continue
+
+        try:
+
+            price = (
+                row.get("price")
+                or row.get("p")
+            )
+
+            qty = (
+                row.get("qty")
+                or row.get("quantity")
+                or row.get("q")
+                or 0
+            )
+
+            timestamp = (
+                row.get("time")
+                or row.get("timestamp")
+                or row.get("T")
+                or row.get("tradeTime")
+            )
+
+            if (
+                price is None
+                or timestamp is None
+            ):
+
+                continue
+
+            timestamp = int(
+                float(timestamp)
+            )
+
+            # Some APIs may return seconds.
+            if timestamp < 10_000_000_000:
+
+                timestamp *= 1000
+
+            result.append({
+                "time": timestamp,
+                "price": float(price),
+                "qty": float(qty),
+            })
+
+        except (
+            TypeError,
+            ValueError
+        ):
+
+            continue
+
+    result.sort(
+        key=lambda x:
+        x["time"]
+    )
+
+    return result
+
+
+# =========================================================
+# TRADES -> 5M CANDLES
+# =========================================================
+
+def trades_to_5m(
+    trades
+):
+
+    candles = {}
+
+    for trade in trades:
+
+        timestamp = int(
+            trade["time"]
+        )
+
+        bucket = (
+            timestamp
+            // 300000
+        ) * 300000
+
+        price = float(
+            trade["price"]
+        )
+
+        qty = float(
+            trade.get(
+                "qty",
+                0
+            )
+        )
+
+        if price <= 0:
+            continue
+
+        if bucket not in candles:
+
+            candles[bucket] = {
+                "time": bucket,
+                "open": price,
+                "high": price,
+                "low": price,
+                "close": price,
+                "volume": qty,
+            }
+
+        else:
+
+            candle = candles[
+                bucket
+            ]
+
+            candle["high"] = max(
+                candle["high"],
+                price
+            )
+
+            candle["low"] = min(
+                candle["low"],
+                price
+            )
+
+            candle["close"] = price
+
+            candle["volume"] += qty
+
+    result = list(
+        candles.values()
+    )
+
+    result.sort(
+        key=lambda x:
+        x["time"]
+    )
+
+    return result
+
+
+# =========================================================
+# ICHIMOKU MIDPOINT
+# =========================================================
+
+def midpoint(
+    candles,
+    period
+):
+
+    values = []
+
+    for i in range(
         len(candles)
     ):
 
-        if index + 1 < period:
+        if i + 1 < period:
 
-            result.append(None)
+            values.append(
+                None
+            )
 
             continue
 
         window = candles[
-            index + 1 - period:
-            index + 1
+            i + 1 - period:
+            i + 1
         ]
 
         highest = max(
@@ -942,30 +843,47 @@ def midpoint(candles, period):
             for x in window
         )
 
-        result.append(
-            (highest + lowest) / 2.0
+        values.append(
+            (
+                highest
+                + lowest
+            ) / 2.0
         )
 
-    return result
+    return values
 
 
-def ichimoku_signal(candles):
+# =========================================================
+# ICHIMOKU SIGNAL
+# =========================================================
 
-    if len(candles) < 60:
+def ichimoku_signal(
+    candles
+):
+
+    # Need at least 60 completed
+    # candles after removing current.
+    if len(candles) < 61:
 
         return {
             "signal": "NONE",
-            "reason": "Not enough candles"
+            "reason":
+                "Need at least 61 "
+                "5m candles."
         }
 
-    # Ignore currently forming candle.
-    closed = candles[:-1]
+    # Remove current forming candle.
+    closed = candles[
+        :-1
+    ]
 
-    if len(closed) < 52:
+    if len(closed) < 60:
 
         return {
             "signal": "NONE",
-            "reason": "Not enough closed candles"
+            "reason":
+                "Not enough closed "
+                "5m candles."
         }
 
     tenkan = midpoint(
@@ -983,17 +901,29 @@ def ichimoku_signal(candles):
         52
     )
 
-    index = len(closed) - 1
+    i = len(
+        closed
+    ) - 1
 
-    price = closed[index]["close"]
-
-    previous_price = closed[
-        index - 1
+    price = closed[
+        i
     ]["close"]
 
-    t = tenkan[index]
-    k = kijun[index]
-    b = span_b[index]
+    previous_price = closed[
+        i - 1
+    ]["close"]
+
+    t = tenkan[
+        i
+    ]
+
+    k = kijun[
+        i
+    ]
+
+    b = span_b[
+        i
+    ]
 
     if (
         t is None
@@ -1003,7 +933,8 @@ def ichimoku_signal(candles):
 
         return {
             "signal": "NONE",
-            "reason": "Ichimoku values unavailable"
+            "reason":
+                "Ichimoku unavailable."
         }
 
     span_a = (
@@ -1042,8 +973,9 @@ def ichimoku_signal(candles):
             "cloud_top": cloud_top,
             "cloud_bottom": cloud_bottom,
             "reason":
-                "Price above cloud; "
-                "Tenkan > Kijun"
+                "Price above cloud | "
+                "Tenkan > Kijun | "
+                "5M momentum UP"
         }
 
     if bearish:
@@ -1056,8 +988,9 @@ def ichimoku_signal(candles):
             "cloud_top": cloud_top,
             "cloud_bottom": cloud_bottom,
             "reason":
-                "Price below cloud; "
-                "Tenkan < Kijun"
+                "Price below cloud | "
+                "Tenkan < Kijun | "
+                "5M momentum DOWN"
         }
 
     return {
@@ -1073,33 +1006,45 @@ def ichimoku_signal(candles):
 
 
 # =========================================================
-# ANALYSE
+# MARKET ANALYSIS
 # =========================================================
 
-def analyse_market(item):
+def analyse_market(
+    item
+):
 
-    symbol = normalize_symbol(item)
+    symbol = normalize_symbol(
+        item
+    )
 
     result = {
         "symbol": symbol,
         "ready": False,
         "signal": "NONE",
-        "error": ""
+        "error": "",
     }
 
     try:
 
-        if not symbol:
-
-            raise ValueError(
-                "Market has no symbol."
-            )
-
-        candles, endpoint = (
-            get_futures_candles(
+        trades, endpoint = (
+            get_futures_trades(
                 symbol
             )
         )
+
+        candles = trades_to_5m(
+            trades
+        )
+
+        if len(candles) < 61:
+
+            raise RuntimeError(
+                "Trades available: "
+                + str(len(trades))
+                + " | 5M candles built: "
+                + str(len(candles))
+                + " | Need >= 61."
+            )
 
         signal = ichimoku_signal(
             candles
@@ -1110,6 +1055,11 @@ def analyse_market(item):
         )
 
         result["ready"] = True
+
+        result["trades"] = len(
+            trades
+        )
+
         result["candles"] = len(
             candles
         )
@@ -1117,32 +1067,29 @@ def analyse_market(item):
         result["endpoint"] = endpoint
 
         print(
-            "[MARKET OK]",
+            "[OK]",
             symbol,
-            "candles:",
+            "| trades:",
+            len(trades),
+            "| 5M:",
             len(candles),
-            "signal:",
+            "| signal:",
             signal.get("signal"),
             flush=True
         )
 
     except Exception as exc:
 
-        error = (
+        result["error"] = (
             type(exc).__name__
             + ": "
-            + str(exc).replace(
-                "\n",
-                " "
-            )
-        )[:700]
-
-        result["error"] = error
+            + str(exc)[:650]
+        )
 
         print(
-            "[ANALYSIS ERROR]",
+            "[ERROR]",
             symbol,
-            error,
+            result["error"],
             flush=True
         )
 
@@ -1158,9 +1105,9 @@ def main():
     started = time.time()
 
     telegram_send(
-        "🚀 ATI FUTURES V15\n"
-        "Market Discovery FIX\n\n"
-        "☁️ Ichimoku 9 / 26 / 52\n"
+        "🚀 ATI FUTURES V16\n"
+        "Trades → 5M → Ichimoku\n\n"
+        "☁️ Ichimoku: 9 / 26 / 52\n"
         "⏱️ Timeframe: 5M\n"
         "💵 Margin target: "
         + str(ORDER_USDT)
@@ -1173,6 +1120,10 @@ def main():
         + utc_now()
     )
 
+    # -----------------------------------------------------
+    # DISCOVERY
+    # -----------------------------------------------------
+
     try:
 
         markets = discover_markets()
@@ -1180,12 +1131,11 @@ def main():
     except Exception as exc:
 
         message = (
-            "❌ ATI FUTURES MARKET DISCOVERY ERROR\n\n"
+            "❌ ATI FUTURES V16\n\n"
+            "MARKET DISCOVERY FAILED\n\n"
             + type(exc).__name__
-            + ":\n"
+            + ": "
             + str(exc)[:5000]
-            + "\n\nTime: "
-            + utc_now()
         )
 
         print(
@@ -1198,6 +1148,10 @@ def main():
         )
 
         return
+
+    # -----------------------------------------------------
+    # ANALYSIS
+    # -----------------------------------------------------
 
     results = []
 
@@ -1241,32 +1195,30 @@ def main():
     )
 
     ready = [
-        x
-        for x in results
+        x for x in results
         if x.get("ready")
     ]
 
     errors = [
-        x
-        for x in results
+        x for x in results
         if x.get("error")
     ]
 
     buys = [
-        x
-        for x in ready
-        if x.get("signal") == "BUY"
+        x for x in ready
+        if x.get("signal")
+        == "BUY"
     ]
 
     sells = [
-        x
-        for x in ready
-        if x.get("signal") == "SELL"
+        x for x in ready
+        if x.get("signal")
+        == "SELL"
     ]
 
     lines = [
 
-        "💓 ATI FUTURES V15",
+        "💓 ATI FUTURES V16",
 
         "",
 
@@ -1278,7 +1230,7 @@ def main():
         "📊 Markets: "
         + str(len(markets)),
 
-        "📈 Ready: "
+        "📈 5M Ready: "
         + str(len(ready)),
 
         "🟢 BUY: "
@@ -1333,7 +1285,7 @@ def main():
             lines.append(
                 "• "
                 + item["symbol"]
-                + " | "
+                + " | Price: "
                 + str(
                     round(
                         item["price"],
@@ -1370,7 +1322,7 @@ def main():
             lines.append(
                 "• "
                 + item["symbol"]
-                + " | "
+                + " | Price: "
                 + str(
                     round(
                         item["price"],
@@ -1385,7 +1337,7 @@ def main():
             )
 
     # -----------------------------------------------------
-    # NONE
+    # NO SIGNAL
     # -----------------------------------------------------
 
     if (
@@ -1395,7 +1347,8 @@ def main():
 
         lines.extend([
             "",
-            "☁️ No confirmed Ichimoku signal."
+            "☁️ No confirmed "
+            "Ichimoku signal."
         ])
 
     # -----------------------------------------------------
@@ -1409,7 +1362,7 @@ def main():
             "🧪 ERROR SAMPLE"
         ])
 
-        for item in errors[:3]:
+        for item in errors[:5]:
 
             lines.append(
                 "• "
@@ -1421,11 +1374,11 @@ def main():
                 + item.get(
                     "error",
                     "Unknown error"
-                )[:600]
+                )[:700]
             )
 
     # -----------------------------------------------------
-    # FINAL
+    # REPORT
     # -----------------------------------------------------
 
     report = "\n".join(
