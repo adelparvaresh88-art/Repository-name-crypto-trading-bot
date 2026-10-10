@@ -1,4 +1,4 @@
-name: ATI FUTURES V17
+name: ATI FUTURES V18
 
 on:
   workflow_dispatch:
@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ati-futures-v17
+  group: ati-futures-v18
   cancel-in-progress: false
 
 jobs:
@@ -31,7 +31,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install requests
 
-      - name: Run ATI Futures
+      - name: Run ATI Futures V18
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
