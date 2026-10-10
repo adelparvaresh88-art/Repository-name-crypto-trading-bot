@@ -1,35 +1,46 @@
 import os
 import time
 import requests
+
 from datetime import datetime, timezone
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# ATI FUTURES V17
-# Data diagnostics + Ichimoku 9/26/52
-# REAL TRADING DISABLED until data is verified.
+# ==========================================
+# ATI FUTURES V18 - DATA ENGINE
+# Public Binance USD-M Futures market data
+# Ichimoku 9/26/52
+# NO REAL ORDERS
+# ==========================================
 
-BASES = [
-    "https://api1.tabdeal.org",
-]
+BASE_URL = "https://fapi.binance.com"
+
+INTERVAL = "5m"
+SCAN_LIMIT = 75
+CANDLE_LIMIT = 100
+WORKERS = 12
 
 ORDER_USDT = 2.0
 LEVERAGE = 3
-INTERVAL = "5m"
 REAL_TRADING = False
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
 session = requests.Session()
-session.headers.update({"User-Agent": "ATI-FUTURES-V17/1.0"})
+session.headers.update({
+    "User-Agent": "ATI-FUTURES-V18/1.0"
+})
 
 
 def now():
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    return datetime.now(timezone.utc).strftime(
+        "%Y-%m-%d %H:%M:%S UTC"
+    )
 
 
 def telegram(message):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        print("Telegram credentials are not configured.")
+        print("Telegram secrets are not configured.")
         return
 
     url = (
@@ -38,294 +49,337 @@ def telegram(message):
     )
 
     try:
-        response = session.post(
+        requests.post(
             url,
             json={
                 "chat_id": TELEGRAM_CHAT_ID,
-                "text": message,
+                "text": message
             },
-            timeout=15,
-        )
-        response.raise_for_status()
+            timeout=15
+        ).raise_for_status()
     except Exception as exc:
         print(f"Telegram error: {exc}")
 
 
-def get_json(path, params=None):
-    errors = []
+def api_get(path, params=None):
+    response = session.get(
+        BASE_URL + path,
+        params=params or {},
+        timeout=15
+    )
 
-    for base in BASES:
-        for prefix in ("/r/fapi/v1/", "/fapi/v1/"):
-            url = base + prefix + path
+    response.raise_for_status()
 
-            try:
-                response = session.get(
-                    url,
-                    params=params or {},
-                    timeout=10,
-                )
+    data = response.json()
 
-                if response.status_code == 404:
-                    errors.append(f"{url}: HTTP 404")
-                    continue
+    if isinstance(data, dict) and "code" in data:
+        raise RuntimeError(
+            f"API error {data.get('code')}: "
+            f"{data.get('msg', '')}"
+        )
 
-                response.raise_for_status()
-                data = response.json()
-
-                if isinstance(data, dict) and data.get("code"):
-                    errors.append(
-                        f"{url}: {data.get('msg', data)}"
-                    )
-                    continue
-
-                return data, None
-
-            except Exception as exc:
-                errors.append(f"{url}: {exc}")
-
-    return None, " || ".join(errors[-4:])
+    return data
 
 
 def discover_markets():
-    data, error = get_json("exchangeInfo")
+    info = api_get("/fapi/v1/exchangeInfo")
+    tickers = api_get("/fapi/v1/ticker/24hr")
 
-    if error:
-        raise RuntimeError(
-            "Futures exchangeInfo failed: " + error
-        )
+    if not isinstance(info, dict):
+        raise RuntimeError("Invalid exchangeInfo response")
 
-    if isinstance(data, list):
-        items = data
-    elif isinstance(data, dict):
-        items = data.get("symbols", [])
-    else:
-        items = []
+    if not isinstance(tickers, list):
+        raise RuntimeError("Invalid ticker response")
 
-    markets = []
+    eligible = set()
 
-    for item in items:
-        if not isinstance(item, dict):
+    for item in info.get("symbols", []):
+        if item.get("status") != "TRADING":
             continue
 
-        symbol = str(item.get("symbol", "")).upper()
-        status = str(item.get("status", "")).upper()
-        quote = str(item.get("quoteAsset", "")).upper()
-
-        if not symbol.endswith("USDT"):
+        if item.get("quoteAsset") != "USDT":
             continue
 
-        if quote and quote != "USDT":
+        if item.get("contractType") != "PERPETUAL":
             continue
 
-        if status and status not in ("TRADING", "ENABLED"):
+        symbol = item.get("symbol", "")
+
+        if symbol.endswith("USDT"):
+            eligible.add(symbol)
+
+    ranked = []
+
+    for item in tickers:
+        symbol = item.get("symbol", "")
+
+        if symbol not in eligible:
             continue
 
-        if item.get("contractType"):
-            if str(item["contractType"]).upper() not in (
-                "PERPETUAL",
-                "CURRENT_QUARTER",
-                "NEXT_QUARTER",
-            ):
-                continue
+        try:
+            volume = float(item.get("quoteVolume", 0))
+        except (TypeError, ValueError):
+            continue
 
-        markets.append(symbol)
+        ranked.append((symbol, volume))
+
+    ranked.sort(key=lambda item: item[1], reverse=True)
+
+    markets = [symbol for symbol, _ in ranked[:SCAN_LIMIT]]
 
     if not markets:
         raise RuntimeError(
-            "exchangeInfo returned no eligible USDT futures markets."
+            "No eligible USDT perpetual markets found"
         )
 
-    return sorted(set(markets))[:75]
+    return markets
 
 
 def get_candles(symbol):
-    # Try documented-style futures kline endpoint candidates.
-    candidates = [
-        ("klines", {
+    data = api_get(
+        "/fapi/v1/klines",
+        {
             "symbol": symbol,
             "interval": INTERVAL,
-            "limit": 100,
-        }),
-        ("klines", {
-            "symbol": symbol,
-            "interval": INTERVAL,
-            "limit": 100,
-        }),
+            "limit": CANDLE_LIMIT
+        }
+    )
+
+    if not isinstance(data, list) or len(data) < 60:
+        raise RuntimeError(
+            f"Insufficient candle data: {len(data) if isinstance(data, list) else 0}"
+        )
+
+    candles = []
+
+    for row in data:
+        candles.append({
+            "open_time": int(row[0]),
+            "open": float(row[1]),
+            "high": float(row[2]),
+            "low": float(row[3]),
+            "close": float(row[4]),
+            "volume": float(row[5]),
+            "close_time": int(row[6])
+        })
+
+    # Do not analyze the currently forming candle.
+    current_ms = int(time.time() * 1000)
+
+    candles = [
+        candle for candle in candles
+        if candle["close_time"] < current_ms
     ]
 
-    errors = []
+    if len(candles) < 60:
+        raise RuntimeError("Not enough closed candles")
 
-    for endpoint, params in candidates:
-        data, error = get_json(endpoint, params)
+    return candles
 
-        if error:
-            errors.append(error)
-            continue
 
-        if not isinstance(data, list) or len(data) < 60:
-            errors.append(
-                f"{endpoint}: invalid or insufficient candle data"
-            )
-            continue
+def midpoint(candles, period, index):
+    start = index - period + 1
 
-        candles = []
+    if start < 0:
+        return None
 
-        try:
-            for row in data:
-                if isinstance(row, list) and len(row) >= 6:
-                    candles.append({
-                        "high": float(row[2]),
-                        "low": float(row[3]),
-                        "close": float(row[4]),
-                    })
-                elif isinstance(row, dict):
-                    candles.append({
-                        "high": float(row["high"]),
-                        "low": float(row["low"]),
-                        "close": float(row["close"]),
-                    })
+    window = candles[start:index + 1]
 
-            if len(candles) >= 60:
-                return candles, None
+    highest = max(c["high"] for c in window)
+    lowest = min(c["low"] for c in window)
 
-        except (ValueError, KeyError, TypeError) as exc:
-            errors.append(str(exc))
-
-    return None, " | ".join(errors[-3:])
+    return (highest + lowest) / 2.0
 
 
 def ichimoku_signal(candles):
-    highs = [c["high"] for c in candles]
-    lows = [c["low"] for c in candles]
-    closes = [c["close"] for c in candles]
+    # Last closed candle
+    i = len(candles) - 1
 
-    def midpoint(period, end):
-        start = end - period + 1
+    price = candles[i]["close"]
 
-        if start < 0:
-            return None
+    tenkan = midpoint(candles, 9, i)
+    kijun = midpoint(candles, 26, i)
 
-        return (
-            max(highs[start:end + 1])
-            + min(lows[start:end + 1])
-        ) / 2
+    previous_tenkan = midpoint(candles, 9, i - 1)
+    previous_kijun = midpoint(candles, 26, i - 1)
 
-    i = len(candles) - 2  # Last closed candle.
+    # Ichimoku cloud values aligned to the current candle.
+    cloud_index = i - 26
 
-    tenkan = midpoint(9, i)
-    kijun = midpoint(26, i)
+    span_a_index = cloud_index
+    span_b_index = cloud_index
 
-    span_a = (tenkan + kijun) / 2
-    span_b = midpoint(52, i)
+    tenkan_cloud = midpoint(candles, 9, span_a_index)
+    kijun_cloud = midpoint(candles, 26, span_a_index)
+    span_b = midpoint(candles, 52, span_b_index)
 
-    price = closes[i]
-    previous_tenkan = midpoint(9, i - 1)
-    previous_kijun = midpoint(26, i - 1)
-
-    if span_b is None or previous_tenkan is None:
+    if any(value is None for value in (
+        tenkan,
+        kijun,
+        previous_tenkan,
+        previous_kijun,
+        tenkan_cloud,
+        kijun_cloud,
+        span_b
+    )):
         return None, price
+
+    span_a = (tenkan_cloud + kijun_cloud) / 2.0
 
     cloud_top = max(span_a, span_b)
     cloud_bottom = min(span_a, span_b)
 
-    bullish = (
-        price > cloud_top
-        and tenkan > kijun
+    bullish_cross = (
+        tenkan > kijun
         and previous_tenkan <= previous_kijun
     )
 
-    bearish = (
-        price < cloud_bottom
-        and tenkan < kijun
+    bearish_cross = (
+        tenkan < kijun
         and previous_tenkan >= previous_kijun
     )
 
-    if bullish:
+    if price > cloud_top and bullish_cross:
         return "BUY", price
 
-    if bearish:
+    if price < cloud_bottom and bearish_cross:
         return "SELL", price
 
     return None, price
+
+
+def scan_symbol(symbol):
+    try:
+        candles = get_candles(symbol)
+        signal, price = ichimoku_signal(candles)
+
+        return {
+            "symbol": symbol,
+            "ready": True,
+            "signal": signal,
+            "price": price,
+            "error": None
+        }
+
+    except Exception as exc:
+        return {
+            "symbol": symbol,
+            "ready": False,
+            "signal": None,
+            "price": None,
+            "error": str(exc)
+        }
 
 
 def main():
     started = time.time()
 
     telegram(
-        "🚀 ATI FUTURES V17 started\n"
+        "🚀 ATI FUTURES V18 STARTED\n"
         f"Time: {now()}\n"
-        "REAL TRADING: OFF\n"
-        "Mode: Futures data diagnostics + Ichimoku"
+        "Data: Binance USD-M Futures\n"
+        "Strategy: Ichimoku 9/26/52\n"
+        "Timeframe: 5m\n"
+        "REAL TRADING: OFF"
     )
 
     try:
         markets = discover_markets()
+
     except Exception as exc:
         message = (
-            "❌ ATI FUTURES V17 MARKET DISCOVERY ERROR\n\n"
-            f"{exc}\n\nTime: {now()}"
+            "❌ ATI V18 MARKET DISCOVERY ERROR\n\n"
+            f"{str(exc)[:2500]}\n"
+            f"Time: {now()}"
         )
         print(message)
         telegram(message)
         return
 
-    ready = 0
-    errors = []
-    signals = []
+    results = []
 
-    for symbol in markets:
-        candles, error = get_candles(symbol)
+    with ThreadPoolExecutor(max_workers=WORKERS) as executor:
+        futures = {
+            executor.submit(scan_symbol, symbol): symbol
+            for symbol in markets
+        }
 
-        if error:
-            errors.append((symbol, error))
-            continue
+        for future in as_completed(futures):
+            results.append(future.result())
 
-        ready += 1
+    results.sort(key=lambda item: item["symbol"])
 
-        try:
-            signal, price = ichimoku_signal(candles)
+    ready = sum(1 for r in results if r["ready"])
+    errors = [r for r in results if not r["ready"]]
 
-            if signal:
-                signals.append((symbol, signal, price))
+    buys = [
+        r for r in results
+        if r["signal"] == "BUY"
+    ]
 
-        except Exception as exc:
-            errors.append((symbol, str(exc)))
+    sells = [
+        r for r in results
+        if r["signal"] == "SELL"
+    ]
 
     elapsed = time.time() - started
 
     lines = [
-        "💓 ATI FUTURES V17",
+        "💓 ATI FUTURES V18",
         f"🕐 {now()}",
+        "",
+        "📡 DATA: BINANCE USD-M FUTURES",
+        "☁️ STRATEGY: ICHIMOKU 9/26/52",
+        "",
         f"📊 Markets: {len(markets)}",
         f"📈 5M Ready: {ready}",
-        f"🟢 BUY: {sum(1 for x in signals if x[1] == 'BUY')}",
-        f"🔴 SELL: {sum(1 for x in signals if x[1] == 'SELL')}",
+        f"🟢 BUY: {len(buys)}",
+        f"🔴 SELL: {len(sells)}",
         f"❌ Errors: {len(errors)}",
         f"⏱️ Scan: {elapsed:.2f}s",
         "",
-        f"💵 ORDER: {ORDER_USDT} USDT",
-        f"⚡ LEVERAGE: {LEVERAGE}x",
-        "🔒 REAL: OFF",
+        f"💵 ORDER SETTING: {ORDER_USDT} USDT",
+        f"⚡ LEVERAGE SETTING: {LEVERAGE}x",
+        "🔒 REAL TRADING: OFF",
         "",
+        "⚠️ Signals are analysis only.",
+        "No orders are submitted to Tabdeal."
     ]
 
-    if signals:
-        lines.append("📣 ICHIMOKU SIGNALS")
-        for symbol, signal, price in signals[:10]:
-            emoji = "🟢" if signal == "BUY" else "🔴"
+    if buys:
+        lines.extend(["", "🟢 BUY SIGNALS"])
+
+        for r in buys[:10]:
             lines.append(
-                f"{emoji} {symbol}: {signal} | Price: {price}"
+                f"{r['symbol']} | "
+                f"Price: {r['price']:.8g}"
             )
-    else:
-        lines.append("☁️ No confirmed Ichimoku signal.")
+
+    if sells:
+        lines.extend(["", "🔴 SELL SIGNALS"])
+
+        for r in sells[:10]:
+            lines.append(
+                f"{r['symbol']} | "
+                f"Price: {r['price']:.8g}"
+            )
+
+    if not buys and not sells:
+        lines.extend([
+            "",
+            "☁️ No confirmed Ichimoku crossover."
+        ])
 
     if errors:
         lines.extend(["", "🧪 ERROR SAMPLE"])
-        for symbol, error in errors[:3]:
-            lines.append(f"• {symbol}: {error[:700]}")
+
+        for r in errors[:5]:
+            lines.append(
+                f"• {r['symbol']}: {r['error'][:350]}"
+            )
 
     report = "\n".join(lines)
+
     print(report)
     telegram(report)
 
