@@ -1,14 +1,21 @@
-name: ATI Futures Bot
+name: ATI FUTURES V17
 
 on:
   workflow_dispatch:
   schedule:
     - cron: "*/5 * * * *"
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ati-futures-v17
+  cancel-in-progress: false
+
 jobs:
   run-bot:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 4
 
     steps:
       - name: Checkout
@@ -19,39 +26,13 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install official Tabdeal SDK
+      - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip setuptools wheel
-          python -m pip install requests websocket-client
-          python -m pip install --no-cache-dir git+https://github.com/Tabdeal-Exchange/tabdeal-python.git
-
-      - name: Verify Tabdeal SDK
-        run: |
-          python -c "import tabdeal; print('Tabdeal SDK import OK')"
-          python -c "from tabdeal.future import Future; print('Future import OK')"
-          python -c "from tabdeal.enums import OrderSides, OrderTypes; print('Order enums OK')"
+          python -m pip install --upgrade pip
+          pip install requests
 
       - name: Run ATI Futures
         env:
-          BASE_URL: https://api1.tabdeal.org
-
-          ORDER_QTY: "2"
-          LEVERAGE: "3"
-
-          LIVE_TRADING: "false"
-
-          TP_PCT: "0.02"
-          SL_PCT: "0.01"
-
-          SCAN_UNIVERSE: "75"
-          MAX_WORKERS: "12"
-          KLINE_LIMIT: "100"
-          REQUEST_TIMEOUT: "10"
-
-          TABDEAL_API_KEY: ${{ secrets.TABDEAL_API_KEY }}
-          TABDEAL_API_SECRET: ${{ secrets.TABDEAL_API_SECRET }}
-
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-
-        run: python main.py
+        run: python -u main.py
