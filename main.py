@@ -1,23 +1,37 @@
 import os
+
+# Remove proxy settings that can break websocket-client.
+for key in list(os.environ):
+    if key.lower() in (
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+        "ws_proxy",
+        "wss_proxy",
+    ):
+        os.environ.pop(key, None)
+
+os.environ["NO_PROXY"] = "api1.tabdeal.org,localhost,127.0.0.1"
+os.environ["no_proxy"] = "api1.tabdeal.org,localhost,127.0.0.1"
+
 import json
 import time
 import threading
-import requests
-import websocket
 from datetime import datetime, timezone
 
-BASE = "https://api1.tabdeal.org"
-BROADCAST_URL = BASE + "/special_margin/broadcast/"
-DEPTH_WS_URL = BASE + "/special_margin/stream/"
+import requests
+import websocket
 
-TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
-TEST_SECONDS = 20
+BASE_URL = "https://api1.tabdeal.org"
+WS_BROADCAST = "wss://api1.tabdeal.org/special_margin/broadcast/"
+WS_DEPTH = "wss://api1.tabdeal.org/special_margin/stream/"
+
 LIVE_TRADING = False
+TEST_SECONDS = 15
 
-http = requests.Session()
-received = {"trades": [], "depth": [], "errors": []}
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
 
 def now():
@@ -25,118 +39,142 @@ def now():
 
 
 def telegram(message):
-    print(message)
-    if not TOKEN or not CHAT_ID:
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         print("Telegram secrets are missing.")
         return
 
+    url = (
+        f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
+        f"/sendMessage"
+    )
+
     try:
-        r = http.post(
-            f"https://api.telegram.org/bot{TOKEN}/sendMessage",
-            json={"chat_id": CHAT_ID, "text": message[:3900]},
-            timeout=12
+        response = requests.post(
+            url,
+            json={
+                "chat_id": TELEGRAM_CHAT_ID,
+                "text": message,
+            },
+            timeout=15,
         )
-        print("Telegram status:", r.status_code)
-    except Exception as e:
-        print("Telegram error:", repr(e))
+        print("Telegram status:", response.status_code)
+        if not response.ok:
+            print("Telegram response:", response.text[:500])
+    except Exception as exc:
+        print("Telegram error:", repr(exc))
 
 
-def get_markets():
-    url = BASE + "/r/fapi/v1/exchangeInfo"
-    r = http.get(url, timeout=15)
-    print("ExchangeInfo HTTP:", r.status_code)
-    r.raise_for_status()
+def discover_markets():
+    url = f"{BASE_URL}/r/fapi/v1/exchangeInfo"
+    response = requests.get(url, timeout=20)
+    response.raise_for_status()
 
-    data = r.json()
-    rows = data.get("symbols", []) if isinstance(data, dict) else data
+    data = response.json()
+
+    if not isinstance(data, dict):
+        raise RuntimeError(
+            "exchangeInfo response is not a JSON object"
+        )
+
+    symbols = data.get("symbols", [])
+
+    if not isinstance(symbols, list):
+        raise RuntimeError(
+            "exchangeInfo has no valid symbols list"
+        )
 
     markets = []
-    for row in rows:
-        if not isinstance(row, dict):
+
+    for item in symbols:
+        if not isinstance(item, dict):
             continue
 
-        symbol = str(row.get("symbol", "")).upper()
-        quote = str(row.get("quoteAsset", "")).upper()
-        status = str(row.get("status", "")).upper()
+        symbol = str(item.get("symbol", "")).upper()
+        status = str(item.get("status", "")).upper()
+        quote = str(item.get("quoteAsset", "")).upper()
 
         if (
             symbol.endswith("_USDT")
             and quote == "USDT"
-            and status in ("TRADING", "ACTIVE", "ENABLED")
+            and status == "TRADING"
         ):
             markets.append(symbol)
 
-    return list(dict.fromkeys(markets))
+    if not markets:
+        raise RuntimeError(
+            "No eligible USDT futures markets found"
+        )
 
-
-def decode_message(message):
-    try:
-        return json.loads(message)
-    except Exception:
-        return {"raw": message[:500]}
+    return markets
 
 
 def test_broadcast(symbol):
-    print("\nTESTING FUTURES TRADE BROADCAST:", symbol)
-    done = threading.Event()
-    ws_state = {"opened": False, "closed": False}
+    result = {
+        "messages": [],
+        "errors": [],
+        "opened": False,
+    }
+
+    finished = threading.Event()
 
     def on_open(ws):
-        ws_state["opened"] = True
-        print("BROADCAST CONNECTED")
-        # طبق مستندات رسمی، پیام اشتراک متن ساده است.
+        result["opened"] = True
+        print("Broadcast WebSocket connected.")
+        print("Subscribing to:", symbol)
         ws.send(symbol)
 
     def on_message(ws, message):
-        data = decode_message(message)
-        print("BROADCAST MESSAGE:", json.dumps(data, ensure_ascii=False)[:800])
+        print("Broadcast raw message:", str(message)[:1000])
 
-        if isinstance(data, dict):
-            if "error" in data:
-                received["errors"].append(
-                    "Broadcast: " + str(data.get("error"))
-                )
-            elif "trade" in data:
-                received["trades"].append(data["trade"])
-            elif "trades" in data:
-                trades = data["trades"]
-                if isinstance(trades, list):
-                    received["trades"].extend(trades)
-                else:
-                    received["trades"].append(trades)
-            else:
-                received["trades"].append(data)
+        try:
+            parsed = json.loads(message)
+        except Exception:
+            parsed = message
 
-        if len(received["trades"]) >= 3:
-            done.set()
+        result["messages"].append(parsed)
+
+        if len(result["messages"]) >= 3:
+            finished.set()
             ws.close()
 
     def on_error(ws, error):
-        text = "Broadcast WS error: " + str(error)
-        print(text)
-        received["errors"].append(text)
-        done.set()
+        error_text = repr(error)
+        print("Broadcast WebSocket error:", error_text)
+        result["errors"].append(error_text)
 
-    def on_close(ws, code, msg):
-        ws_state["closed"] = True
-        print("BROADCAST CLOSED:", code, msg)
-        done.set()
+    def on_close(ws, code, message):
+        print("Broadcast closed:", code, message)
+        finished.set()
 
     app = websocket.WebSocketApp(
-        BROADCAST_URL,
+        WS_BROADCAST,
         on_open=on_open,
         on_message=on_message,
         on_error=on_error,
         on_close=on_close,
     )
 
+    def run_socket():
+        try:
+            app.run_forever(
+                http_proxy_host=None,
+                http_proxy_port=None,
+                proxy_type="http",
+                ping_interval=10,
+                ping_timeout=5,
+            )
+        except Exception as exc:
+            result["errors"].append(repr(exc))
+            print("Broadcast run error:", repr(exc))
+        finally:
+            finished.set()
+
     thread = threading.Thread(
-        target=lambda: app.run_forever(ping_interval=10, ping_timeout=5),
-        daemon=True
+        target=run_socket,
+        daemon=True,
     )
     thread.start()
-
-    done.wait(TEST_SECONDS)
+    finished.wait(TEST_SECONDS)
 
     try:
         app.close()
@@ -144,73 +182,82 @@ def test_broadcast(symbol):
         pass
 
     thread.join(timeout=3)
-
-    print(
-        "BROADCAST SUMMARY:",
-        "connected=", ws_state["opened"],
-        "messages=", len(received["trades"]),
-        "closed=", ws_state["closed"]
-    )
+    return result
 
 
 def test_depth(symbol):
-    print("\nTESTING FUTURES DEPTH STREAM:", symbol)
-    done = threading.Event()
-    state = {"opened": False}
+    result = {
+        "messages": [],
+        "errors": [],
+        "opened": False,
+    }
+
+    finished = threading.Event()
 
     def on_open(ws):
-        state["opened"] = True
-        request = {
+        result["opened"] = True
+        subscription = {
             "method": "SUBSCRIBE",
             "params": [
                 f"special_margin@{symbol}@depth@1000ms"
             ],
-            "id": 1
+            "id": 1,
         }
-        ws.send(json.dumps(request))
-        print("DEPTH SUBSCRIBE SENT:", json.dumps(request))
+        ws.send(json.dumps(subscription))
+        print("Depth subscription sent:", subscription)
 
     def on_message(ws, message):
-        data = decode_message(message)
-        print("DEPTH MESSAGE:", json.dumps(data, ensure_ascii=False)[:700])
+        print("Depth raw message:", str(message)[:1000])
 
-        if isinstance(data, dict):
-            if "error" in data or "code" in data:
-                received["errors"].append(
-                    "Depth: " + json.dumps(data, ensure_ascii=False)[:300]
-                )
-            elif data.get("id") == 1 or "depthUpdate" in str(data):
-                received["depth"].append(data)
+        try:
+            parsed = json.loads(message)
+        except Exception:
+            parsed = message
 
-        if len(received["depth"]) >= 2:
-            done.set()
+        result["messages"].append(parsed)
+
+        if len(result["messages"]) >= 3:
+            finished.set()
             ws.close()
 
     def on_error(ws, error):
-        text = "Depth WS error: " + str(error)
-        print(text)
-        received["errors"].append(text)
-        done.set()
+        error_text = repr(error)
+        print("Depth WebSocket error:", error_text)
+        result["errors"].append(error_text)
 
-    def on_close(ws, code, msg):
-        print("DEPTH CLOSED:", code, msg)
-        done.set()
+    def on_close(ws, code, message):
+        print("Depth closed:", code, message)
+        finished.set()
 
     app = websocket.WebSocketApp(
-        DEPTH_WS_URL,
+        WS_DEPTH,
         on_open=on_open,
         on_message=on_message,
         on_error=on_error,
         on_close=on_close,
     )
 
+    def run_socket():
+        try:
+            app.run_forever(
+                http_proxy_host=None,
+                http_proxy_port=None,
+                proxy_type="http",
+                ping_interval=10,
+                ping_timeout=5,
+            )
+        except Exception as exc:
+            result["errors"].append(repr(exc))
+            print("Depth run error:", repr(exc))
+        finally:
+            finished.set()
+
     thread = threading.Thread(
-        target=lambda: app.run_forever(ping_interval=10, ping_timeout=5),
-        daemon=True
+        target=run_socket,
+        daemon=True,
     )
     thread.start()
-
-    done.wait(TEST_SECONDS)
+    finished.wait(TEST_SECONDS)
 
     try:
         app.close()
@@ -218,78 +265,113 @@ def test_depth(symbol):
         pass
 
     thread.join(timeout=3)
-
-    print(
-        "DEPTH SUMMARY:",
-        "connected=", state["opened"],
-        "messages=", len(received["depth"])
-    )
+    return result
 
 
 def main():
+    started = now()
+
     print("=" * 50)
-    print("ATI TABDEAL FUTURES V20")
-    print("Time:", now())
-    print("REAL TRADING: OFF")
+    print("ATI FUTURES V21 — WEBSOCKET CONNECTION TEST")
+    print("Time:", started)
+    print("Real trading:", LIVE_TRADING)
     print("=" * 50)
 
     telegram(
-        "🚀 ATI FUTURES V20\n"
-        f"Time: {now()}\n"
-        "Testing official futures WebSocket feeds.\n"
-        "Real trading: OFF"
+        "🧪 ATI FUTURES V21 STARTED\n"
+        f"Time: {started}\n"
+        "Mode: WebSocket connection test\n"
+        "REAL TRADING: OFF"
     )
 
-    markets = get_markets()
-    print("USDT futures markets:", len(markets))
-    print("First markets:", markets[:15])
+    errors = []
+    broadcast = {"messages": [], "errors": [], "opened": False}
+    depth = {"messages": [], "errors": [], "opened": False}
 
-    if not markets:
-        raise RuntimeError("No eligible futures USDT markets found.")
+    try:
+        markets = discover_markets()
+        print("Markets found:", len(markets))
+        print("First markets:", markets[:10])
+    except Exception as exc:
+        message = (
+            "❌ ATI V21 MARKET DISCOVERY ERROR\n\n"
+            f"{repr(exc)}\nTime: {now()}"
+        )
+        print(message)
+        telegram(message)
+        raise
 
+    # BTC_USDT is selected only if it is in the discovered list.
     symbol = "BTC_USDT" if "BTC_USDT" in markets else markets[0]
+    print("Test symbol:", symbol)
 
-    # ابتدا اتصال معاملات، سپس دفتر سفارش را آزمایش می‌کنیم.
-    test_broadcast(symbol)
-    test_depth(symbol)
+    print("Testing broadcast WebSocket...")
+    broadcast = test_broadcast(symbol)
 
-    report = [
-        "🧪 ATI FUTURES V20 RESULTS",
+    print("Testing depth WebSocket...")
+    depth = test_depth(symbol)
+
+    errors.extend(
+        [f"Broadcast: {e}" for e in broadcast["errors"]]
+    )
+    errors.extend(
+        [f"Depth: {e}" for e in depth["errors"]]
+    )
+
+    lines = [
+        "🧪 ATI FUTURES V21 RESULTS",
         f"Time: {now()}",
         f"Markets: {len(markets)}",
         f"Test symbol: {symbol}",
-        f"Broadcast messages: {len(received['trades'])}",
-        f"Depth messages: {len(received['depth'])}",
-        f"WebSocket errors: {len(received['errors'])}",
+        f"Broadcast connected: {broadcast['opened']}",
+        f"Broadcast messages: {len(broadcast['messages'])}",
+        f"Depth connected: {depth['opened']}",
+        f"Depth messages: {len(depth['messages'])}",
+        f"WebSocket errors: {len(errors)}",
         "REAL TRADING: OFF",
-        "",
     ]
 
-    if received["trades"]:
-        report.append("BROADCAST SAMPLE:")
-        report.append(
-            json.dumps(received["trades"][0], ensure_ascii=False)[:700]
+    if broadcast["messages"]:
+        sample = json.dumps(
+            broadcast["messages"][0],
+            ensure_ascii=False,
         )
-    else:
-        report.append("No trade messages received during test.")
+        lines.extend([
+            "",
+            "BROADCAST SAMPLE:",
+            sample[:1200],
+        ])
 
-    if received["depth"]:
-        report.append("")
-        report.append("DEPTH SAMPLE:")
-        report.append(
-            json.dumps(received["depth"][0], ensure_ascii=False)[:700]
+    if depth["messages"]:
+        sample = json.dumps(
+            depth["messages"][0],
+            ensure_ascii=False,
         )
-    else:
-        report.append("No depth messages received during test.")
+        lines.extend([
+            "",
+            "DEPTH SAMPLE:",
+            sample[:1200],
+        ])
 
-    if received["errors"]:
-        report.append("")
-        report.append("ERRORS:")
-        report.extend(received["errors"][:5])
+    if errors:
+        lines.extend(["", "ERRORS:"])
+        lines.extend(errors[:8])
 
-    final_report = "\n".join(report)
-    print("\n" + final_report)
-    telegram(final_report)
+    if not broadcast["messages"]:
+        lines.extend([
+            "",
+            "No trade messages received during test.",
+        ])
+
+    if not depth["messages"]:
+        lines.extend([
+            "",
+            "No depth messages received during test.",
+        ])
+
+    report = "\n".join(lines)
+    print(report)
+    telegram(report)
 
 
 if __name__ == "__main__":
