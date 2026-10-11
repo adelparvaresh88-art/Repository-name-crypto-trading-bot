@@ -4,24 +4,24 @@ import json
 import time
 import math
 import threading
-import subprocess
-
 from datetime import datetime, timezone
 
 import requests
 import websocket
 
 
-# ==================================================
-# ATI FUTURES V22
-# TABDEAL FUTURES - LIVE WEBSOCKET - MACD 12/26/9
-# SIGNAL ONLY - REAL TRADING DISABLED
-# ==================================================
+# =========================================================
+# ATI FUTURES V22.1
+# TABDEAL FUTURES | LIVE TRADES | 5M MACD
+# SIGNAL ONLY - REAL ORDERS DISABLED
+# =========================================================
 
-VERSION = "ATI FUTURES V22"
+VERSION = "ATI FUTURES V22.1"
 
 BASE_URL = "https://api1.tabdeal.org"
-BROADCAST_URL = "wss://api1.tabdeal.org/special_margin/broadcast/"
+BROADCAST_URL = (
+    "wss://api1.tabdeal.org/special_margin/broadcast/"
+)
 
 LIVE_TRADING = False
 
@@ -29,7 +29,7 @@ MAX_MARKETS = 75
 SCAN_SECONDS = 180
 
 TIMEFRAME_SECONDS = 300
-MAX_CANDLES = 100
+MAX_CANDLES = 150
 MIN_CANDLES_FOR_MACD = 35
 
 MACD_FAST = 12
@@ -44,7 +44,8 @@ STATE_FILE = "ati_futures_state.json"
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
-# Prevent inherited proxy variables from breaking WebSocket.
+
+# Remove inherited proxy settings that can break WebSocket.
 for key in list(os.environ):
     if key.lower() in (
         "http_proxy",
@@ -55,21 +56,29 @@ for key in list(os.environ):
     ):
         os.environ.pop(key, None)
 
-os.environ["NO_PROXY"] = "api1.tabdeal.org,localhost,127.0.0.1"
-os.environ["no_proxy"] = "api1.tabdeal.org,localhost,127.0.0.1"
+os.environ["NO_PROXY"] = (
+    "api1.tabdeal.org,localhost,127.0.0.1"
+)
+os.environ["no_proxy"] = (
+    "api1.tabdeal.org,localhost,127.0.0.1"
+)
 
+
+# RLock avoids deadlocks when candle functions call
+# other functions that also need the state lock.
+state_lock = threading.RLock()
 print_lock = threading.Lock()
-state_lock = threading.Lock()
-
-socket_apps = []
-worker_threads = []
 
 state = {}
 runtime = {}
 
-errors = []
-signals_found = []
-telegram_alerts = []
+socket_apps = []
+worker_threads = []
+
+
+def log(*args):
+    with print_lock:
+        print(*args, flush=True)
 
 
 def utc_now():
@@ -80,19 +89,19 @@ def utc_text():
     return utc_now().strftime("%Y-%m-%d %H:%M:%S UTC")
 
 
-def log(*args):
-    with print_lock:
-        print(*args, flush=True)
-
-
 def telegram(message):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        log("Telegram secrets are missing.")
+        log("WARNING: Telegram secrets are missing.")
         return False
+
+    url = (
+        f"https://api.telegram.org/"
+        f"bot{TELEGRAM_TOKEN}/sendMessage"
+    )
 
     try:
         response = requests.post(
-            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+            url,
             json={
                 "chat_id": TELEGRAM_CHAT_ID,
                 "text": message,
@@ -101,14 +110,17 @@ def telegram(message):
         )
 
         if not response.ok:
-            log("Telegram error:", response.status_code,
-                response.text[:300])
+            log(
+                "Telegram HTTP error:",
+                response.status_code,
+                response.text[:300],
+            )
             return False
 
         return True
 
     except Exception as exc:
-        log("Telegram exception:", repr(exc))
+        log("Telegram error:", repr(exc))
         return False
 
 
@@ -121,12 +133,16 @@ def discover_markets():
     data = response.json()
 
     if not isinstance(data, dict):
-        raise RuntimeError("Invalid exchangeInfo response")
+        raise RuntimeError(
+            "exchangeInfo response is not a JSON object"
+        )
 
     symbols = data.get("symbols", [])
 
     if not isinstance(symbols, list):
-        raise RuntimeError("exchangeInfo symbols is not a list")
+        raise RuntimeError(
+            "exchangeInfo symbols is not a list"
+        )
 
     markets = []
 
@@ -148,7 +164,9 @@ def discover_markets():
     markets = sorted(set(markets))
 
     if not markets:
-        raise RuntimeError("No eligible USDT futures markets found")
+        raise RuntimeError(
+            "No eligible USDT futures markets found"
+        )
 
     return markets[:MAX_MARKETS]
 
@@ -156,36 +174,57 @@ def discover_markets():
 def load_state():
     global state
 
-    try:
-        if not os.path.exists(STATE_FILE):
-            state = {}
-            log("No saved state yet; starting fresh.")
-            return
+    if not os.path.exists(STATE_FILE):
+        state = {}
+        log("No saved candle history; starting fresh.")
+        return
 
-        with open(STATE_FILE, "r", encoding="utf-8") as file:
+    try:
+        with open(
+            STATE_FILE,
+            "r",
+            encoding="utf-8",
+        ) as file:
             loaded = json.load(file)
 
         if not isinstance(loaded, dict):
-            state = {}
-            return
+            raise ValueError("Saved state is not a dictionary")
 
         state = loaded
 
-        log("Saved state loaded for", len(state), "markets.")
+        # Repair malformed market entries.
+        for symbol, item in list(state.items()):
+            if not isinstance(item, dict):
+                state.pop(symbol, None)
+                continue
+
+            if not isinstance(item.get("candles"), list):
+                item["candles"] = []
+
+            if not isinstance(item.get("current"), dict):
+                item["current"] = None
+
+            item.setdefault("last_signal", 0)
+
+        log("Saved state loaded:", len(state), "markets")
 
     except Exception as exc:
-        log("State load error:", repr(exc))
+        log("State loading error:", repr(exc))
         state = {}
 
 
 def save_state():
-    temp_file = STATE_FILE + ".tmp"
+    temporary = STATE_FILE + ".tmp"
 
     try:
         with state_lock:
             snapshot = json.loads(json.dumps(state))
 
-        with open(temp_file, "w", encoding="utf-8") as file:
+        with open(
+            temporary,
+            "w",
+            encoding="utf-8",
+        ) as file:
             json.dump(
                 snapshot,
                 file,
@@ -193,14 +232,37 @@ def save_state():
                 separators=(",", ":"),
             )
 
-        os.replace(temp_file, STATE_FILE)
+        os.replace(temporary, STATE_FILE)
 
-        log("State saved:", len(state), "markets.")
+        log("State saved:", len(state), "markets")
         return True
 
     except Exception as exc:
-        log("State save error:", repr(exc))
+        log("State saving error:", repr(exc))
         return False
+
+
+def ensure_market_state(symbol):
+    with state_lock:
+        item = state.get(symbol)
+
+        if not isinstance(item, dict):
+            item = {
+                "candles": [],
+                "current": None,
+                "last_signal": 0,
+            }
+            state[symbol] = item
+
+        if not isinstance(item.get("candles"), list):
+            item["candles"] = []
+
+        if not isinstance(item.get("current"), dict):
+            item["current"] = None
+
+        item.setdefault("last_signal", 0)
+
+        return item
 
 
 def parse_trade_time(value):
@@ -209,9 +271,9 @@ def parse_trade_time(value):
             return utc_now().timestamp()
 
         if isinstance(value, (int, float)):
-            # Handle seconds or milliseconds.
             if value > 10_000_000_000:
                 value = value / 1000.0
+
             return float(value)
 
         text = str(value).strip()
@@ -222,19 +284,25 @@ def parse_trade_time(value):
         parsed = datetime.fromisoformat(text)
 
         if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=timezone.utc)
+            parsed = parsed.replace(
+                tzinfo=timezone.utc
+            )
 
         return parsed.timestamp()
 
     except Exception:
-        return utc_now().timestamp()
+        log("Invalid trade timestamp:", repr(value))
+        return None
 
 
 def candle_bucket(timestamp):
-    return int(timestamp // TIMEFRAME_SECONDS) * TIMEFRAME_SECONDS
+    return (
+        int(timestamp // TIMEFRAME_SECONDS)
+        * TIMEFRAME_SECONDS
+    )
 
 
-def new_candle(bucket, price, amount=0.0):
+def new_candle(bucket, price, amount):
     return {
         "t": int(bucket),
         "o": float(price),
@@ -245,66 +313,38 @@ def new_candle(bucket, price, amount=0.0):
     }
 
 
-def ensure_market_state(symbol):
-    with state_lock:
-        if symbol not in state or not isinstance(state[symbol], dict):
-            state[symbol] = {
-                "candles": [],
-                "current": None,
-                "last_signal": 0,
-            }
-
-        item = state[symbol]
-
-        if not isinstance(item.get("candles"), list):
-            item["candles"] = []
-
-        return item
-
-
 def append_closed_candle(symbol, candle):
     item = ensure_market_state(symbol)
-
     candles = item["candles"]
 
-    # Do not duplicate a candle if a run resumes around a boundary.
-    if candles and int(candles[-1].get("t", 0)) >= int(candle["t"]):
+    if not candle:
         return
+
+    bucket = int(candle["t"])
+
+    if candles:
+        last_bucket = int(candles[-1]["t"])
+
+        if bucket <= last_bucket:
+            return
 
     candles.append(candle)
 
     if len(candles) > MAX_CANDLES:
         del candles[:-MAX_CANDLES]
 
-
-def advance_market_time(symbol, target_bucket):
-    """
-    Close the previous candle after its five-minute interval ends.
-    Fill empty intervals with zero-volume candles at the last close.
-    """
-    item = ensure_market_state(symbol)
-    current = item.get("current")
-
-    if not current:
-        return
-
-    current_bucket = int(current["t"])
-
-    if target_bucket <= current_bucket:
-        return
-
-    last_close = float(current["c"])
-
-    append_closed_candle(symbol, current)
-
-    next_bucket = current_bucket + TIMEFRAME_SECONDS
-
-    while next_bucket < target_bucket:
-        empty = new_candle(next_bucket, last_close, 0.0)
-        append_closed_candle(symbol, empty)
-        next_bucket += TIMEFRAME_SECONDS
-
-    item["current"] = None
+    log(
+        "Candle closed:",
+        symbol,
+        datetime.fromtimestamp(
+            bucket,
+            timezone.utc,
+        ).strftime("%H:%M UTC"),
+        "close=",
+        candle["c"],
+        "volume=",
+        candle["v"],
+    )
 
 
 def process_trade(symbol, trade):
@@ -318,47 +358,93 @@ def process_trade(symbol, trade):
         if not math.isfinite(amount) or amount < 0:
             amount = 0.0
 
-        timestamp = parse_trade_time(trade.get("updated"))
+        timestamp = parse_trade_time(
+            trade.get("updated")
+        )
+
+        if timestamp is None:
+            return
+
         bucket = candle_bucket(timestamp)
 
-        item = ensure_market_state(symbol)
-
         with state_lock:
+            item = ensure_market_state(symbol)
             current = item.get("current")
 
             if current is None:
-                # Do not append a partial candle from an old trade.
-                current = new_candle(bucket, price, amount)
-                item["current"] = current
+                item["current"] = new_candle(
+                    bucket,
+                    price,
+                    amount,
+                )
                 return
 
-            old_bucket = int(current["t"])
+            current_bucket = int(current["t"])
 
-            if bucket < old_bucket:
+            # Ignore late or out-of-order trades.
+            if bucket < current_bucket:
                 return
 
-            if bucket > old_bucket:
-                append_closed_candle(symbol, current)
+            if bucket == current_bucket:
+                current["h"] = max(
+                    float(current["h"]),
+                    price,
+                )
 
-                last_close = float(current["c"])
-                next_bucket = old_bucket + TIMEFRAME_SECONDS
+                current["l"] = min(
+                    float(current["l"]),
+                    price,
+                )
 
-                while next_bucket < bucket:
-                    empty = new_candle(next_bucket, last_close, 0.0)
-                    append_closed_candle(symbol, empty)
-                    next_bucket += TIMEFRAME_SECONDS
+                current["c"] = price
 
-                current = new_candle(bucket, price, amount)
-                item["current"] = current
+                current["v"] = (
+                    float(current.get("v", 0))
+                    + amount
+                )
+
                 return
 
-            current["h"] = max(float(current["h"]), price)
-            current["l"] = min(float(current["l"]), price)
-            current["c"] = price
-            current["v"] = float(current.get("v", 0)) + amount
+            # A newer 5-minute interval arrived.
+            append_closed_candle(symbol, current)
+
+            # Do not fabricate candles for intervals
+            # in which no trade data was received.
+            item["current"] = new_candle(
+                bucket,
+                price,
+                amount,
+            )
 
     except Exception as exc:
-        log("Trade processing error", symbol, repr(exc))
+        log(
+            "Trade processing error:",
+            symbol,
+            repr(exc),
+        )
+
+
+def close_expired_candles():
+    now_bucket = candle_bucket(
+        utc_now().timestamp()
+    )
+
+    with state_lock:
+        for symbol in list(state.keys()):
+            item = ensure_market_state(symbol)
+            current = item.get("current")
+
+            if not current:
+                continue
+
+            bucket = int(current["t"])
+
+            if bucket < now_bucket:
+                append_closed_candle(
+                    symbol,
+                    current,
+                )
+                item["current"] = None
 
 
 def ema(values, period):
@@ -366,30 +452,34 @@ def ema(values, period):
         return []
 
     alpha = 2.0 / (period + 1.0)
-    result = [float(values[0])]
+
+    output = [float(values[0])]
 
     for value in values[1:]:
-        result.append(
-            alpha * float(value) +
-            (1.0 - alpha) * result[-1]
+        output.append(
+            alpha * float(value)
+            + (1.0 - alpha) * output[-1]
         )
 
-    return result
+    return output
 
 
 def calculate_macd(closes):
     if len(closes) < MIN_CANDLES_FOR_MACD:
         return None
 
-    fast_line = ema(closes, MACD_FAST)
-    slow_line = ema(closes, MACD_SLOW)
+    fast = ema(closes, MACD_FAST)
+    slow = ema(closes, MACD_SLOW)
 
     macd_line = [
-        fast_line[i] - slow_line[i]
+        fast[i] - slow[i]
         for i in range(len(closes))
     ]
 
-    signal_line = ema(macd_line, MACD_SIGNAL)
+    signal_line = ema(
+        macd_line,
+        MACD_SIGNAL,
+    )
 
     histogram = [
         macd_line[i] - signal_line[i]
@@ -417,29 +507,21 @@ def format_price(value):
 
 def evaluate_signals(markets):
     found = []
-    now_bucket = candle_bucket(utc_now().timestamp())
 
     for symbol in markets:
-        item = ensure_market_state(symbol)
-
         with state_lock:
-            candles = list(item.get("candles", []))
+            item = ensure_market_state(symbol)
+            candles = list(item["candles"])
             last_signal = int(item.get("last_signal", 0))
 
-        # MACD must use closed candles, not the live partial candle.
         if len(candles) < MIN_CANDLES_FOR_MACD:
             continue
 
-        latest = candles[-1]
-        previous = candles[-2]
+        closes = [
+            float(candle["c"])
+            for candle in candles
+        ]
 
-        latest_time = int(latest["t"])
-
-        # Avoid signals from stale candles.
-        if now_bucket - latest_time > 2 * TIMEFRAME_SECONDS:
-            continue
-
-        closes = [float(candle["c"]) for candle in candles]
         macd = calculate_macd(closes)
 
         if macd is None:
@@ -470,17 +552,30 @@ def evaluate_signals(markets):
         if direction is None:
             continue
 
-        if latest_time <= last_signal:
+        candle_time = int(candles[-1]["t"])
+
+        if candle_time <= last_signal:
             continue
 
-        entry = float(latest["c"])
+        # The latest candle must be closed and reasonably fresh.
+        now_bucket = candle_bucket(
+            utc_now().timestamp()
+        )
+
+        if candle_time >= now_bucket:
+            continue
+
+        if now_bucket - candle_time > 2 * TIMEFRAME_SECONDS:
+            continue
+
+        entry = float(candles[-1]["c"])
 
         if direction == "BUY":
-            stop = entry * (1.0 - STOP_LOSS_PCT)
-            target = entry * (1.0 + TAKE_PROFIT_PCT)
+            stop = entry * (1 - STOP_LOSS_PCT)
+            target = entry * (1 + TAKE_PROFIT_PCT)
         else:
-            stop = entry * (1.0 + STOP_LOSS_PCT)
-            target = entry * (1.0 - TAKE_PROFIT_PCT)
+            stop = entry * (1 + STOP_LOSS_PCT)
+            target = entry * (1 - TAKE_PROFIT_PCT)
 
         found.append({
             "symbol": symbol,
@@ -488,73 +583,54 @@ def evaluate_signals(markets):
             "entry": entry,
             "stop": stop,
             "target": target,
-            "candle_time": latest_time,
+            "candle_time": candle_time,
             "histogram": macd["histogram"][i],
         })
 
     return found
 
 
-def record_signals(found):
-    messages = []
+def make_signal_message(signal):
+    direction = signal["direction"]
+
+    label = (
+        "🟢 BUY"
+        if direction == "BUY"
+        else "🔴 SELL"
+    )
+
+    candle_text = datetime.fromtimestamp(
+        signal["candle_time"],
+        timezone.utc,
+    ).strftime("%Y-%m-%d %H:%M UTC")
+
+    return (
+        "⚡ ATI FUTURES V22.1 SIGNAL\n\n"
+        f"💎 {signal['symbol']}\n"
+        f"{label}\n"
+        "⏱️ Timeframe: 5M\n"
+        "📊 Strategy: MACD 12/26/9\n\n"
+        f"📍 Entry reference: "
+        f"{format_price(signal['entry'])}\n"
+        f"🛑 Suggested SL: "
+        f"{format_price(signal['stop'])}\n"
+        f"🎯 Suggested TP: "
+        f"{format_price(signal['target'])}\n\n"
+        f"📉 MACD histogram: "
+        f"{signal['histogram']:.8f}\n"
+        f"🕐 Candle: {candle_text}\n\n"
+        "🔒 REAL TRADING: OFF\n"
+        "⚠️ Signal only; no order was placed."
+    )
+
+
+def send_new_signals(markets):
+    found = evaluate_signals(markets)
+    sent = 0
 
     for signal in found:
         symbol = signal["symbol"]
-        direction = signal["direction"]
         candle_time = int(signal["candle_time"])
 
-        item = ensure_market_state(symbol)
-
         with state_lock:
-            if candle_time <= int(item.get("last_signal", 0)):
-                continue
-
-            item["last_signal"] = candle_time
-
-        label = "🟢 BUY" if direction == "BUY" else "🔴 SELL"
-
-        message = (
-            f"⚡ ATI FUTURES V22 SIGNAL\n\n"
-            f"💎 {symbol}\n"
-            f"{label}\n"
-            f"⏱️ Timeframe: 5M\n"
-            f"📊 Strategy: MACD 12/26/9 crossover\n\n"
-            f"📍 Entry reference: {format_price(signal['entry'])}\n"
-            f"🛑 Suggested SL: {format_price(signal['stop'])}\n"
-            f"🎯 Suggested TP: {format_price(signal['target'])}\n\n"
-            f"📉 MACD histogram: {signal['histogram']:.8f}\n"
-            f"🕐 Candle: {datetime.fromtimestamp(candle_time, timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}\n\n"
-            f"🔒 REAL TRADING: OFF\n"
-            f"⚠️ Signal only; not an order."
-        )
-
-        messages.append(message)
-
-    return messages
-
-
-def websocket_worker(symbol):
-    result = runtime[symbol]
-
-    def on_open(ws):
-        result["connected"] = True
-        result["opened_at"] = time.time()
-        log("WS connected:", symbol)
-
-        try:
-            # Official Tabdeal broadcast feed uses plain-text symbol.
-            ws.send(symbol)
-        except Exception as exc:
-            result["errors"] += 1
-            log("Subscribe error:", symbol, repr(exc))
-
-    def on_message(ws, message):
-        try:
-            data = json.loads(message)
-
-            if isinstance(data, dict):
-                trade = data.get("trade")
-
-                if isinstance(trade, dict):
-                    received_symbol = str(
-                        trade.get("symbol",
+            item = ensure_market_state(symbol)
