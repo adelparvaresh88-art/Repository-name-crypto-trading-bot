@@ -1,23 +1,21 @@
-name: ATI FUTURES V18
+name: ATI Futures V19
 
 on:
   workflow_dispatch:
+
   schedule:
     - cron: "*/5 * * * *"
 
-permissions:
-  contents: read
-
-concurrency:
-  group: ati-futures-v18
-  cancel-in-progress: false
-
 jobs:
+
   run-bot:
+
     runs-on: ubuntu-latest
+
     timeout-minutes: 4
 
     steps:
+
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -31,8 +29,30 @@ jobs:
           python -m pip install --upgrade pip
           pip install requests
 
-      - name: Run ATI Futures V18
+      - name: Run ATI Futures V19
         env:
+
+          # Telegram
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python -u main.py
+
+          # Binance Futures
+          BINANCE_API_KEY: ${{ secrets.BINANCE_API_KEY }}
+          BINANCE_API_SECRET: ${{ secrets.BINANCE_API_SECRET }}
+
+          # Trading
+          LIVE_TRADING: "false"
+
+          ORDER_USDT: "2"
+          LEVERAGE: "3"
+
+          # Scanner
+          MAX_MARKETS: "75"
+          KLINES_LIMIT: "100"
+
+          # Risk
+          TP_PCT: "0.012"
+          SL_PCT: "0.008"
+
+        run: |
+          python main.py
