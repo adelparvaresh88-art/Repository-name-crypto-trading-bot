@@ -1,5 +1,6 @@
 import os
 import time
+import json
 import requests
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -7,9 +8,11 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # ATI TABDEAL FUTURES MACD
 # MACD: 12 / 26 / 9
 # Timeframe: 5 minutes
-# Signal-only mode: NO ORDERS
+# REAL TRADING: OFF — NO ORDERS
 
-BASE_URL = "https://api1.tabdeal.org/r/fapi/v1"
+BASE_URL = "https://api1.tabdeal.org"
+MARKET_URL = f"{BASE_URL}/r/fapi/v1/exchangeInfo"
+KLINES_URL = f"{BASE_URL}/r/fapi/v1/klines"
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
@@ -20,22 +23,29 @@ ORDER_USDT = float(os.getenv("ORDER_USDT", "2"))
 LEVERAGE = int(os.getenv("LEVERAGE", "3"))
 
 INTERVAL = "5m"
-TIMEOUT = 12
-MAX_WORKERS = 10
+TIMEOUT = 15
+MAX_WORKERS = 8
 
 session = requests.Session()
-session.headers.update({"User-Agent": "ATI-Tabdeal-Futures-MACD/1.0"})
+session.headers.update({
+    "User-Agent": "ATI-Tabdeal-Futures-MACD/2.0"
+})
 
 
 def now_utc():
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    return datetime.now(timezone.utc).strftime(
+        "%Y-%m-%d %H:%M:%S UTC"
+    )
 
 
 def telegram(message):
-    print(message)
+    print(message, flush=True)
 
     if not BOT_TOKEN or not CHAT_ID:
-        print("WARNING: Telegram secrets are missing.")
+        print(
+            "WARNING: TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID is missing.",
+            flush=True
+        )
         return
 
     try:
@@ -43,43 +53,80 @@ def telegram(message):
             f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
             json={
                 "chat_id": CHAT_ID,
-                "text": message,
-                "disable_web_page_preview": True,
+                "text": message[:4000],
+                "disable_web_page_preview": True
             },
-            timeout=15,
+            timeout=15
         )
         response.raise_for_status()
-        print("Telegram message sent.")
+        print("Telegram message sent.", flush=True)
+
     except Exception as exc:
-        print(f"Telegram error: {type(exc).__name__}: {exc}")
+        print(
+            f"Telegram error: {type(exc).__name__}: {exc}",
+            flush=True
+        )
 
 
 def get_json(url, params=None):
     response = session.get(
         url,
         params=params,
-        timeout=TIMEOUT,
+        timeout=TIMEOUT
     )
-    response.raise_for_status()
-    return response.json()
+
+    print(
+        f"HTTP {response.status_code}: {response.url}",
+        flush=True
+    )
+
+    if not response.ok:
+        raise RuntimeError(
+            f"HTTP {response.status_code} from {response.url}: "
+            f"{response.text[:1000]}"
+        )
+
+    try:
+        return response.json()
+    except ValueError:
+        raise RuntimeError(
+            f"Response was not JSON: {response.text[:1000]}"
+        )
 
 
-def unwrap_market_list(data):
+def extract_market_rows(data):
+    """
+    Supports common exchangeInfo response structures.
+    Does not assume the response is always a list.
+    """
     if isinstance(data, list):
         return data
 
     if not isinstance(data, dict):
         return []
 
-    for key in ("symbols", "data", "markets", "result"):
+    for key in (
+        "symbols",
+        "data",
+        "markets",
+        "result",
+        "contracts",
+        "list"
+    ):
         value = data.get(key)
 
         if isinstance(value, list):
             return value
 
         if isinstance(value, dict):
-            for nested_key in ("symbols", "markets", "list"):
+            for nested_key in (
+                "symbols",
+                "markets",
+                "list",
+                "contracts"
+            ):
                 nested = value.get(nested_key)
+
                 if isinstance(nested, list):
                     return nested
 
@@ -87,84 +134,132 @@ def unwrap_market_list(data):
 
 
 def discover_markets():
-    data = get_json(f"{BASE_URL}/exchangeInfo")
-    rows = unwrap_market_list(data)
+    data = get_json(MARKET_URL)
+    rows = extract_market_rows(data)
+
+    print(
+        "EXCHANGE INFO RESPONSE TYPE:",
+        type(data).__name__,
+        flush=True
+    )
+
+    print(
+        "EXCHANGE INFO TOP LEVEL:",
+        list(data.keys()) if isinstance(data, dict) else "not a dict",
+        flush=True
+    )
+
+    print(
+        "EXCHANGE INFO FIRST 3 ROWS:",
+        json.dumps(rows[:3], ensure_ascii=False, default=str)[:4000],
+        flush=True
+    )
 
     if not rows:
         raise RuntimeError(
-            "ExchangeInfo returned no recognizable market list. "
-            f"Response preview: {repr(data)[:700]}"
+            "No market rows could be extracted from exchangeInfo. "
+            f"Response: {json.dumps(data, ensure_ascii=False, default=str)[:1500]}"
         )
 
-    eligible = []
+    markets = []
+    rejected_examples = []
 
     for item in rows:
         if not isinstance(item, dict):
             continue
 
-        symbol = str(item.get("symbol", "")).upper()
-        quote = str(item.get("quoteAsset", "")).upper()
-        status = str(item.get("status", "")).upper()
-        contract_type = str(item.get("contractType", "")).upper()
+        # Accept several possible symbol field names.
+        symbol = str(
+            item.get("symbol")
+            or item.get("s")
+            or item.get("contractCode")
+            or item.get("market")
+            or item.get("pair")
+            or ""
+        ).upper().strip()
 
-        if not symbol.endswith("USDT"):
-            continue
+        quote = str(
+            item.get("quoteAsset")
+            or item.get("quote")
+            or ""
+        ).upper().strip()
 
-        if quote and quote != "USDT":
-            continue
+        if not symbol:
+            base = str(
+                item.get("baseAsset")
+                or item.get("base")
+                or ""
+            ).upper().strip()
 
-        if status and status not in ("TRADING", "ENABLED"):
-            continue
+            if base and quote:
+                symbol = base + quote
 
-        if contract_type and contract_type not in (
-            "PERPETUAL",
-            "PERPETUAL_CONTRACT",
-        ):
-            continue
+        # Do not reject a market solely because its status field
+        # uses an unfamiliar value.
+        if symbol.endswith("USDT") and symbol.isalnum():
+            markets.append(symbol)
+        elif len(rejected_examples) < 5:
+            rejected_examples.append({
+                "symbol": symbol,
+                "quote": quote,
+                "status": item.get("status"),
+                "keys": list(item.keys())
+            })
 
-        if symbol.isalnum():
-            eligible.append(symbol)
+    markets = sorted(set(markets))
 
-    eligible = sorted(set(eligible))
+    print(
+        "USDT MARKET CANDIDATES:",
+        len(markets),
+        markets[:30],
+        flush=True
+    )
 
-    if not eligible:
+    if not markets:
         raise RuntimeError(
-            "No eligible USDT futures markets found."
+            "ExchangeInfo returned data, but no symbols ending in USDT "
+            "were recognized. "
+            f"Rejected examples: "
+            f"{json.dumps(rejected_examples, ensure_ascii=False, default=str)}"
         )
 
-    return eligible[:MAX_MARKETS], len(rows)
+    return markets[:MAX_MARKETS], len(rows)
 
 
 def ema(values, period):
     if len(values) < period:
-        raise ValueError("Not enough data for EMA")
+        raise ValueError(
+            f"EMA({period}) needs more values; got {len(values)}"
+        )
 
     alpha = 2.0 / (period + 1.0)
     current = sum(values[:period]) / period
-    output = [None] * (period - 1) + [current]
+
+    result = [None] * (period - 1)
+    result.append(current)
 
     for value in values[period:]:
-        current = value * alpha + current * (1.0 - alpha)
-        output.append(current)
+        current = alpha * value + (1.0 - alpha) * current
+        result.append(current)
 
-    return output
+    return result
 
 
 def calculate_macd(closes):
     if len(closes) < 40:
         raise ValueError(
-            f"Need at least 40 closes; received {len(closes)}"
+            f"Need at least 40 closed candles; got {len(closes)}"
         )
 
-    ema12 = ema(closes, 12)
-    ema26 = ema(closes, 26)
+    fast = ema(closes, 12)
+    slow = ema(closes, 26)
 
     macd_values = []
     macd_indices = []
 
     for index in range(len(closes)):
-        if ema12[index] is not None and ema26[index] is not None:
-            macd_values.append(ema12[index] - ema26[index])
+        if fast[index] is not None and slow[index] is not None:
+            macd_values.append(fast[index] - slow[index])
             macd_indices.append(index)
 
     signal_values = ema(macd_values, 9)
@@ -172,13 +267,15 @@ def calculate_macd(closes):
     valid = []
 
     for index, macd_value, signal_value in zip(
-        macd_indices, macd_values, signal_values
+        macd_indices,
+        macd_values,
+        signal_values
     ):
         if signal_value is not None:
             valid.append((index, macd_value, signal_value))
 
     if len(valid) < 2:
-        raise ValueError("Not enough MACD signal values")
+        raise ValueError("Not enough MACD values")
 
     previous = valid[-2]
     current = valid[-1]
@@ -188,63 +285,115 @@ def calculate_macd(closes):
 
     direction = None
 
-    if previous_macd <= previous_signal and current_macd > current_signal:
+    if (
+        previous_macd <= previous_signal
+        and current_macd > current_signal
+    ):
         direction = "BUY"
-    elif previous_macd >= previous_signal and current_macd < current_signal:
+
+    elif (
+        previous_macd >= previous_signal
+        and current_macd < current_signal
+    ):
         direction = "SELL"
 
     return {
         "direction": direction,
         "macd": current_macd,
         "signal": current_signal,
-        "histogram": current_macd - current_signal,
+        "histogram": current_macd - current_signal
     }
 
 
 def fetch_closed_candles(symbol):
     data = get_json(
-        f"{BASE_URL}/klines",
+        KLINES_URL,
         params={
             "symbol": symbol,
             "interval": INTERVAL,
-            "limit": KLINES_LIMIT,
-        },
+            "limit": KLINES_LIMIT
+        }
     )
 
     if isinstance(data, dict):
-        for key in ("data", "klines", "result", "rows"):
-            if isinstance(data.get(key), list):
-                data = data[key]
+        found = False
+
+        for key in ("data", "klines", "result", "rows", "list"):
+            value = data.get(key)
+
+            if isinstance(value, list):
+                data = value
+                found = True
                 break
+
+        if not found:
+            raise ValueError(
+                "Unrecognized kline response: "
+                + json.dumps(
+                    data,
+                    ensure_ascii=False,
+                    default=str
+                )[:700]
+            )
 
     if not isinstance(data, list):
         raise ValueError(
-            f"Unexpected klines response: {type(data).__name__}"
+            f"Kline response is {type(data).__name__}, not a list"
         )
 
     candles = []
 
     for row in data:
-        if not isinstance(row, (list, tuple)) or len(row) < 7:
-            continue
-
         try:
-            open_time = int(row[0])
-            close_price = float(row[4])
-            close_time = int(row[6])
+            if isinstance(row, dict):
+                open_time = int(
+                    row.get("openTime", row.get("open_time", row.get("t")))
+                )
+                close_price = float(
+                    row.get("close", row.get("c"))
+                )
+                close_time_value = row.get(
+                    "closeTime",
+                    row.get("close_time", row.get("T"))
+                )
+
+                if close_time_value is None:
+                    close_time = open_time + 5 * 60 * 1000
+                else:
+                    close_time = int(close_time_value)
+
+            elif isinstance(row, (list, tuple)) and len(row) >= 5:
+                open_time = int(row[0])
+                close_price = float(row[4])
+
+                if len(row) >= 7:
+                    close_time = int(row[6])
+                else:
+                    close_time = open_time + 5 * 60 * 1000
+
+            else:
+                continue
+
+            # Normalize seconds to milliseconds if necessary.
+            if open_time < 10_000_000_000:
+                open_time *= 1000
+
+            if close_time < 10_000_000_000:
+                close_time *= 1000
 
             if close_price > 0:
                 candles.append(
                     (open_time, close_time, close_price)
                 )
 
-        except (TypeError, ValueError, IndexError):
+        except (TypeError, ValueError, KeyError):
             continue
 
     candles.sort(key=lambda candle: candle[0])
 
     now_ms = int(time.time() * 1000)
 
+    # Exclude the current, unfinished candle.
     closed = [
         candle for candle in candles
         if candle[1] < now_ms
@@ -252,7 +401,8 @@ def fetch_closed_candles(symbol):
 
     if len(closed) < 40:
         raise ValueError(
-            f"Only {len(closed)} closed candles received"
+            f"Only {len(closed)} closed candles received; "
+            f"raw response rows={len(data)}"
         )
 
     return [candle[2] for candle in closed]
@@ -261,20 +411,20 @@ def fetch_closed_candles(symbol):
 def scan_symbol(symbol):
     try:
         closes = fetch_closed_candles(symbol)
-        result = calculate_macd(closes)
+        macd = calculate_macd(closes)
 
         return {
             "symbol": symbol,
             "price": closes[-1],
             "candles": len(closes),
-            **result,
-            "error": None,
+            **macd,
+            "error": None
         }
 
     except Exception as exc:
         return {
             "symbol": symbol,
-            "error": f"{type(exc).__name__}: {exc}",
+            "error": f"{type(exc).__name__}: {exc}"
         }
 
 
@@ -286,20 +436,23 @@ def main():
         f"Time: {now_utc()}\n"
         "Strategy: MACD 12/26/9\n"
         "Timeframe: 5m\n"
-        "Mode: SIGNAL ONLY — NO ORDERS\n"
-        "Connecting to Tabdeal Futures..."
+        "REAL TRADING: OFF\n"
+        "Testing Tabdeal Futures market discovery..."
     )
 
     try:
-        markets, market_count = discover_markets()
+        markets, total_rows = discover_markets()
 
     except Exception as exc:
-        telegram(
+        message = (
             "❌ ATI TABDEAL FUTURES MARKET ERROR\n\n"
             f"{type(exc).__name__}: {exc}\n\n"
             f"Time: {now_utc()}\n"
+            "Check GitHub Actions logs for EXCHANGE INFO FIRST 3 ROWS.\n"
             "No orders were placed."
         )
+
+        telegram(message)
         raise
 
     results = []
@@ -319,15 +472,13 @@ def main():
             except Exception as exc:
                 result = {
                     "symbol": symbol,
-                    "error": f"{type(exc).__name__}: {exc}",
+                    "error": f"{type(exc).__name__}: {exc}"
                 }
 
             if result.get("error"):
                 errors.append(result)
             else:
                 results.append(result)
-
-    results.sort(key=lambda item: item["symbol"])
 
     signals = [
         item for item in results
@@ -338,20 +489,20 @@ def main():
 
     lines = [
         "💓 ATI TABDEAL FUTURES MACD",
-        f"🕐 {now_utc()}",
+        f"Time: {now_utc()}",
         "",
-        "📊 Strategy: MACD 12/26/9",
-        "⏱ Timeframe: 5m",
-        f"📚 Markets discovered: {market_count}",
-        f"🔎 Markets scanned: {len(markets)}",
-        f"✅ Candle data ready: {len(results)}",
-        f"❌ Errors: {len(errors)}",
-        f"⏱ Scan time: {elapsed:.1f}s",
+        "Strategy: MACD 12/26/9",
+        "Timeframe: 5m",
+        f"Market rows received: {total_rows}",
+        f"USDT markets selected: {len(markets)}",
+        f"Candles ready: {len(results)}",
+        f"Market/candle errors: {len(errors)}",
+        f"Scan time: {elapsed:.1f}s",
         "",
-        f"💵 Order setting: {ORDER_USDT} USDT",
-        f"⚡ Leverage setting: {LEVERAGE}x",
-        "🔒 REAL TRADING: OFF",
-        "",
+        f"Order size setting: {ORDER_USDT} USDT",
+        f"Leverage setting: {LEVERAGE}x",
+        "REAL TRADING: OFF",
+        ""
     ]
 
     if signals:
@@ -366,26 +517,22 @@ def main():
                 f"Price: {item['price']:.10g}",
                 f"MACD: {item['macd']:.10g}",
                 f"Signal: {item['signal']:.10g}",
-                f"Histogram: {item['histogram']:.10g}",
+                f"Histogram: {item['histogram']:.10g}"
             ])
-
     else:
-        lines.append(
-            "☁️ No new MACD crossover on the latest closed candles."
-        )
+        lines.append("No new MACD crossover on closed candles.")
 
     if errors:
-        lines.extend(["", "⚠️ First errors:"])
+        lines.extend(["", "First errors:"])
 
-        for item in errors[:3]:
+        for item in errors[:5]:
             lines.append(
-                f"{item['symbol']}: {item['error'][:180]}"
+                f"{item['symbol']}: {item['error'][:200]}"
             )
 
     lines.extend([
         "",
-        "This version reports signals only.",
-        "No orders were placed.",
+        "Signal-only mode. No orders were placed."
     ])
 
     telegram("\n".join(lines))
