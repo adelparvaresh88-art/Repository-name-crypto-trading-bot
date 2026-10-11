@@ -1,95 +1,56 @@
 import os
 import json
+import time
+import threading
 import requests
+import websocket
 from datetime import datetime, timezone
 
 BASE = "https://api1.tabdeal.org"
+BROADCAST_URL = BASE + "/special_margin/broadcast/"
+DEPTH_WS_URL = BASE + "/special_margin/stream/"
+
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
-TIMEOUT = 12
+
+TEST_SECONDS = 20
 LIVE_TRADING = False
 
-session = requests.Session()
-session.headers.update({"User-Agent": "ATI-Futures-Diagnostic/19.0"})
+http = requests.Session()
+received = {"trades": [], "depth": [], "errors": []}
 
 
 def now():
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
 
-def notify(text):
-    print(text)
+def telegram(message):
+    print(message)
     if not TOKEN or not CHAT_ID:
-        print("Telegram secrets missing.")
+        print("Telegram secrets are missing.")
         return
 
     try:
-        r = session.post(
+        r = http.post(
             f"https://api.telegram.org/bot{TOKEN}/sendMessage",
-            json={"chat_id": CHAT_ID, "text": text[:4000]},
-            timeout=TIMEOUT
+            json={"chat_id": CHAT_ID, "text": message[:3900]},
+            timeout=12
         )
         print("Telegram status:", r.status_code)
-        print(r.text[:300])
     except Exception as e:
         print("Telegram error:", repr(e))
 
 
-def request_test(path, params, label):
-    url = BASE + path
-
-    print("\n" + "=" * 60)
-    print("TEST:", label)
-    print("URL:", url)
-    print("PARAMS:", params)
-
-    try:
-        response = session.get(url, params=params, timeout=TIMEOUT)
-        print("HTTP:", response.status_code)
-        print("FINAL URL:", response.url)
-        print("BODY:", response.text[:900])
-
-        try:
-            body = response.json()
-        except Exception:
-            body = response.text[:500]
-
-        return {
-            "label": label,
-            "path": path,
-            "status": response.status_code,
-            "url": response.url,
-            "body": body
-        }
-
-    except Exception as e:
-        print("REQUEST ERROR:", repr(e))
-        return {
-            "label": label,
-            "path": path,
-            "status": "EXCEPTION",
-            "body": repr(e)
-        }
-
-
 def get_markets():
-    result = request_test(
-        "/r/fapi/v1/exchangeInfo",
-        {},
-        "Futures exchangeInfo"
-    )
+    url = BASE + "/r/fapi/v1/exchangeInfo"
+    r = http.get(url, timeout=15)
+    print("ExchangeInfo HTTP:", r.status_code)
+    r.raise_for_status()
 
-    body = result["body"]
+    data = r.json()
+    rows = data.get("symbols", []) if isinstance(data, dict) else data
 
-    if result["status"] != 200 or not isinstance(body, dict):
-        raise RuntimeError(
-            "exchangeInfo failed: " +
-            str(body)[:300]
-        )
-
-    rows = body.get("symbols", [])
     markets = []
-
     for row in rows:
         if not isinstance(row, dict):
             continue
@@ -98,124 +59,237 @@ def get_markets():
         quote = str(row.get("quoteAsset", "")).upper()
         status = str(row.get("status", "")).upper()
 
-        normalized = symbol.replace("_", "").replace("-", "")
+        if (
+            symbol.endswith("_USDT")
+            and quote == "USDT"
+            and status in ("TRADING", "ACTIVE", "ENABLED")
+        ):
+            markets.append(symbol)
 
-        if not normalized.endswith("USDT"):
-            continue
-        if quote and quote != "USDT":
-            continue
-        if status and status not in ("TRADING", "ACTIVE", "ENABLED"):
-            continue
+    return list(dict.fromkeys(markets))
 
-        markets.append({
-            "symbol": normalized,
-            "raw": symbol
-        })
 
-    # حذف نمادهای تکراری
-    unique = {}
-    for market in markets:
-        unique[market["symbol"]] = market
+def decode_message(message):
+    try:
+        return json.loads(message)
+    except Exception:
+        return {"raw": message[:500]}
 
-    return list(unique.values())
+
+def test_broadcast(symbol):
+    print("\nTESTING FUTURES TRADE BROADCAST:", symbol)
+    done = threading.Event()
+    ws_state = {"opened": False, "closed": False}
+
+    def on_open(ws):
+        ws_state["opened"] = True
+        print("BROADCAST CONNECTED")
+        # طبق مستندات رسمی، پیام اشتراک متن ساده است.
+        ws.send(symbol)
+
+    def on_message(ws, message):
+        data = decode_message(message)
+        print("BROADCAST MESSAGE:", json.dumps(data, ensure_ascii=False)[:800])
+
+        if isinstance(data, dict):
+            if "error" in data:
+                received["errors"].append(
+                    "Broadcast: " + str(data.get("error"))
+                )
+            elif "trade" in data:
+                received["trades"].append(data["trade"])
+            elif "trades" in data:
+                trades = data["trades"]
+                if isinstance(trades, list):
+                    received["trades"].extend(trades)
+                else:
+                    received["trades"].append(trades)
+            else:
+                received["trades"].append(data)
+
+        if len(received["trades"]) >= 3:
+            done.set()
+            ws.close()
+
+    def on_error(ws, error):
+        text = "Broadcast WS error: " + str(error)
+        print(text)
+        received["errors"].append(text)
+        done.set()
+
+    def on_close(ws, code, msg):
+        ws_state["closed"] = True
+        print("BROADCAST CLOSED:", code, msg)
+        done.set()
+
+    app = websocket.WebSocketApp(
+        BROADCAST_URL,
+        on_open=on_open,
+        on_message=on_message,
+        on_error=on_error,
+        on_close=on_close,
+    )
+
+    thread = threading.Thread(
+        target=lambda: app.run_forever(ping_interval=10, ping_timeout=5),
+        daemon=True
+    )
+    thread.start()
+
+    done.wait(TEST_SECONDS)
+
+    try:
+        app.close()
+    except Exception:
+        pass
+
+    thread.join(timeout=3)
+
+    print(
+        "BROADCAST SUMMARY:",
+        "connected=", ws_state["opened"],
+        "messages=", len(received["trades"]),
+        "closed=", ws_state["closed"]
+    )
+
+
+def test_depth(symbol):
+    print("\nTESTING FUTURES DEPTH STREAM:", symbol)
+    done = threading.Event()
+    state = {"opened": False}
+
+    def on_open(ws):
+        state["opened"] = True
+        request = {
+            "method": "SUBSCRIBE",
+            "params": [
+                f"special_margin@{symbol}@depth@1000ms"
+            ],
+            "id": 1
+        }
+        ws.send(json.dumps(request))
+        print("DEPTH SUBSCRIBE SENT:", json.dumps(request))
+
+    def on_message(ws, message):
+        data = decode_message(message)
+        print("DEPTH MESSAGE:", json.dumps(data, ensure_ascii=False)[:700])
+
+        if isinstance(data, dict):
+            if "error" in data or "code" in data:
+                received["errors"].append(
+                    "Depth: " + json.dumps(data, ensure_ascii=False)[:300]
+                )
+            elif data.get("id") == 1 or "depthUpdate" in str(data):
+                received["depth"].append(data)
+
+        if len(received["depth"]) >= 2:
+            done.set()
+            ws.close()
+
+    def on_error(ws, error):
+        text = "Depth WS error: " + str(error)
+        print(text)
+        received["errors"].append(text)
+        done.set()
+
+    def on_close(ws, code, msg):
+        print("DEPTH CLOSED:", code, msg)
+        done.set()
+
+    app = websocket.WebSocketApp(
+        DEPTH_WS_URL,
+        on_open=on_open,
+        on_message=on_message,
+        on_error=on_error,
+        on_close=on_close,
+    )
+
+    thread = threading.Thread(
+        target=lambda: app.run_forever(ping_interval=10, ping_timeout=5),
+        daemon=True
+    )
+    thread.start()
+
+    done.wait(TEST_SECONDS)
+
+    try:
+        app.close()
+    except Exception:
+        pass
+
+    thread.join(timeout=3)
+
+    print(
+        "DEPTH SUMMARY:",
+        "connected=", state["opened"],
+        "messages=", len(received["depth"])
+    )
 
 
 def main():
-    print("ATI FUTURES API DIAGNOSTIC V19")
+    print("=" * 50)
+    print("ATI TABDEAL FUTURES V20")
     print("Time:", now())
-    print("REAL TRADING:", LIVE_TRADING)
+    print("REAL TRADING: OFF")
+    print("=" * 50)
 
-    notify(
-        "🔎 ATI FUTURES API DIAGNOSTIC V19\n"
+    telegram(
+        "🚀 ATI FUTURES V20\n"
         f"Time: {now()}\n"
-        "REAL TRADING: OFF"
+        "Testing official futures WebSocket feeds.\n"
+        "Real trading: OFF"
     )
 
     markets = get_markets()
+    print("USDT futures markets:", len(markets))
+    print("First markets:", markets[:15])
 
     if not markets:
-        raise RuntimeError("No USDT futures markets found.")
+        raise RuntimeError("No eligible futures USDT markets found.")
 
-    selected = next(
-        (m for m in markets if m["symbol"] == "BTCUSDT"),
-        markets[0]
-    )
+    symbol = "BTC_USDT" if "BTC_USDT" in markets else markets[0]
 
-    normalized = selected["symbol"]
-    raw = selected["raw"]
+    # ابتدا اتصال معاملات، سپس دفتر سفارش را آزمایش می‌کنیم.
+    test_broadcast(symbol)
+    test_depth(symbol)
 
-    print("Markets found:", len(markets))
-    print("Selected normalized symbol:", normalized)
-    print("Selected raw symbol:", raw)
-
-    # نمادهای مختلف؛ فقط درخواست خواندنی
-    variants = [
-        ("symbol=normalized", {"symbol": normalized}),
-        ("symbol=raw", {"symbol": raw}),
-        ("tabdealSymbol=raw", {"tabdealSymbol": raw}),
-        ("symbol=normalized+limit", {"symbol": normalized, "limit": 5}),
-        ("symbol=raw+limit", {"symbol": raw, "limit": 5}),
-        ("tabdealSymbol=raw+limit", {"tabdealSymbol": raw, "limit": 5}),
-    ]
-
-    results = []
-
-    # آزمایش دفتر سفارش در دو مسیر
-    for path in (
-        "/r/fapi/v1/depth",
-        "/fapi/v1/depth",
-    ):
-        for label, params in variants:
-            results.append(
-                request_test(
-                    path,
-                    params,
-                    f"DEPTH {path} {label}"
-                )
-            )
-
-    # تأیید می‌کنیم که مسیرهای قبلی همچنان موجود نیستند یا نه.
-    for path in (
-        "/r/fapi/v1/klines",
-        "/r/fapi/v1/trades",
-    ):
-        results.append(
-            request_test(
-                path,
-                {"symbol": normalized, "interval": "5m", "limit": 3},
-                f"CHECK {path}"
-            )
-        )
-
-    summary = [
-        "🧪 ATI FUTURES API RESULTS V19",
+    report = [
+        "🧪 ATI FUTURES V20 RESULTS",
         f"Time: {now()}",
         f"Markets: {len(markets)}",
-        f"Test symbol: {normalized} / {raw}",
+        f"Test symbol: {symbol}",
+        f"Broadcast messages: {len(received['trades'])}",
+        f"Depth messages: {len(received['depth'])}",
+        f"WebSocket errors: {len(received['errors'])}",
         "REAL TRADING: OFF",
         "",
-        "RESULTS:"
     ]
 
-    for item in results:
-        body = item.get("body", "")
-        if isinstance(body, (dict, list)):
-            body_text = json.dumps(body, ensure_ascii=False)
-        else:
-            body_text = str(body)
-
-        summary.append(
-            f"{item['status']} | {item['label']}\n"
-            f"{body_text[:350]}"
+    if received["trades"]:
+        report.append("BROADCAST SAMPLE:")
+        report.append(
+            json.dumps(received["trades"][0], ensure_ascii=False)[:700]
         )
+    else:
+        report.append("No trade messages received during test.")
 
-    report = "\n\n".join(summary)
-    print("\n" + report)
+    if received["depth"]:
+        report.append("")
+        report.append("DEPTH SAMPLE:")
+        report.append(
+            json.dumps(received["depth"][0], ensure_ascii=False)[:700]
+        )
+    else:
+        report.append("No depth messages received during test.")
 
-    # ارسال خلاصه‌ای که خطاهای مهم را هم حفظ کند.
-    notify(report[:3900])
+    if received["errors"]:
+        report.append("")
+        report.append("ERRORS:")
+        report.extend(received["errors"][:5])
 
-    print("Diagnostic finished:", now())
+    final_report = "\n".join(report)
+    print("\n" + final_report)
+    telegram(final_report)
 
 
 if __name__ == "__main__":
