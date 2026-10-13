@@ -8,93 +8,183 @@ from datetime import datetime, timezone
 import requests
 import websocket
 
-# ==========================================
-# ATI FUTURES V22.2
-# Trades -> 5M candles -> MACD
-# REAL TRADING: OFF
-# ==========================================
 
-VERSION = "ATI FUTURES V22.2"
+# ============================================================
+# ATI FUTURES V22.3
+# TABDEAL FUTURES
+#
+# TRADE STREAM -> 5M CANDLES -> MACD 12/26/9
+#
+# REAL TRADING: OFF
+# NO ORDER ENDPOINT IS CALLED
+# ============================================================
+
+VERSION = "ATI FUTURES V22.3"
+
 BASE_URL = "https://api1.tabdeal.org"
 WS_URL = "wss://api1.tabdeal.org/special_margin/stream/"
 
 INTERVAL_MS = 5 * 60 * 1000
 MAX_CANDLES = 200
 MAX_MARKETS = 75
-REPORT_SECONDS = 60
 
-# This version NEVER submits orders.
+REPORT_SECONDS = 60
+RECONNECT_SECONDS = 5
+
+MACD_FAST = 12
+MACD_SLOW = 26
+MACD_SIGNAL = 9
+
+# ------------------------------------------------------------
+# SAFETY
+# ------------------------------------------------------------
+
 REAL_TRADING = False
 
-lock = threading.Lock()
+# This version NEVER sends an order.
+# No order endpoint exists anywhere in this file.
+
+# ------------------------------------------------------------
+# GLOBAL STATE
+# ------------------------------------------------------------
+
+lock = threading.RLock()
+
+MARKETS = []
+
 candles = defaultdict(lambda: deque(maxlen=MAX_CANDLES))
 current_candles = {}
+
 last_trade_time = {}
+
 connected_markets = set()
 ever_connected_markets = set()
+
+last_signal_candle = {}
 
 stats = {
     "raw": 0,
     "parsed": 0,
     "errors": 0,
     "signals": 0,
+    "subscription_ok": 0,
+    "subscription_errors": 0,
 }
 
-last_signal_candle = {}
 
+# ============================================================
+# TIME
+# ============================================================
 
 def utc_now():
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    return datetime.now(timezone.utc).strftime(
+        "%Y-%m-%d %H:%M:%S UTC"
+    )
 
+
+def candle_time_text(timestamp_ms):
+    return datetime.fromtimestamp(
+        timestamp_ms / 1000,
+        timezone.utc
+    ).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+
+# ============================================================
+# HTTP
+# ============================================================
 
 def get_json(path, timeout=15):
     url = BASE_URL + path
-    response = requests.get(url, timeout=timeout)
+
+    response = requests.get(
+        url,
+        timeout=timeout,
+        headers={
+            "User-Agent": "ATI-FUTURES-V22.3"
+        },
+    )
+
     response.raise_for_status()
+
     return response.json()
 
 
+# ============================================================
+# MARKET DISCOVERY
+# ============================================================
+
 def discover_markets():
-    """
-    Discover USDT futures markets using the documented Futures API.
-    If the exchange returns an unexpected format, stop instead of
-    silently scanning the wrong market list.
-    """
+
+    print("Checking Futures exchangeInfo...")
+
     data = get_json("/r/fapi/v1/exchangeInfo")
 
     if isinstance(data, dict):
+
         items = data.get("symbols", [])
+
     elif isinstance(data, list):
+
         items = data
+
     else:
+
         raise RuntimeError(
             "Unexpected exchangeInfo format: "
             + type(data).__name__
         )
 
+    if not isinstance(items, list):
+
+        raise RuntimeError(
+            "exchangeInfo symbols is not a list"
+        )
+
     result = []
 
     for item in items:
+
         if not isinstance(item, dict):
             continue
 
-        symbol = str(item.get("symbol", "")).upper()
-        status = str(item.get("status", "")).upper()
-        quote = str(item.get("quoteAsset", "")).upper()
-        contract = str(item.get("contractType", "")).upper()
+        symbol = str(
+            item.get("symbol", "")
+        ).upper()
+
+        status = str(
+            item.get("status", "")
+        ).upper()
+
+        quote = str(
+            item.get("quoteAsset", "")
+        ).upper()
+
+        contract = str(
+            item.get("contractType", "")
+        ).upper()
+
+        # ----------------------------------------------------
+        # Normalize symbols such as BTC_USDT -> BTCUSDT
+        # ----------------------------------------------------
+
+        symbol = symbol.replace("_", "")
 
         if not symbol.endswith("USDT"):
             continue
 
-        if status and status not in ("TRADING", "ENABLED"):
+        if status and status not in (
+            "TRADING",
+            "ENABLED",
+        ):
             continue
 
         if quote and quote != "USDT":
             continue
 
         if contract and contract not in (
-            "PERPETUAL", "CURRENT_QUARTER",
-            "NEXT_QUARTER"
+            "PERPETUAL",
+            "CURRENT_QUARTER",
+            "NEXT_QUARTER",
         ):
             continue
 
@@ -103,23 +193,36 @@ def discover_markets():
     result = sorted(set(result))
 
     if not result:
+
         raise RuntimeError(
-            "No eligible USDT futures markets found. "
-            "Check the Futures endpoint and response format."
+            "No eligible USDT futures markets found."
         )
 
-    return result[:MAX_MARKETS]
+    result = result[:MAX_MARKETS]
 
+    return result
+
+
+# ============================================================
+# TRADE PARSER
+# ============================================================
 
 def parse_trade(message):
-    """
-    Accept common exchange trade formats.
-    Returns (symbol, timestamp_ms, price, quantity).
-    """
+
     if not isinstance(message, dict):
         return None
 
-    data = message.get("data", message)
+    # Typical Tabdeal format:
+    #
+    # {
+    #   "stream": "...",
+    #   "data": {...}
+    # }
+
+    data = message.get(
+        "data",
+        message
+    )
 
     if not isinstance(data, dict):
         return None
@@ -130,35 +233,80 @@ def parse_trade(message):
         or message.get("symbol")
     )
 
-    price = data.get("p", data.get("price"))
-    qty = data.get("q", data.get("qty", data.get("quantity")))
-    timestamp = data.get(
-        "T",
-        data.get("E", data.get("time", data.get("timestamp")))
+    price = (
+        data.get("p")
+        if data.get("p") is not None
+        else data.get("price")
     )
 
-    if not symbol or price is None or qty is None or timestamp is None:
+    qty = (
+        data.get("q")
+        if data.get("q") is not None
+        else data.get("qty")
+    )
+
+    if qty is None:
+        qty = data.get("quantity")
+
+    timestamp = (
+        data.get("T")
+        if data.get("T") is not None
+        else data.get("E")
+    )
+
+    if timestamp is None:
+        timestamp = data.get("time")
+
+    if timestamp is None:
+        timestamp = data.get("timestamp")
+
+    if (
+        not symbol
+        or price is None
+        or qty is None
+        or timestamp is None
+    ):
         return None
 
     try:
-        timestamp = int(timestamp)
+
+        symbol = str(symbol).upper().replace("_", "")
+
+        timestamp = int(float(timestamp))
         price = float(price)
         qty = float(qty)
 
-        # Convert seconds to milliseconds when necessary.
+        # Seconds -> milliseconds
         if timestamp < 10_000_000_000:
             timestamp *= 1000
 
-        if price <= 0 or qty < 0:
+        if price <= 0:
             return None
 
-        return str(symbol).upper(), timestamp, price, qty
+        if qty < 0:
+            return None
 
-    except (ValueError, TypeError):
+        return (
+            symbol,
+            timestamp,
+            price,
+            qty,
+        )
+
+    except (
+        ValueError,
+        TypeError,
+    ):
+
         return None
 
 
-def finalize_candle(symbol, candle):
+# ============================================================
+# CANDLE CREATION
+# ============================================================
+
+def save_closed_candle(symbol, candle):
+
     row = {
         "time": candle["time"],
         "open": candle["open"],
@@ -170,31 +318,58 @@ def finalize_candle(symbol, candle):
 
     history = candles[symbol]
 
-    if history and history[-1]["time"] == row["time"]:
-        history[-1] = row
-    elif not history or row["time"] > history[-1]["time"]:
+    if history:
+
+        if history[-1]["time"] == row["time"]:
+
+            history[-1] = row
+
+        elif row["time"] > history[-1]["time"]:
+
+            history.append(row)
+
+    else:
+
         history.append(row)
 
     print(
-        f"CANDLE CLOSED {symbol} "
-        f"{datetime.fromtimestamp(row['time']/1000, timezone.utc)} "
-        f"O={row['open']} H={row['high']} "
-        f"L={row['low']} C={row['close']} "
+        f"CANDLE CLOSED | "
+        f"{symbol} | "
+        f"{candle_time_text(row['time'])} | "
+        f"O={row['open']} "
+        f"H={row['high']} "
+        f"L={row['low']} "
+        f"C={row['close']} "
         f"V={row['volume']}"
     )
 
 
 def process_trade(trade):
+
     symbol, timestamp, price, qty = trade
-    bucket = (timestamp // INTERVAL_MS) * INTERVAL_MS
+
+    # Ignore symbols not selected by discovery.
+    if MARKETS and symbol not in MARKETS:
+        return
+
+    bucket = (
+        timestamp // INTERVAL_MS
+    ) * INTERVAL_MS
 
     with lock:
+
         stats["parsed"] += 1
+
         last_trade_time[symbol] = timestamp
 
         old = current_candles.get(symbol)
 
+        # ----------------------------------------------------
+        # First trade for this symbol
+        # ----------------------------------------------------
+
         if old is None:
+
             current_candles[symbol] = {
                 "time": bucket,
                 "open": price,
@@ -203,28 +378,61 @@ def process_trade(trade):
                 "close": price,
                 "volume": qty,
             }
+
             return
+
+        # ----------------------------------------------------
+        # Old / late trade
+        # ----------------------------------------------------
 
         if bucket < old["time"]:
-            # Ignore late/out-of-order trades.
             return
+
+        # ----------------------------------------------------
+        # Same 5M candle
+        # ----------------------------------------------------
 
         if bucket == old["time"]:
-            old["high"] = max(old["high"], price)
-            old["low"] = min(old["low"], price)
+
+            old["high"] = max(
+                old["high"],
+                price
+            )
+
+            old["low"] = min(
+                old["low"],
+                price
+            )
+
             old["close"] = price
+
             old["volume"] += qty
+
             return
 
-        # A later trade means the previous candle period ended.
-        finalize_candle(symbol, old)
+        # ----------------------------------------------------
+        # New candle started
+        # Previous candle is CLOSED
+        # ----------------------------------------------------
 
-        # Fill missing intervals with no-trade candles.
-        # OHLC remains the last known close; volume is zero.
-        next_bucket = old["time"] + INTERVAL_MS
+        save_closed_candle(
+            symbol,
+            old
+        )
+
+        next_bucket = (
+            old["time"]
+            + INTERVAL_MS
+        )
+
         last_close = old["close"]
 
+        # ----------------------------------------------------
+        # Fill missing candle intervals
+        # ----------------------------------------------------
+
         while next_bucket < bucket:
+
             empty = {
                 "time": next_bucket,
                 "open": last_close,
@@ -233,8 +441,17 @@ def process_trade(trade):
                 "close": last_close,
                 "volume": 0.0,
             }
-            finalize_candle(symbol, empty)
+
+            save_closed_candle(
+                symbol,
+                empty
+            )
+
             next_bucket += INTERVAL_MS
+
+        # ----------------------------------------------------
+        # New current candle
+        # ----------------------------------------------------
 
         current_candles[symbol] = {
             "time": bucket,
@@ -246,241 +463,633 @@ def process_trade(trade):
         }
 
 
-def ema(values, period):
+# ============================================================
+# EMA
+# ============================================================
+
+def calculate_ema(values, period):
+
     if len(values) < period:
         return None
 
-    alpha = 2.0 / (period + 1.0)
-    result = sum(values[:period]) / period
+    alpha = 2.0 / (
+        period + 1.0
+    )
+
+    result = sum(
+        values[:period]
+    ) / period
 
     for value in values[period:]:
-        result = value * alpha + result * (1.0 - alpha)
+
+        result = (
+            value * alpha
+            + result * (1.0 - alpha)
+        )
 
     return result
 
 
-def calculate_macd(closes):
-    """
-    MACD 12,26,9.
-    Requires enough CLOSED candles to produce a meaningful signal.
-    """
-    if len(closes) < 35:
-        return None
+# ============================================================
+# MACD SERIES
+# ============================================================
 
-    macd_line = []
+def calculate_macd_series(closes):
 
-    for i in range(len(closes)):
-        subset = closes[:i + 1]
+    if len(closes) < MACD_SLOW:
+        return []
 
-        fast = ema(subset, 12)
-        slow = ema(subset, 26)
+    macd_values = []
+
+    for index in range(
+        MACD_SLOW - 1,
+        len(closes)
+    ):
+
+        subset = closes[
+            :index + 1
+        ]
+
+        fast = calculate_ema(
+            subset,
+            MACD_FAST
+        )
+
+        slow = calculate_ema(
+            subset,
+            MACD_SLOW
+        )
 
         if fast is None or slow is None:
             continue
 
-        macd_line.append(fast - slow)
+        macd_values.append(
+            fast - slow
+        )
 
-    if len(macd_line) < 9:
+    return macd_values
+
+
+def calculate_macd(closes):
+
+    macd_values = calculate_macd_series(
+        closes
+    )
+
+    if len(macd_values) < MACD_SIGNAL:
         return None
 
-    signal_line = ema(macd_line, 9)
+    signal = calculate_ema(
+        macd_values,
+        MACD_SIGNAL
+    )
 
-    if signal_line is None:
+    if signal is None:
         return None
 
-    return macd_line[-1], signal_line
+    macd = macd_values[-1]
 
+    return macd, signal
+
+
+# ============================================================
+# MACD SIGNAL SCANNER
+# ============================================================
 
 def scan_signals():
-    """
-    Log MACD crossovers on closed candles only.
-    No orders are sent.
-    """
+
     found = []
 
     with lock:
-        symbols = list(candles.keys())
+
+        symbols = list(
+            candles.keys()
+        )
 
         for symbol in symbols:
-            history = list(candles[symbol])
 
-            if len(history) < 35:
+            history = list(
+                candles[symbol]
+            )
+
+            # Need enough CLOSED candles.
+            if len(history) < 40:
                 continue
 
-            closes = [row["close"] for row in history]
-            result = calculate_macd(closes[:-1])
+            # ------------------------------------------------
+            # IMPORTANT:
+            #
+            # history[-1] is the latest CLOSED candle.
+            #
+            # We compare:
+            # candle N-1
+            # candle N
+            #
+            # No current/open candle is used.
+            # ------------------------------------------------
 
-            if result is None:
+            closed = history
+
+            closes = [
+                row["close"]
+                for row in closed
+            ]
+
+            if len(closes) < 40:
                 continue
 
-            # Calculate MACD on the complete closed-candle series.
-            # Keep crossover check simple and explicit.
-            previous = calculate_macd(closes[:-2])
-            current = calculate_macd(closes[:-1])
+            previous = calculate_macd(
+                closes[:-1]
+            )
 
-            if previous is None or current is None:
+            current = calculate_macd(
+                closes
+            )
+
+            if (
+                previous is None
+                or current is None
+            ):
                 continue
 
             prev_macd, prev_signal = previous
             curr_macd, curr_signal = current
 
-            candle_time = history[-2]["time"]
+            candle_time = closed[-1]["time"]
 
-            if last_signal_candle.get(symbol) == candle_time:
+            if (
+                last_signal_candle.get(symbol)
+                == candle_time
+            ):
                 continue
 
             side = None
 
-            if prev_macd <= prev_signal and curr_macd > curr_signal:
+            # BUY crossover
+            if (
+                prev_macd <= prev_signal
+                and curr_macd > curr_signal
+            ):
+
                 side = "BUY"
-            elif prev_macd >= prev_signal and curr_macd < curr_signal:
+
+            # SELL crossover
+            elif (
+                prev_macd >= prev_signal
+                and curr_macd < curr_signal
+            ):
+
                 side = "SELL"
 
             if side:
-                last_signal_candle[symbol] = candle_time
+
+                last_signal_candle[
+                    symbol
+                ] = candle_time
+
                 stats["signals"] += 1
+
                 found.append(
-                    (symbol, side, closes[-2], curr_macd, curr_signal)
+                    (
+                        symbol,
+                        side,
+                        closed[-1]["close"],
+                        curr_macd,
+                        curr_signal,
+                        candle_time,
+                    )
                 )
 
-    for symbol, side, price, macd, signal in found:
+    # --------------------------------------------------------
+    # Print outside lock
+    # --------------------------------------------------------
+
+    for (
+        symbol,
+        side,
+        price,
+        macd,
+        signal,
+        candle_time,
+    ) in found:
+
         print(
-            f"MACD SIGNAL {side} {symbol} "
-            f"price={price} MACD={macd:.8f} "
-            f"SIGNAL={signal:.8f} "
-            f"REAL_TRADING={REAL_TRADING}"
+            "\n"
+            "========================================\n"
+            f"🔥 MACD SIGNAL {side}\n"
+            f"💎 {symbol}\n"
+            f"💰 PRICE: {price}\n"
+            f"📊 MACD: {macd:.8f}\n"
+            f"📈 SIGNAL: {signal:.8f}\n"
+            f"🕐 CANDLE: "
+            f"{candle_time_text(candle_time)}\n"
+            f"🔒 REAL TRADING: OFF\n"
+            "========================================"
         )
 
 
+# ============================================================
+# WEBSOCKET MESSAGE
+# ============================================================
+
 def on_message(ws, raw_message):
+
     try:
+
         with lock:
             stats["raw"] += 1
 
-        message = json.loads(raw_message)
+        message = json.loads(
+            raw_message
+        )
 
-        # Ignore subscription acknowledgements.
-        if isinstance(message, dict) and (
-            "result" in message and "id" in message
-        ):
+        if not isinstance(message, dict):
             return
 
-        trade = parse_trade(message)
+        # ----------------------------------------------------
+        # Subscription response
+        #
+        # Expected:
+        # {"result": null, "id": 1}
+        # ----------------------------------------------------
+
+        if (
+            "result" in message
+            and "id" in message
+        ):
+
+            if message.get("result") is None:
+
+                with lock:
+                    stats[
+                        "subscription_ok"
+                    ] += 1
+
+                print(
+                    "SUBSCRIPTION ACK:",
+                    message
+                )
+
+            else:
+
+                with lock:
+                    stats[
+                        "subscription_errors"
+                    ] += 1
+
+                print(
+                    "SUBSCRIPTION ERROR:",
+                    message
+                )
+
+            return
+
+        # ----------------------------------------------------
+        # Try parsing trade
+        # ----------------------------------------------------
+
+        trade = parse_trade(
+            message
+        )
 
         if trade is None:
+
+            # Print first few unknown messages
+            # to help diagnose the actual Tabdeal format.
+
+            raw_count = stats["raw"]
+
+            if raw_count <= 10:
+
+                print(
+                    "UNPARSED MESSAGE:",
+                    json.dumps(
+                        message,
+                        ensure_ascii=False
+                    )[:1000]
+                )
+
             return
 
         symbol = trade[0]
 
         with lock:
-            connected_markets.add(symbol)
-            ever_connected_markets.add(symbol)
+
+            connected_markets.add(
+                symbol
+            )
+
+            ever_connected_markets.add(
+                symbol
+            )
 
         process_trade(trade)
 
     except Exception as exc:
+
         with lock:
             stats["errors"] += 1
-        print("MESSAGE ERROR:", repr(exc))
 
+        print(
+            "MESSAGE ERROR:",
+            repr(exc)
+        )
+
+
+# ============================================================
+# WEBSOCKET ERROR
+# ============================================================
 
 def on_error(ws, error):
+
     with lock:
         stats["errors"] += 1
-    print("WEBSOCKET ERROR:", repr(error))
+
+    print(
+        "WEBSOCKET ERROR:",
+        repr(error)
+    )
 
 
-def on_close(ws, code, message):
-    print("WEBSOCKET CLOSED:", code, message)
+# ============================================================
+# WEBSOCKET CLOSE
+# ============================================================
 
+def on_close(
+    ws,
+    close_status_code,
+    close_msg
+):
+
+    print(
+        "WEBSOCKET CLOSED:",
+        close_status_code,
+        close_msg
+    )
+
+
+# ============================================================
+# WEBSOCKET OPEN
+# ============================================================
 
 def on_open(ws):
-    print("WebSocket connected:", utc_now())
 
-    # Futures market stream names can differ by deployment.
-    # The subscription format below must be confirmed against the
-    # actual Tabdeal Futures stream implementation.
-    params = [
-        f"{symbol.lower()}@trade"
-        for symbol in MARKETS
-    ]
+    print(
+        "\n"
+        "========================================"
+    )
+
+    print(
+        "WEBSOCKET CONNECTED"
+    )
+
+    print(
+        "Time:",
+        utc_now()
+    )
+
+    print(
+        "Markets:",
+        len(MARKETS)
+    )
+
+    print(
+        "========================================"
+    )
+
+    # --------------------------------------------------------
+    # Official Tabdeal-style subscription
+    #
+    # symbol@trade
+    # --------------------------------------------------------
+
+    params = []
+
+    for symbol in MARKETS:
+
+        params.append(
+            f"{symbol.lower()}@trade"
+        )
 
     payload = {
         "method": "SUBSCRIBE",
         "params": params,
-        "id": 1,
+        "id": int(time.time())
     }
 
-    ws.send(json.dumps(payload))
-    print("Subscription sent for", len(params), "markets")
+    try:
 
+        ws.send(
+            json.dumps(payload)
+        )
 
-def reporter():
-    while True:
-        time.sleep(REPORT_SECONDS)
+        print(
+            "Subscription sent:",
+            len(params),
+            "streams"
+        )
 
-        with lock:
-            market_count = len(MARKETS)
-            connected_now = len(connected_markets)
-            connected_ever = len(ever_connected_markets)
-            raw = stats["raw"]
-            parsed = stats["parsed"]
-            errors = stats["errors"]
-            signal_count = stats["signals"]
+        if params:
 
-            closed = sum(len(v) for v in candles.values())
-            ready = sum(
-                1 for history in candles.values()
-                if len(history) >= 35
+            print(
+                "First stream:",
+                params[0]
             )
 
-            current_count = len(current_candles)
-
-        print("\n" + "=" * 48)
-        print(VERSION)
-        print("Time:", utc_now())
-        print("Markets:", market_count)
-        print("Connected now:", connected_now)
-        print("Connected at least once:", connected_ever)
-        print("Raw messages:", raw)
-        print("Parsed trades:", parsed)
-        print("Current candles:", current_count)
-        print("Closed candles stored:", closed)
-        print("MACD-ready markets:", ready)
-        print("Signals detected:", signal_count)
-        print("WebSocket/message errors:", errors)
-        print("REAL TRADING: OFF")
-        print("=" * 48 + "\n")
-
-        scan_signals()
-
-
-def main():
-    global MARKETS
-
-    print(VERSION)
-    print("=" * 48)
-    print("Started:", utc_now())
-    print("REAL TRADING:", "ON" if REAL_TRADING else "OFF")
-    print("Order endpoint: NEVER CALLED")
-
-    try:
-        MARKETS = discover_markets()
     except Exception as exc:
-        print("MARKET DISCOVERY FAILED:", repr(exc))
+
         print(
-            "No markets will be guessed. "
-            "Check the Futures endpoint and response format."
+            "SUBSCRIPTION SEND ERROR:",
+            repr(exc)
         )
-        return
 
-    print("Markets discovered:", len(MARKETS))
-    print("First markets:", ", ".join(MARKETS[:10]))
 
-    threading.Thread(target=reporter, daemon=True).start()
+# ============================================================
+# REPORTER
+# ============================================================
+
+def reporter():
 
     while True:
+
+        time.sleep(
+            REPORT_SECONDS
+        )
+
         try:
+
+            # First scan signals.
+            scan_signals()
+
+            with lock:
+
+                market_count = len(
+                    MARKETS
+                )
+
+                connected_now = len(
+                    connected_markets
+                )
+
+                connected_ever = len(
+                    ever_connected_markets
+                )
+
+                raw = stats["raw"]
+
+                parsed = stats["parsed"]
+
+                errors = stats["errors"]
+
+                signal_count = stats[
+                    "signals"
+                ]
+
+                subscription_ok = stats[
+                    "subscription_ok"
+                ]
+
+                subscription_errors = stats[
+                    "subscription_errors"
+                ]
+
+                closed_count = sum(
+                    len(history)
+                    for history
+                    in candles.values()
+                )
+
+                ready = sum(
+                    1
+                    for history
+                    in candles.values()
+                    if len(history) >= 40
+                )
+
+                current_count = len(
+                    current_candles
+                )
+
+            print(
+                "\n"
+                + "=" * 56
+            )
+
+            print(
+                VERSION
+            )
+
+            print(
+                "Time:",
+                utc_now()
+            )
+
+            print(
+                "Markets:",
+                market_count
+            )
+
+            print(
+                "Connected now:",
+                connected_now
+            )
+
+            print(
+                "Connected at least once:",
+                connected_ever
+            )
+
+            print(
+                "Raw messages:",
+                raw
+            )
+
+            print(
+                "Parsed trades:",
+                parsed
+            )
+
+            print(
+                "Current candles:",
+                current_count
+            )
+
+            print(
+                "Closed candles stored:",
+                closed_count
+            )
+
+            print(
+                "MACD-ready markets:",
+                ready
+            )
+
+            print(
+                "Signals detected:",
+                signal_count
+            )
+
+            print(
+                "Subscription ACK:",
+                subscription_ok
+            )
+
+            print(
+                "Subscription errors:",
+                subscription_errors
+            )
+
+            print(
+                "WebSocket/message errors:",
+                errors
+            )
+
+            print(
+                "MACD:",
+                f"{MACD_FAST}/"
+                f"{MACD_SLOW}/"
+                f"{MACD_SIGNAL}"
+            )
+
+            print(
+                "TIMEFRAME: 5M"
+            )
+
+            print(
+                "REAL TRADING: OFF"
+            )
+
+            print(
+                "ORDER ENDPOINT: NEVER CALLED"
+            )
+
+            print(
+                "=" * 56
+                + "\n"
+            )
+
+        except Exception as exc:
+
+            print(
+                "REPORTER ERROR:",
+                repr(exc)
+            )
+
+
+# ============================================================
+# WEBSOCKET LOOP
+# ============================================================
+
+def websocket_loop():
+
+    while True:
+
+        try:
+
+            print(
+                "\nConnecting WebSocket..."
+            )
+
             app = websocket.WebSocketApp(
                 WS_URL,
                 on_open=on_open,
@@ -495,11 +1104,132 @@ def main():
             )
 
         except Exception as exc:
-            print("WEBSOCKET LOOP ERROR:", repr(exc))
 
-        print("Reconnecting in 5 seconds...")
-        time.sleep(5)
+            print(
+                "WEBSOCKET LOOP ERROR:",
+                repr(exc)
+            )
 
+        print(
+            f"Reconnecting in "
+            f"{RECONNECT_SECONDS} seconds..."
+        )
+
+        time.sleep(
+            RECONNECT_SECONDS
+        )
+
+
+# ============================================================
+# MAIN
+# ============================================================
+
+def main():
+
+    global MARKETS
+
+    print(
+        "\n"
+        "################################################"
+    )
+
+    print(
+        VERSION
+    )
+
+    print(
+        "################################################"
+    )
+
+    print(
+        "Started:",
+        utc_now()
+    )
+
+    print(
+        "Futures API:",
+        BASE_URL
+    )
+
+    print(
+        "WebSocket:",
+        WS_URL
+    )
+
+    print(
+        "TIMEFRAME: 5M"
+    )
+
+    print(
+        "MACD:",
+        f"{MACD_FAST}/{MACD_SLOW}/{MACD_SIGNAL}"
+    )
+
+    print(
+        "REAL TRADING:",
+        "ON" if REAL_TRADING else "OFF"
+    )
+
+    print(
+        "ORDER ENDPOINT: NEVER CALLED"
+    )
+
+    # --------------------------------------------------------
+    # Discover markets
+    # --------------------------------------------------------
+
+    try:
+
+        MARKETS = discover_markets()
+
+    except Exception as exc:
+
+        print(
+            "\n"
+            "❌ MARKET DISCOVERY FAILED"
+        )
+
+        print(
+            repr(exc)
+        )
+
+        return
+
+    print(
+        "\n"
+        "✅ Markets discovered:",
+        len(MARKETS)
+    )
+
+    print(
+        "First markets:"
+    )
+
+    print(
+        ", ".join(
+            MARKETS[:15]
+        )
+    )
+
+    # --------------------------------------------------------
+    # Start reporter
+    # --------------------------------------------------------
+
+    threading.Thread(
+        target=reporter,
+        daemon=True
+    ).start()
+
+    # --------------------------------------------------------
+    # Start WebSocket
+    # --------------------------------------------------------
+
+    websocket_loop()
+
+
+# ============================================================
+# ENTRY
+# ============================================================
 
 if __name__ == "__main__":
     main()
