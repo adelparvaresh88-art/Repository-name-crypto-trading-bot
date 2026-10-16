@@ -8,36 +8,38 @@ on:
 jobs:
   run-bot:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 340
 
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Python
+      - name: Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Install dependencies
+      - name: Install
         run: |
           python -m pip install --upgrade pip
-          pip install requests tabdeal-python
+          pip install requests websocket-client
 
-      - name: Run ATI Tabdeal Futures
+      - name: Run ATI Futures
         env:
+          TABDEAL_API_KEY: ${{ secrets.TABDEAL_API_KEY }}
+          TABDEAL_API_SECRET: ${{ secrets.TABDEAL_API_SECRET }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
 
-          TABDEAL_API_KEY: ${{ secrets.TABDEAL_API_KEY }}
-          TABDEAL_API_SECRET: ${{ secrets.TABDEAL_API_SECRET }}
+          REAL_TRADING: "true"
 
-          LIVE_TRADING: "false"
-          ORDER_USDT: "2"
           LEVERAGE: "3"
-          MAX_MARKETS: "75"
-          KLINES_LIMIT: "100"
-          TP_PCT: "0.012"
-          SL_PCT: "0.008"
+          MARGIN_USDT: "2"
 
-        run: python main.py
+          TP_PCT: "0.02"
+          SL_PCT: "0.01"
+
+          MAX_SYMBOLS: "30"
+
+        run: |
+          python main.py
