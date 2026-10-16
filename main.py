@@ -1,383 +1,1118 @@
 import os
 import json
 import time
-import math
+import threading
+from collections import defaultdict, deque
 from datetime import datetime, timezone
 
-from tabdeal.future import Future
-from tabdeal.enums import OrderSides, OrderTypes
+import requests
+import websocket
 
 
 # ============================================================
-# ATI FUTURES - TABDEAL OFFICIAL SDK
-# MACD 12/26/9
-# TIMEFRAME: 5 MINUTES
+# ATI FUTURES V23
+# TABDEAL FUTURES
+#
+# DATA:
+#   Tabdeal Futures ExchangeInfo
+#   WebSocket Trade Stream
+#
+# CANDLE:
+#   5 MINUTES
+#
+# STRATEGY:
+#   MACD 12 / 26 / 9
 #
 # IMPORTANT:
-# REAL_TRADING = false
+#   CLOSED CANDLES ONLY
 #
-# No Binance
-# No /klines
-# No EMA
+# REAL TRADING:
+#   OFF
+#
+# NO ORDER ENDPOINT IS USED
 # ============================================================
 
-VERSION = "ATI TABDEAL FUTURES MACD OFFICIAL SDK V1"
 
-API_KEY = os.getenv("TABDIL_API_KEY", "").strip()
-API_SECRET = os.getenv("TABDIL_API_SECRET", "").strip()
+VERSION = "ATI FUTURES V23"
 
-REAL_TRADING = os.getenv("REAL_TRADING", "false").lower() == "true"
+BASE_URL = "https://api1.tabdeal.org"
 
-ORDER_USDT = float(os.getenv("ORDER_USDT", "2"))
-LEVERAGE = int(os.getenv("LEVERAGE", "3"))
+# This is the stream URL used by the supplied V22 code.
+# We DO NOT assume that it is correct.
+# The program prints the raw stream messages so it can be verified.
+WS_URL = "wss://api1.tabdeal.org/special_margin/stream/"
 
-MAX_MARKETS = int(os.getenv("MAX_MARKETS", "25"))
+TIMEFRAME_MS = 5 * 60 * 1000
 
-STATE_FILE = "ati_futures_state.json"
+MAX_CANDLES = 200
+MAX_MARKETS = 75
+
+REPORT_SECONDS = 60
 
 MACD_FAST = 12
 MACD_SLOW = 26
 MACD_SIGNAL = 9
 
-TP_PCT = 0.02
-SL_PCT = 0.01
-
-BASE_URL = "https://api1.tabdeal.org"
+# SAFETY:
+REAL_TRADING = False
 
 
 # ============================================================
-# HELPERS
+# GLOBAL STATE
 # ============================================================
 
-def now_utc():
-    return datetime.now(timezone.utc)
+lock = threading.Lock()
+
+MARKETS = []
+
+candles = defaultdict(lambda: deque(maxlen=MAX_CANDLES))
+current_candles = {}
+
+connected_markets = set()
+ever_connected_markets = set()
+
+last_trade_time = {}
+
+last_signal_candle = {}
+
+stats = {
+    "raw": 0,
+    "parsed": 0,
+    "errors": 0,
+    "signals": 0,
+    "unknown_messages": 0,
+}
+
+last_raw_message = ""
 
 
-def now_text():
-    return now_utc().strftime("%Y-%m-%d %H:%M:%S UTC")
+# ============================================================
+# TIME
+# ============================================================
+
+def utc_now():
+    return datetime.now(timezone.utc).strftime(
+        "%Y-%m-%d %H:%M:%S UTC"
+    )
 
 
-def load_state():
-    if not os.path.exists(STATE_FILE):
-        return {}
+# ============================================================
+# HTTP
+# ============================================================
 
-    try:
-        with open(STATE_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return {}
+def get_json(path, timeout=15):
+    url = BASE_URL + path
 
+    response = requests.get(
+        url,
+        timeout=timeout,
+        headers={
+            "User-Agent": "ATI-Futures/23"
+        },
+    )
 
-def save_state(state):
-    tmp = STATE_FILE + ".tmp"
+    response.raise_for_status()
 
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(state, f, ensure_ascii=False, indent=2)
-
-    os.replace(tmp, STATE_FILE)
-
-
-def clean_symbol(symbol):
-    return str(symbol).upper().replace("_", "")
+    return response.json()
 
 
-def get_symbols(exchange_info):
+# ============================================================
+# MARKET DISCOVERY
+# ============================================================
+
+def discover_markets():
+
+    print()
+    print("Discovering Tabdeal Futures markets...")
+    print("Endpoint:", BASE_URL + "/r/fapi/v1/exchangeInfo")
+
+    data = get_json("/r/fapi/v1/exchangeInfo")
+
+    if not isinstance(data, dict):
+        raise RuntimeError(
+            "exchangeInfo returned unexpected type: "
+            + type(data).__name__
+        )
+
+    symbols = data.get("symbols")
+
+    if not isinstance(symbols, list):
+        raise RuntimeError(
+            "exchangeInfo has no valid 'symbols' list"
+        )
+
     result = []
 
-    for item in exchange_info.get("symbols", []):
-        symbol = str(item.get("symbol", "")).upper()
+    for item in symbols:
 
-        status = str(item.get("status", "")).upper()
+        if not isinstance(item, dict):
+            continue
+
+        symbol = str(
+            item.get("symbol", "")
+        ).upper()
+
+        status = str(
+            item.get("status", "")
+        ).upper()
+
         quote = str(
-            item.get("quoteAsset")
-            or item.get("quote")
-            or ""
+            item.get("quoteAsset", "")
+        ).upper()
+
+        contract = str(
+            item.get("contractType", "")
         ).upper()
 
         if not symbol:
             continue
 
-        if status and status not in ("TRADING", "1", "ACTIVE"):
+        if not symbol.endswith("USDT"):
+            continue
+
+        if status and status not in (
+            "TRADING",
+            "ENABLED",
+        ):
             continue
 
         if quote and quote != "USDT":
             continue
 
-        if not symbol.endswith("USDT"):
+        if contract and contract not in (
+            "PERPETUAL",
+            "CURRENT_QUARTER",
+            "NEXT_QUARTER",
+        ):
             continue
 
-        result.append(clean_symbol(symbol))
+        result.append(symbol)
 
-    return sorted(set(result))
+    result = sorted(set(result))
+
+    if not result:
+        raise RuntimeError(
+            "No eligible USDT Futures markets found."
+        )
+
+    result = result[:MAX_MARKETS]
+
+    print("Eligible markets:", len(result))
+    print(
+        "Markets:",
+        ", ".join(result[:15])
+    )
+
+    return result
 
 
-def safe_float(value):
+# ============================================================
+# NUMBER HELPERS
+# ============================================================
+
+def to_float(value):
+
     try:
         return float(value)
-    except Exception:
+    except (
+        TypeError,
+        ValueError,
+    ):
         return None
 
 
+def to_timestamp_ms(value):
+
+    try:
+        ts = int(float(value))
+    except (
+        TypeError,
+        ValueError,
+    ):
+        return None
+
+    # seconds -> milliseconds
+    if ts < 10_000_000_000:
+        ts *= 1000
+
+    return ts
+
+
 # ============================================================
-# MACD
+# TRADE PARSER
 # ============================================================
 
-def ema(values, period):
+def parse_trade(message):
+
+    if not isinstance(message, dict):
+        return None
+
+    # --------------------------------------------------------
+    # Possible containers
+    # --------------------------------------------------------
+
+    candidates = []
+
+    data = message.get("data")
+
+    if isinstance(data, dict):
+        candidates.append(data)
+
+    candidates.append(message)
+
+    # Sometimes stream messages contain:
+    #
+    # {
+    #   "data": {
+    #       ...
+    #   }
+    # }
+    #
+    # or direct:
+    #
+    # {
+    #   "symbol": "...",
+    #   "price": "...",
+    #   ...
+    # }
+
+    for obj in candidates:
+
+        if not isinstance(obj, dict):
+            continue
+
+        symbol = (
+            obj.get("symbol")
+            or obj.get("s")
+            or obj.get("S")
+        )
+
+        price = (
+            obj.get("price")
+            or obj.get("p")
+            or obj.get("P")
+        )
+
+        quantity = (
+            obj.get("qty")
+            or obj.get("quantity")
+            or obj.get("q")
+            or obj.get("Q")
+            or obj.get("volume")
+        )
+
+        timestamp = (
+            obj.get("timestamp")
+            or obj.get("time")
+            or obj.get("T")
+            or obj.get("E")
+            or obj.get("eventTime")
+        )
+
+        if (
+            symbol is None
+            or price is None
+            or quantity is None
+            or timestamp is None
+        ):
+            continue
+
+        price = to_float(price)
+        quantity = to_float(quantity)
+        timestamp = to_timestamp_ms(timestamp)
+
+        if price is None:
+            continue
+
+        if quantity is None:
+            continue
+
+        if timestamp is None:
+            continue
+
+        if price <= 0:
+            continue
+
+        if quantity < 0:
+            continue
+
+        symbol = str(symbol).upper()
+
+        # Only accept discovered markets.
+        if symbol not in MARKETS:
+            continue
+
+        return (
+            symbol,
+            timestamp,
+            price,
+            quantity,
+        )
+
+    return None
+
+
+# ============================================================
+# CANDLE
+# ============================================================
+
+def close_candle(symbol, candle):
+
+    row = {
+        "time": candle["time"],
+        "open": candle["open"],
+        "high": candle["high"],
+        "low": candle["low"],
+        "close": candle["close"],
+        "volume": candle["volume"],
+    }
+
+    history = candles[symbol]
+
+    if history:
+
+        if history[-1]["time"] == row["time"]:
+            history[-1] = row
+
+        elif row["time"] > history[-1]["time"]:
+            history.append(row)
+
+    else:
+        history.append(row)
+
+    dt = datetime.fromtimestamp(
+        row["time"] / 1000,
+        timezone.utc,
+    )
+
+    print(
+        f"CANDLE CLOSED | {symbol} | "
+        f"{dt.strftime('%Y-%m-%d %H:%M:%S')} | "
+        f"O={row['open']} "
+        f"H={row['high']} "
+        f"L={row['low']} "
+        f"C={row['close']} "
+        f"V={row['volume']}"
+    )
+
+
+def process_trade(trade):
+
+    symbol, timestamp, price, quantity = trade
+
+    bucket = (
+        timestamp // TIMEFRAME_MS
+    ) * TIMEFRAME_MS
+
+    new_closed_candle = False
+
+    with lock:
+
+        stats["parsed"] += 1
+
+        last_trade_time[symbol] = timestamp
+
+        old = current_candles.get(symbol)
+
+        # ----------------------------------------------------
+        # First trade for symbol
+        # ----------------------------------------------------
+
+        if old is None:
+
+            current_candles[symbol] = {
+                "time": bucket,
+                "open": price,
+                "high": price,
+                "low": price,
+                "close": price,
+                "volume": quantity,
+            }
+
+            return
+
+        # ----------------------------------------------------
+        # Old trade
+        # ----------------------------------------------------
+
+        if bucket < old["time"]:
+            return
+
+        # ----------------------------------------------------
+        # Same candle
+        # ----------------------------------------------------
+
+        if bucket == old["time"]:
+
+            old["high"] = max(
+                old["high"],
+                price,
+            )
+
+            old["low"] = min(
+                old["low"],
+                price,
+            )
+
+            old["close"] = price
+
+            old["volume"] += quantity
+
+            return
+
+        # ----------------------------------------------------
+        # New candle
+        # ----------------------------------------------------
+
+        close_candle(
+            symbol,
+            old,
+        )
+
+        new_closed_candle = True
+
+        # IMPORTANT:
+        #
+        # We DO NOT create artificial candles
+        # for missing periods.
+        #
+        # Artificial candles can distort MACD.
+
+        current_candles[symbol] = {
+            "time": bucket,
+            "open": price,
+            "high": price,
+            "low": price,
+            "close": price,
+            "volume": quantity,
+        }
+
+    # --------------------------------------------------------
+    # Scan outside the lock
+    # --------------------------------------------------------
+
+    if new_closed_candle:
+
+        scan_symbol(symbol)
+
+
+# ============================================================
+# EMA
+# ============================================================
+
+def calculate_ema(values, period):
+
     if len(values) < period:
         return None
 
-    multiplier = 2.0 / (period + 1.0)
+    seed = sum(
+        values[:period]
+    ) / period
 
-    current = sum(values[:period]) / period
-
-    for price in values[period:]:
-        current = (
-            (price - current) * multiplier
-            + current
-        )
-
-    return current
-
-
-def calculate_macd(closes):
-    minimum = MACD_SLOW + MACD_SIGNAL
-
-    if len(closes) < minimum:
-        return None
-
-    fast = ema(closes, MACD_FAST)
-    slow = ema(closes, MACD_SLOW)
-
-    if fast is None or slow is None:
-        return None
-
-    # Build MACD series for signal EMA
-    macd_values = []
-
-    for i in range(MACD_SLOW, len(closes) + 1):
-        section = closes[:i]
-
-        f = ema(section, MACD_FAST)
-        s = ema(section, MACD_SLOW)
-
-        if f is not None and s is not None:
-            macd_values.append(f - s)
-
-    if len(macd_values) < MACD_SIGNAL:
-        return None
-
-    signal = ema(macd_values, MACD_SIGNAL)
-
-    if signal is None:
-        return None
-
-    macd = macd_values[-1]
-    histogram = macd - signal
-
-    return {
-        "macd": macd,
-        "signal": signal,
-        "histogram": histogram,
-    }
-
-
-# ============================================================
-# DEPTH -> MID PRICE
-# ============================================================
-
-def get_mid_price(client, symbol):
-    data = client.depth(symbol=symbol, limit=5)
-
-    bids = data.get("bids") or []
-    asks = data.get("asks") or []
-
-    if not bids or not asks:
-        return None
-
-    best_bid = safe_float(bids[0][0])
-    best_ask = safe_float(asks[0][0])
-
-    if best_bid is None or best_ask is None:
-        return None
-
-    if best_bid <= 0 or best_ask <= 0:
-        return None
-
-    return (best_bid + best_ask) / 2.0
-
-
-# ============================================================
-# 5-MINUTE SYNTHETIC CANDLE
-#
-# We deliberately do NOT use /klines.
-#
-# Every GitHub run records the current mid-price.
-# The state file builds 5-minute closes.
-# ============================================================
-
-def update_5m_candle(state, symbol, price):
-    symbol_state = state.setdefault(
-        symbol,
-        {
-            "candles": [],
-            "current_bucket": None,
-            "current_close": None,
-        },
+    multiplier = 2.0 / (
+        period + 1.0
     )
 
-    timestamp = int(time.time())
+    value = seed
 
-    bucket = timestamp // 300
+    for price in values[period:]:
 
-    old_bucket = symbol_state.get("current_bucket")
+        value = (
+            price * multiplier
+            + value * (1.0 - multiplier)
+        )
 
-    if old_bucket is None:
-        symbol_state["current_bucket"] = bucket
-        symbol_state["current_close"] = price
-        return False
+    return value
 
-    if bucket == old_bucket:
-        symbol_state["current_close"] = price
-        return False
 
-    # Previous 5-minute candle closed
-    previous_close = symbol_state.get("current_close")
+# ============================================================
+# MACD SERIES
+# ============================================================
 
-    if previous_close is not None:
-        candles = symbol_state.setdefault("candles", [])
+def calculate_macd_series(closes):
 
-        candles.append(float(previous_close))
+    if len(closes) < MACD_SLOW:
+        return []
 
-        # Keep enough history for MACD
-        if len(candles) > 100:
-            del candles[:-100]
+    fast_ema = []
+    slow_ema = []
 
-    symbol_state["current_bucket"] = bucket
-    symbol_state["current_close"] = price
+    fast_alpha = 2.0 / (
+        MACD_FAST + 1.0
+    )
 
-    return True
+    slow_alpha = 2.0 / (
+        MACD_SLOW + 1.0
+    )
+
+    # --------------------------------------------------------
+    # Fast EMA
+    # --------------------------------------------------------
+
+    fast = sum(
+        closes[:MACD_FAST]
+    ) / MACD_FAST
+
+    for index, price in enumerate(
+        closes[MACD_FAST - 1:],
+        start=MACD_FAST - 1,
+    ):
+
+        if index == MACD_FAST - 1:
+            value = fast
+        else:
+            value = (
+                price * fast_alpha
+                + fast * (1.0 - fast_alpha)
+            )
+            fast = value
+
+        fast_ema.append(
+            (index, value)
+        )
+
+    # --------------------------------------------------------
+    # Slow EMA
+    # --------------------------------------------------------
+
+    slow = sum(
+        closes[:MACD_SLOW]
+    ) / MACD_SLOW
+
+    for index, price in enumerate(
+        closes[MACD_SLOW - 1:],
+        start=MACD_SLOW - 1,
+    ):
+
+        if index == MACD_SLOW - 1:
+            value = slow
+        else:
+            value = (
+                price * slow_alpha
+                + slow * (1.0 - slow_alpha)
+            )
+            slow = value
+
+        slow_ema.append(
+            (index, value)
+        )
+
+    slow_map = dict(slow_ema)
+
+    macd_values = []
+
+    for index, fast_value in fast_ema:
+
+        if index not in slow_map:
+            continue
+
+        macd_values.append(
+            (
+                index,
+                fast_value - slow_map[index],
+            )
+        )
+
+    if len(macd_values) < MACD_SIGNAL:
+        return []
+
+    # --------------------------------------------------------
+    # Signal EMA
+    # --------------------------------------------------------
+
+    macd_numbers = [
+        value
+        for _, value in macd_values
+    ]
+
+    signal_alpha = 2.0 / (
+        MACD_SIGNAL + 1.0
+    )
+
+    signal = sum(
+        macd_numbers[:MACD_SIGNAL]
+    ) / MACD_SIGNAL
+
+    result = []
+
+    for i, (index, macd) in enumerate(
+        macd_values
+    ):
+
+        if i < MACD_SIGNAL - 1:
+            continue
+
+        if i == MACD_SIGNAL - 1:
+            signal_value = signal
+        else:
+            signal_value = (
+                macd * signal_alpha
+                + signal * (
+                    1.0 - signal_alpha
+                )
+            )
+            signal = signal_value
+
+        result.append(
+            {
+                "index": index,
+                "macd": macd,
+                "signal": signal_value,
+            }
+        )
+
+    return result
 
 
 # ============================================================
 # SIGNAL
 # ============================================================
 
-def get_signal(state, symbol):
-    item = state.get(symbol)
+def scan_symbol(symbol):
 
-    if not item:
-        return None
+    with lock:
 
-    closes = item.get("candles", [])
+        history = list(
+            candles.get(symbol, [])
+        )
 
-    macd_data = calculate_macd(closes)
-
-    if not macd_data:
-        return None
-
-    macd = macd_data["macd"]
-    signal = macd_data["signal"]
-    histogram = macd_data["histogram"]
-
-    previous_histogram = item.get("previous_histogram")
-
-    item["previous_histogram"] = histogram
-
-    if previous_histogram is None:
-        return None
-
-    # BUY:
-    # MACD above signal + histogram positive and increasing
-    if (
-        macd > signal
-        and histogram > 0
-        and histogram > previous_histogram
-    ):
-        return "BUY", macd_data
-
-    # SELL:
-    # MACD below signal + histogram negative and decreasing
-    if (
-        macd < signal
-        and histogram < 0
-        and histogram < previous_histogram
-    ):
-        return "SELL", macd_data
-
-    return None
-
-
-# ============================================================
-# TELEGRAM
-# ============================================================
-
-def telegram_send(text):
-    token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-    chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
-
-    if not token or not chat_id:
+    # Need enough CLOSED candles.
+    if len(history) < 40:
         return
 
+    # All entries in history are closed candles.
+    closes = [
+        float(row["close"])
+        for row in history
+    ]
+
+    macd = calculate_macd_series(
+        closes
+    )
+
+    if len(macd) < 2:
+        return
+
+    previous = macd[-2]
+    current = macd[-1]
+
+    candle_time = history[-1]["time"]
+
+    with lock:
+
+        if (
+            last_signal_candle.get(symbol)
+            == candle_time
+        ):
+            return
+
+    side = None
+
+    # BUY crossover
+    if (
+        previous["macd"]
+        <= previous["signal"]
+        and
+        current["macd"]
+        > current["signal"]
+    ):
+        side = "BUY"
+
+    # SELL crossover
+    elif (
+        previous["macd"]
+        >= previous["signal"]
+        and
+        current["macd"]
+        < current["signal"]
+    ):
+        side = "SELL"
+
+    if side is None:
+        return
+
+    with lock:
+
+        last_signal_candle[
+            symbol
+        ] = candle_time
+
+        stats["signals"] += 1
+
+    price = history[-1]["close"]
+
+    dt = datetime.fromtimestamp(
+        candle_time / 1000,
+        timezone.utc,
+    )
+
+    print()
+    print("=" * 60)
+    print("MACD SIGNAL")
+    print("SIDE:", side)
+    print("SYMBOL:", symbol)
+    print("PRICE:", price)
+    print(
+        "CANDLE:",
+        dt.strftime(
+            "%Y-%m-%d %H:%M:%S UTC"
+        ),
+    )
+    print(
+        "MACD:",
+        f"{current['macd']:.10f}",
+    )
+    print(
+        "SIGNAL:",
+        f"{current['signal']:.10f}",
+    )
+    print("REAL_TRADING:", REAL_TRADING)
+    print("ORDER SENT: NO")
+    print("=" * 60)
+    print()
+
+
+# ============================================================
+# WEBSOCKET MESSAGE
+# ============================================================
+
+def on_message(ws, raw_message):
+
+    global last_raw_message
+
     try:
-        import requests
 
-        url = (
-            "https://api.telegram.org/bot"
-            + token
-            + "/sendMessage"
+        with lock:
+            stats["raw"] += 1
+
+        last_raw_message = str(
+            raw_message
         )
 
-        requests.post(
-            url,
-            json={
-                "chat_id": chat_id,
-                "text": text,
-            },
-            timeout=15,
+        try:
+            message = json.loads(
+                raw_message
+            )
+        except json.JSONDecodeError:
+
+            with lock:
+                stats["unknown_messages"] += 1
+
+            print(
+                "NON-JSON WS MESSAGE:",
+                str(raw_message)[:500],
+            )
+
+            return
+
+        # ----------------------------------------------------
+        # Subscription acknowledgement
+        # ----------------------------------------------------
+
+        if isinstance(message, dict):
+
+            if (
+                "result" in message
+                and "id" in message
+            ):
+                print(
+                    "WS SUBSCRIBE RESPONSE:",
+                    message,
+                )
+                return
+
+            event = str(
+                message.get("e", "")
+            ).lower()
+
+            event_type = str(
+                message.get("type", "")
+            ).lower()
+
+            if event in (
+                "subscribed",
+                "subscription",
+                "subscribe",
+            ):
+                print(
+                    "WS SUBSCRIPTION:",
+                    message,
+                )
+                return
+
+            if event_type in (
+                "subscribed",
+                "subscription",
+            ):
+                print(
+                    "WS SUBSCRIPTION:",
+                    message,
+                )
+                return
+
+        trade = parse_trade(
+            message
         )
 
-    except Exception as e:
-        print("Telegram error:", e)
+        if trade is None:
 
+            with lock:
+                stats["unknown_messages"] += 1
 
-# ============================================================
-# REAL ORDER
-# ============================================================
+            # Print only a limited amount of
+            # unknown messages.
+            unknown_count = stats[
+                "unknown_messages"
+            ]
 
-def execute_order(client, symbol, side, price):
-    if not REAL_TRADING:
+            if unknown_count <= 10:
+
+                print(
+                    "UNPARSED WS MESSAGE:",
+                    json.dumps(
+                        message,
+                        ensure_ascii=False,
+                    )[:1000],
+                )
+
+            return
+
+        symbol = trade[0]
+
+        with lock:
+
+            connected_markets.add(
+                symbol
+            )
+
+            ever_connected_markets.add(
+                symbol
+            )
+
+        process_trade(
+            trade
+        )
+
+    except Exception as exc:
+
+        with lock:
+            stats["errors"] += 1
+
         print(
-            f"PAPER ORDER | {symbol} | {side} | "
-            f"price={price}"
+            "MESSAGE ERROR:",
+            repr(exc),
         )
-        return None
 
-    quantity = ORDER_USDT / price
 
-    if quantity <= 0:
-        raise ValueError("Invalid order quantity")
+# ============================================================
+# WEBSOCKET ERROR
+# ============================================================
 
-    quantity_text = f"{quantity:.12f}".rstrip("0").rstrip(".")
+def on_error(ws, error):
 
-    order_side = (
-        OrderSides.BUY
-        if side == "BUY"
-        else OrderSides.SELL
+    with lock:
+        stats["errors"] += 1
+
+    print(
+        "WEBSOCKET ERROR:",
+        repr(error),
+    )
+
+
+# ============================================================
+# WEBSOCKET CLOSE
+# ============================================================
+
+def on_close(
+    ws,
+    close_status_code,
+    close_msg,
+):
+
+    print(
+        "WEBSOCKET CLOSED:",
+        close_status_code,
+        close_msg,
+    )
+
+
+# ============================================================
+# WEBSOCKET OPEN
+# ============================================================
+
+def on_open(ws):
+
+    print()
+    print(
+        "WEBSOCKET CONNECTED:",
+        utc_now(),
     )
 
     print(
-        f"REAL ORDER | {symbol} | {side} | "
-        f"qty={quantity_text}"
+        "Stream URL:",
+        WS_URL,
     )
 
-    order = client.new_order(
-        symbol=symbol,
-        side=order_side,
-        type=OrderTypes.MARKET,
-        quantity=quantity_text,
+    # --------------------------------------------------------
+    # Current subscription format from V22.
+    #
+    # IMPORTANT:
+    # We log the exact request.
+    # If Tabdeal rejects this format, the raw response
+    # will show the problem.
+    # --------------------------------------------------------
+
+    params = [
+        f"{symbol.lower()}@trade"
+        for symbol in MARKETS
+    ]
+
+    payload = {
+        "method": "SUBSCRIBE",
+        "params": params,
+        "id": 1,
+    }
+
+    text = json.dumps(
+        payload
     )
 
-    return order
+    print(
+        "SUBSCRIBE REQUEST:"
+    )
+
+    print(
+        text[:3000]
+    )
+
+    try:
+
+        ws.send(text)
+
+        print(
+            "SUBSCRIBE SENT:",
+            len(params),
+            "markets",
+        )
+
+    except Exception as exc:
+
+        print(
+            "SUBSCRIBE SEND ERROR:",
+            repr(exc),
+        )
+
+
+# ============================================================
+# REPORTER
+# ============================================================
+
+def reporter():
+
+    while True:
+
+        time.sleep(
+            REPORT_SECONDS
+        )
+
+        with lock:
+
+            market_count = len(
+                MARKETS
+            )
+
+            connected_now = len(
+                connected_markets
+            )
+
+            connected_ever = len(
+                ever_connected_markets
+            )
+
+            raw = stats["raw"]
+            parsed = stats["parsed"]
+            errors = stats["errors"]
+            signals = stats["signals"]
+            unknown = stats[
+                "unknown_messages"
+            ]
+
+            closed = sum(
+                len(history)
+                for history in candles.values()
+            )
+
+            ready = sum(
+                1
+                for history in candles.values()
+                if len(history) >= 40
+            )
+
+            active = len(
+                current_candles
+            )
+
+        print()
+        print("=" * 60)
+        print(VERSION)
+        print("Time:", utc_now())
+        print("Markets:", market_count)
+        print(
+            "Connected now:",
+            connected_now,
+        )
+        print(
+            "Connected at least once:",
+            connected_ever,
+        )
+        print(
+            "Raw messages:",
+            raw,
+        )
+        print(
+            "Parsed trades:",
+            parsed,
+        )
+        print(
+            "Unknown messages:",
+            unknown,
+        )
+        print(
+            "Active candles:",
+            active,
+        )
+        print(
+            "Closed candles:",
+            closed,
+        )
+        print(
+            "MACD-ready markets:",
+            ready,
+        )
+        print(
+            "Signals:",
+            signals,
+        )
+        print(
+            "Errors:",
+            errors,
+        )
+        print(
+            "MACD:",
+            "12/26/9",
+        )
+        print(
+            "TIMEFRAME:",
+            "5m",
+        )
+        print(
+            "REAL TRADING: OFF"
+        )
+        print(
+            "ORDER ENDPOINT: NEVER CALLED"
+        )
+        print("=" * 60)
+        print()
 
 
 # ============================================================
@@ -386,229 +1121,110 @@ def execute_order(client, symbol, side, price):
 
 def main():
 
+    global MARKETS
+
+    print()
     print("=" * 60)
     print(VERSION)
     print("=" * 60)
-
-    print("Time:", now_text())
-    print("API KEY:", "PRESENT" if API_KEY else "MISSING")
-    print("REAL TRADING:", REAL_TRADING)
-    print("ORDER USDT:", ORDER_USDT)
-    print("LEVERAGE:", LEVERAGE)
-    print("MACD:", f"{MACD_FAST}/{MACD_SLOW}/{MACD_SIGNAL}")
-    print("TIMEFRAME: 5M")
-    print("Endpoint: OFFICIAL TABDEAL FUTURES SDK")
-    print("KLINES: NOT USED")
-    print()
-
-    if not API_KEY or not API_SECRET:
-        raise RuntimeError(
-            "TABDIL_API_KEY / TABDIL_API_SECRET missing"
-        )
-
-    # --------------------------------------------------------
-    # Official Tabdeal Futures client
-    # --------------------------------------------------------
-
-    client = Future(
-        api_key=API_KEY,
-        api_secret=API_SECRET,
-        base_url=BASE_URL,
-        timeout=20,
-    )
-
-    # --------------------------------------------------------
-    # Connection
-    # --------------------------------------------------------
-
-    print("Testing Futures ping...")
-
-    client.ping()
-
-    print("OK: Futures ping")
-
-    # --------------------------------------------------------
-    # Exchange info
-    # --------------------------------------------------------
-
-    print("Loading exchange info...")
-
-    info = client.exchange_info()
-
-    symbols = get_symbols(info)
-
-    if not symbols:
-        raise RuntimeError(
-            "No eligible USDT Futures markets found"
-        )
-
-    print("USDT markets:", len(symbols))
-
-    symbols = symbols[:MAX_MARKETS]
-
     print(
-        "Scanning:",
-        ", ".join(symbols)
+        "Started:",
+        utc_now(),
     )
+    print(
+        "REAL TRADING:",
+        "ON"
+        if REAL_TRADING
+        else "OFF",
+    )
+    print(
+        "MACD: 12/26/9"
+    )
+    print(
+        "TIMEFRAME: 5m"
+    )
+    print(
+        "ORDER ENDPOINT: NEVER CALLED"
+    )
+    print("=" * 60)
 
     # --------------------------------------------------------
-    # State
+    # Discover markets
     # --------------------------------------------------------
 
-    state = load_state()
+    try:
 
-    ready = 0
-    new_candles = 0
-    errors = 0
-    buys = []
-    sells = []
+        MARKETS = discover_markets()
+
+    except Exception as exc:
+
+        print()
+        print(
+            "MARKET DISCOVERY FAILED:"
+        )
+        print(
+            repr(exc)
+        )
+
+        return
 
     # --------------------------------------------------------
-    # Scan
+    # Reporter
     # --------------------------------------------------------
 
-    for symbol in symbols:
+    threading.Thread(
+        target=reporter,
+        daemon=True,
+    ).start()
+
+    # --------------------------------------------------------
+    # WebSocket reconnect loop
+    # --------------------------------------------------------
+
+    while True:
 
         try:
 
-            price = get_mid_price(
-                client,
-                symbol
+            print()
+            print(
+                "Connecting WebSocket..."
             )
 
-            if price is None:
-                errors += 1
-                print(symbol, "NO MID PRICE")
-                continue
-
-            closed = update_5m_candle(
-                state,
-                symbol,
-                price
+            app = websocket.WebSocketApp(
+                WS_URL,
+                on_open=on_open,
+                on_message=on_message,
+                on_error=on_error,
+                on_close=on_close,
             )
 
-            if closed:
-                new_candles += 1
-
-            candles = state.get(
-                symbol,
-                {}
-            ).get(
-                "candles",
-                []
+            app.run_forever(
+                ping_interval=20,
+                ping_timeout=10,
+                skip_utf8_validation=True,
             )
 
-            if len(candles) < (
-                MACD_SLOW + MACD_SIGNAL
-            ):
-                print(
-                    symbol,
-                    f"PRICE={price:.8g}",
-                    f"5M_CANDLES={len(candles)}",
-                    "WARMING UP"
-                )
-                continue
-
-            ready += 1
-
-            result = get_signal(
-                state,
-                symbol
-            )
-
-            if result:
-
-                side, macd = result
-
-                print(
-                    symbol,
-                    side,
-                    f"price={price:.8g}",
-                    f"MACD={macd['macd']:.8g}",
-                    f"SIGNAL={macd['signal']:.8g}",
-                    f"HIST={macd['histogram']:.8g}"
-                )
-
-                if side == "BUY":
-                    buys.append(symbol)
-
-                if side == "SELL":
-                    sells.append(symbol)
-
-                if REAL_TRADING:
-                    execute_order(
-                        client,
-                        symbol,
-                        side,
-                        price
-                    )
-
-            else:
-                print(
-                    symbol,
-                    f"PRICE={price:.8g}",
-                    "NO SIGNAL"
-                )
-
-        except Exception as e:
-
-            errors += 1
+        except Exception as exc:
 
             print(
-                symbol,
-                "ERROR:",
-                type(e).__name__,
-                str(e)
+                "WEBSOCKET LOOP ERROR:",
+                repr(exc),
             )
 
-    # --------------------------------------------------------
-    # Save state
-    # --------------------------------------------------------
+        print(
+            "WebSocket disconnected."
+        )
 
-    save_state(state)
+        print(
+            "Reconnect in 5 seconds..."
+        )
 
-    # --------------------------------------------------------
-    # Summary
-    # --------------------------------------------------------
+        time.sleep(5)
 
-    print()
-    print("=" * 60)
-    print("ATI FUTURES SUMMARY")
-    print("=" * 60)
 
-    print("Markets:", len(symbols))
-    print("Ready:", ready)
-    print("New 5M candles:", new_candles)
-    print("BUY:", len(buys))
-    print("SELL:", len(sells))
-    print("Errors:", errors)
-    print("REAL TRADING:", REAL_TRADING)
-
-    if buys:
-        print("BUY SYMBOLS:", ", ".join(buys))
-
-    if sells:
-        print("SELL SYMBOLS:", ", ".join(sells))
-
-    print("=" * 60)
-
-    telegram_text = (
-        "🤖 ATI TABDEAL FUTURES\n\n"
-        f"🕐 {now_text()}\n"
-        f"📊 Markets: {len(symbols)}\n"
-        f"📈 Ready: {ready}\n"
-        f"🕯 New 5M: {new_candles}\n"
-        f"🟢 BUY: {len(buys)}\n"
-        f"🔴 SELL: {len(sells)}\n"
-        f"❌ Errors: {errors}\n"
-        f"⚙️ MACD: 12/26/9\n"
-        f"💵 Order: {ORDER_USDT} USDT\n"
-        f"⚡ Leverage: {LEVERAGE}x\n"
-        f"🔒 REAL: {REAL_TRADING}"
-    )
-
-    telegram_send(telegram_text)
-
+# ============================================================
+# START
+# ============================================================
 
 if __name__ == "__main__":
     main()
