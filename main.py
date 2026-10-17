@@ -6,54 +6,143 @@ import math
 import json
 from datetime import datetime, timezone
 from urllib.parse import urlencode
+from decimal import Decimal, ROUND_DOWN
 
 import requests
 
-VERSION = "ATI FUTURES V3.1"
-BASE_URL = os.getenv("TABDEAL_BASE_URL", "https://api1.tabdeal.org").rstrip("/")
+
+# ============================================================
+# ATI FUTURES V3.2
+# TABDEAL FUTURES
+#
+# Strategy:
+# MACD 12 / 26 / 9
+# Timeframe: 5m
+#
+# IMPORTANT:
+# - REAL_TRADING controls real orders.
+# - If candle data is unavailable, NO ORDER is submitted.
+# - Signature follows Tabdeal official Python SDK method.
+# - Futures symbols are normalized: BTC_USDT -> BTCUSDT
+# ============================================================
+
+VERSION = "ATI FUTURES V3.2"
+
+BASE_URL = os.getenv(
+    "TABDEAL_BASE_URL",
+    "https://api1.tabdeal.org"
+).rstrip("/")
+
 API_KEY = os.getenv("TABDEAL_API_KEY", "").strip()
 API_SECRET = os.getenv("TABDEAL_API_SECRET", "").strip()
+
 TG_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 TG_CHAT = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 
-REAL_TRADING = os.getenv("REAL_TRADING", "false").strip().lower() == "true"
+REAL_TRADING = (
+    os.getenv("REAL_TRADING", "false")
+    .strip()
+    .lower()
+    == "true"
+)
+
 LEVERAGE = int(os.getenv("LEVERAGE", "3"))
 MARGIN_USDT = float(os.getenv("MARGIN_USDT", "2"))
+
 TP_PCT = float(os.getenv("TP_PCT", "0.02"))
 SL_PCT = float(os.getenv("SL_PCT", "0.01"))
-MAX_SYMBOLS = max(1, min(int(os.getenv("MAX_SYMBOLS", "30")), 75))
 
-FAST, SLOW, SIGNAL = 12, 26, 9
+MAX_SYMBOLS = max(
+    1,
+    min(int(os.getenv("MAX_SYMBOLS", "30")), 75)
+)
+
+FAST = 12
+SLOW = 26
+SIGNAL = 9
+
 TIMEOUT = 15
+
+# We deliberately do not invent a candle endpoint.
 KLINE_ROUTE = None
+
 SESSION = requests.Session()
 
+# Small clock offset correction.
+SERVER_TIME_OFFSET_MS = 0
+
+
+# ============================================================
+# LOG
+# ============================================================
 
 def log(message):
     print(
-        f"[{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}] {message}",
+        f"[{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}] "
+        f"{message}",
         flush=True,
     )
 
+
+# ============================================================
+# TELEGRAM
+# ============================================================
 
 def telegram(message):
     if not TG_TOKEN or not TG_CHAT:
         log("Telegram credentials missing")
         return False
+
     try:
         response = SESSION.post(
             f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
-            json={"chat_id": TG_CHAT, "text": str(message)[:4000]},
+            json={
+                "chat_id": TG_CHAT,
+                "text": str(message)[:4000],
+            },
             timeout=TIMEOUT,
         )
+
         if not response.ok:
-            log(f"TELEGRAM ERROR {response.status_code}: {response.text[:300]}")
+            log(
+                f"TELEGRAM ERROR "
+                f"{response.status_code}: "
+                f"{response.text[:300]}"
+            )
             return False
+
         return True
+
     except Exception as exc:
         log(f"TELEGRAM ERROR: {exc}")
         return False
 
+
+# ============================================================
+# SYMBOL NORMALIZATION
+# ============================================================
+
+def normalize_futures_symbol(symbol):
+    """
+    Tabdeal exchangeInfo may return:
+        BTC_USDT
+        XAUT_USDT
+
+    Futures trading API expects:
+        BTCUSDT
+        XAUTUSDT
+    """
+
+    return str(symbol or "").upper().replace("_", "")
+
+
+def display_symbol(symbol):
+    return str(symbol or "").upper()
+
+
+# ============================================================
+# PUBLIC REQUEST
+# ============================================================
 
 def public_get(path, params=None):
     response = SESSION.get(
@@ -61,570 +150,1549 @@ def public_get(path, params=None):
         params=params or {},
         timeout=TIMEOUT,
     )
+
     if not response.ok:
         raise RuntimeError(
-            f"GET {response.url} -> HTTP {response.status_code}: {response.text[:300]}"
+            f"GET {response.url} -> "
+            f"HTTP {response.status_code}: "
+            f"{response.text[:400]}"
         )
+
     return response.json()
 
 
+# ============================================================
+# SERVER TIME
+# ============================================================
+
+def sync_server_time():
+    global SERVER_TIME_OFFSET_MS
+
+    routes = [
+        "/r/fapi/v1/time",
+        "/fapi/v1/time",
+    ]
+
+    for path in routes:
+        try:
+            before = int(time.time() * 1000)
+
+            data = public_get(path)
+
+            after = int(time.time() * 1000)
+
+            server_time = int(
+                data.get("serverTime")
+                or data.get("time")
+                or 0
+            )
+
+            if server_time <= 0:
+                continue
+
+            local_mid = (before + after) // 2
+
+            SERVER_TIME_OFFSET_MS = (
+                server_time - local_mid
+            )
+
+            log(
+                f"Server time OK | "
+                f"offset={SERVER_TIME_OFFSET_MS} ms"
+            )
+
+            return True
+
+        except Exception as exc:
+            log(f"Server time failed {path}: {exc}")
+
+    SERVER_TIME_OFFSET_MS = 0
+    log("Server time endpoint unavailable; offset=0")
+    return False
+
+
+def current_timestamp_ms():
+    return int(time.time() * 1000) + SERVER_TIME_OFFSET_MS
+
+
+# ============================================================
+# SIGNED REQUEST
+# ============================================================
+
 def signed_request(method, path, params=None):
-    if not API_KEY or not API_SECRET:
-        raise RuntimeError("Missing Tabdeal API credentials")
+    """
+    Signature implementation follows the official Tabdeal
+    Python SDK pattern:
 
-    values = dict(params or {})
-    values["timestamp"] = int(time.time() * 1000)
-    values["recvWindow"] = 10000
+        data.update(timestamp)
+        data.update(recvWindow)
+        data_query = urlencode(data)
+        signature = HMAC_SHA256(secret, data_query)
+        data.update(signature)
 
-    query = urlencode(values)
+    IMPORTANT:
+    The exact same encoded parameter set is used for signing
+    and sending.
+    """
+
+    if not API_KEY:
+        raise RuntimeError("Missing TABDEAL_API_KEY")
+
+    if not API_SECRET:
+        raise RuntimeError("Missing TABDEAL_API_SECRET")
+
+    data = dict(params or {})
+
+    # Official SDK style timestamp.
+    data["timestamp"] = current_timestamp_ms()
+
+    # Tabdeal accepts receive windows up to 60000.
+    data["recvWindow"] = 10000
+
+    # EXACT string used for HMAC.
+    data_query = urlencode(data)
+
     signature = hmac.new(
-        API_SECRET.encode(),
-        query.encode(),
+        API_SECRET.encode("utf-8"),
+        data_query.encode("utf-8"),
         hashlib.sha256,
     ).hexdigest()
 
-    headers = {"X-MBX-APIKEY": API_KEY}
+    # Signature is added AFTER signing.
+    data["signature"] = signature
+
+    headers = {
+        "X-MBX-APIKEY": API_KEY,
+    }
+
+    method = method.upper()
     url = BASE_URL + path
 
-    if method.upper() == "GET":
+    if method == "GET":
         response = SESSION.get(
             url,
-            params=query + "&signature=" + signature,
+            params=data,
             headers=headers,
             timeout=TIMEOUT,
         )
-    elif method.upper() == "POST":
+
+    elif method == "POST":
+        # Send dict exactly like official Tabdeal SDK.
         response = SESSION.post(
             url,
-            data=query + "&signature=" + signature,
-            headers={
-                **headers,
-                "Content-Type": "application/x-www-form-urlencoded",
-            },
-            timeout=TIMEOUT,
-        )
-    elif method.upper() == "DELETE":
-        response = SESSION.delete(
-            url,
-            params=query + "&signature=" + signature,
+            data=data,
             headers=headers,
             timeout=TIMEOUT,
         )
+
+    elif method == "DELETE":
+        response = SESSION.delete(
+            url,
+            params=data,
+            headers=headers,
+            timeout=TIMEOUT,
+        )
+
     else:
-        raise ValueError(f"Unsupported method: {method}")
+        raise ValueError(
+            f"Unsupported method: {method}"
+        )
 
     if not response.ok:
         raise RuntimeError(
-            f"PRIVATE API HTTP {response.status_code}: {response.text[:400]}"
+            f"PRIVATE API HTTP {response.status_code}: "
+            f"{response.text[:500]}"
         )
-    return response.json()
 
+    try:
+        return response.json()
+
+    except Exception:
+        raise RuntimeError(
+            f"PRIVATE API returned non-JSON: "
+            f"{response.text[:500]}"
+        )
+
+
+# ============================================================
+# MARKETS
+# ============================================================
 
 def discover_markets():
-    data = public_get("/r/fapi/v1/exchangeInfo")
-    items = data.get("symbols", []) if isinstance(data, dict) else []
+    data = public_get(
+        "/r/fapi/v1/exchangeInfo"
+    )
+
+    items = (
+        data.get("symbols", [])
+        if isinstance(data, dict)
+        else []
+    )
+
     result = []
 
     for item in items:
-        symbol = str(item.get("symbol", "")).upper()
-        status = str(item.get("status", "")).upper()
-        quote = str(item.get("quoteAsset") or item.get("quoteCurrency") or "").upper()
 
-        if not symbol or not symbol.endswith("USDT"):
+        raw_symbol = str(
+            item.get("symbol", "")
+        ).upper()
+
+        status = str(
+            item.get("status", "")
+        ).upper()
+
+        quote = str(
+            item.get("quoteAsset")
+            or item.get("quoteCurrency")
+            or ""
+        ).upper()
+
+        if not raw_symbol:
             continue
+
+        normalized = normalize_futures_symbol(
+            raw_symbol
+        )
+
+        if not normalized.endswith("USDT"):
+            continue
+
         if status and status != "TRADING":
             continue
+
         if quote and quote != "USDT":
             continue
+
+        # Keep original exchangeInfo item.
+        # Add normalized futures symbol.
+        item = dict(item)
+        item["_raw_symbol"] = raw_symbol
+        item["_futures_symbol"] = normalized
+
         result.append(item)
 
     if not result:
-        raise RuntimeError("No eligible USDT futures markets found")
+        raise RuntimeError(
+            "No eligible USDT futures markets found"
+        )
 
     return result[:MAX_SYMBOLS]
 
 
+# ============================================================
+# CANDLE PARSER
+# ============================================================
+
 def parse_candles(data):
-    if not isinstance(data, list) or len(data) < 35:
+    if not isinstance(data, list):
+        return None
+
+    if len(data) < 35:
         return None
 
     result = []
+
     for row in data:
-        if not isinstance(row, (list, tuple)) or len(row) < 5:
+
+        if not isinstance(row, (list, tuple)):
             return None
+
+        if len(row) < 5:
+            return None
+
         try:
             open_time = int(row[0])
+
             open_price = float(row[1])
             high = float(row[2])
             low = float(row[3])
             close = float(row[4])
-            close_time = (
-                int(row[6])
-                if len(row) > 6
-                else open_time + 300000 - 1
-            )
-            if min(open_price, high, low, close) <= 0:
+
+            if len(row) > 6:
+                close_time = int(row[6])
+            else:
+                close_time = (
+                    open_time
+                    + 300000
+                    - 1
+                )
+
+            if min(
+                open_price,
+                high,
+                low,
+                close
+            ) <= 0:
                 return None
-            result.append({
-                "time": open_time,
-                "close_time": close_time,
-                "open": open_price,
-                "high": high,
-                "low": low,
-                "close": close,
-            })
-        except (ValueError, TypeError, IndexError):
+
+            result.append(
+                {
+                    "time": open_time,
+                    "close_time": close_time,
+                    "open": open_price,
+                    "high": high,
+                    "low": low,
+                    "close": close,
+                }
+            )
+
+        except (
+            ValueError,
+            TypeError,
+            IndexError,
+        ):
             return None
 
-    return sorted(result, key=lambda item: item["time"])
+    return sorted(
+        result,
+        key=lambda item: item["time"]
+    )
 
+
+# ============================================================
+# CANDLE ENDPOINT DISCOVERY
+# ============================================================
 
 def discover_kline_route(symbol):
+    """
+    We only accept a route if it actually returns valid
+    5-minute candle data.
+
+    No order is allowed before this succeeds.
+    """
+
     global KLINE_ROUTE
+
+    futures_symbol = normalize_futures_symbol(
+        symbol
+    )
+
     routes = [
         "/r/fapi/v1/klines",
         "/fapi/v1/klines",
-        "/r/api/v1/klines",
-        "/api/v1/klines",
         "/r/fapi/v1/candles",
         "/fapi/v1/candles",
     ]
 
     for path in routes:
+
         try:
+
             data = public_get(
                 path,
-                {"symbol": symbol, "interval": "5m", "limit": 100},
+                {
+                    "symbol": futures_symbol,
+                    "interval": "5m",
+                    "limit": 100,
+                },
             )
+
             candles = parse_candles(data)
+
             if candles:
                 KLINE_ROUTE = path
-                log(f"Verified candle route: {path}")
+
+                log(
+                    f"Verified candle route: "
+                    f"{path} | "
+                    f"symbol={futures_symbol} | "
+                    f"candles={len(candles)}"
+                )
+
                 return candles
-            log(f"Invalid candle response from {path}")
+
+            log(
+                f"Invalid candle response "
+                f"{path}"
+            )
+
         except Exception as exc:
-            log(f"Candle route failed {path}: {exc}")
+
+            log(
+                f"Candle route failed "
+                f"{path}: {exc}"
+            )
 
     return None
 
 
 def get_candles(symbol):
+
     if not KLINE_ROUTE:
-        return discover_kline_route(symbol)
+        return discover_kline_route(
+            symbol
+        )
+
+    futures_symbol = normalize_futures_symbol(
+        symbol
+    )
 
     try:
+
         data = public_get(
             KLINE_ROUTE,
-            {"symbol": symbol, "interval": "5m", "limit": 100},
+            {
+                "symbol": futures_symbol,
+                "interval": "5m",
+                "limit": 100,
+            },
         )
+
         return parse_candles(data)
+
     except Exception as exc:
-        log(f"CANDLE ERROR {symbol}: {exc}")
+
+        log(
+            f"CANDLE ERROR "
+            f"{futures_symbol}: {exc}"
+        )
+
         return None
 
 
+# ============================================================
+# EMA / MACD
+# ============================================================
+
 def ema(values, period):
+
     if len(values) < period:
         return []
+
     alpha = 2.0 / (period + 1)
-    result = [sum(values[:period]) / period]
+
+    result = [
+        sum(values[:period]) / period
+    ]
+
     for value in values[period:]:
-        result.append(result[-1] + alpha * (value - result[-1]))
+        result.append(
+            result[-1]
+            + alpha * (
+                value - result[-1]
+            )
+        )
+
     return result
 
 
 def macd_cross(closes):
+
     if len(closes) < 60:
         return None
 
-    fast = ema(closes, FAST)
-    slow = ema(closes, SLOW)
-    fast = fast[SLOW - FAST:]
+    fast = ema(
+        closes,
+        FAST
+    )
 
-    count = min(len(fast), len(slow))
-    macd = [fast[i] - slow[i] for i in range(count)]
-    signal = ema(macd, SIGNAL)
-    aligned_macd = macd[SIGNAL - 1:]
+    slow = ema(
+        closes,
+        SLOW
+    )
 
-    if len(signal) < 2 or len(aligned_macd) < 2:
+    if not fast or not slow:
         return None
 
-    previous_macd, current_macd = aligned_macd[-2:]
-    previous_signal, current_signal = signal[-2:]
+    # Align EMA12 with EMA26.
+    fast = fast[SLOW - FAST:]
 
-    if previous_macd <= previous_signal and current_macd > current_signal:
+    count = min(
+        len(fast),
+        len(slow)
+    )
+
+    macd = [
+        fast[i] - slow[i]
+        for i in range(count)
+    ]
+
+    signal = ema(
+        macd,
+        SIGNAL
+    )
+
+    if len(signal) < 2:
+        return None
+
+    aligned_macd = macd[
+        SIGNAL - 1:
+    ]
+
+    if len(aligned_macd) < 2:
+        return None
+
+    previous_macd = aligned_macd[-2]
+    current_macd = aligned_macd[-1]
+
+    previous_signal = signal[-2]
+    current_signal = signal[-1]
+
+    if (
+        previous_macd <= previous_signal
+        and current_macd > current_signal
+    ):
         return "BUY"
-    if previous_macd >= previous_signal and current_macd < current_signal:
+
+    if (
+        previous_macd >= previous_signal
+        and current_macd < current_signal
+    ):
         return "SELL"
+
     return None
 
 
-def closed_candles(candles):
-    now_ms = int(time.time() * 1000)
-    return [c for c in candles if c["close_time"] < now_ms]
+# ============================================================
+# CLOSED CANDLES
+# ============================================================
 
+def closed_candles(candles):
+
+    now_ms = int(
+        time.time() * 1000
+    )
+
+    return [
+        candle
+        for candle in candles
+        if candle["close_time"] < now_ms
+    ]
+
+
+# ============================================================
+# FILTERS
+# ============================================================
 
 def get_filters(item):
+
     return {
         f.get("filterType"): f
-        for f in item.get("filters", [])
+        for f in item.get(
+            "filters",
+            []
+        )
         if f.get("filterType")
     }
 
 
 def decimals_for_step(step):
-    return max(0, -__import__("decimal").Decimal(str(step)).normalize().as_tuple().exponent)
+
+    value = (
+        Decimal(str(step))
+        .normalize()
+    )
+
+    return max(
+        0,
+        -value.as_tuple().exponent
+    )
 
 
 def round_down_step(value, step):
-    from decimal import Decimal, ROUND_DOWN
-    value = Decimal(str(value))
-    step = Decimal(str(step))
+
+    value = Decimal(
+        str(value)
+    )
+
+    step = Decimal(
+        str(step)
+    )
+
     if step <= 0:
-        raise RuntimeError("Invalid exchange step")
-    return (value / step).to_integral_value(rounding=ROUND_DOWN) * step
+        raise RuntimeError(
+            "Invalid exchange step"
+        )
+
+    return (
+        value / step
+    ).to_integral_value(
+        rounding=ROUND_DOWN
+    ) * step
 
 
-def format_quantity(item, quantity):
-    from decimal import Decimal
+def format_quantity(
+    item,
+    quantity
+):
 
     filters = get_filters(item)
-    lot = filters.get("MARKET_LOT_SIZE") or filters.get("LOT_SIZE")
-    if not lot:
-        raise RuntimeError(f"{item.get('symbol')}: quantity filters missing")
 
-    step = Decimal(str(lot.get("stepSize", "0")))
-    minimum = Decimal(str(lot.get("minQty", "0")))
-    maximum = Decimal(str(lot.get("maxQty", "0")))
+    lot = (
+        filters.get(
+            "MARKET_LOT_SIZE"
+        )
+        or filters.get(
+            "LOT_SIZE"
+        )
+    )
+
+    if not lot:
+        raise RuntimeError(
+            f"{item.get('symbol')}: "
+            f"quantity filters missing"
+        )
+
+    step = Decimal(
+        str(
+            lot.get(
+                "stepSize",
+                "0"
+            )
+        )
+    )
+
+    minimum = Decimal(
+        str(
+            lot.get(
+                "minQty",
+                "0"
+            )
+        )
+    )
+
+    maximum = Decimal(
+        str(
+            lot.get(
+                "maxQty",
+                "0"
+            )
+        )
+    )
 
     if step <= 0:
-        raise RuntimeError("Invalid quantity stepSize")
+        raise RuntimeError(
+            "Invalid quantity stepSize"
+        )
 
-    qty = round_down_step(quantity, step)
+    qty = round_down_step(
+        quantity,
+        step
+    )
+
     if qty < minimum:
-        raise RuntimeError(f"Quantity {qty} below minimum {minimum}")
-    if maximum > 0 and qty > maximum:
-        raise RuntimeError(f"Quantity {qty} above maximum {maximum}")
+        raise RuntimeError(
+            f"Quantity {qty} "
+            f"below minimum {minimum}"
+        )
+
+    if (
+        maximum > 0
+        and qty > maximum
+    ):
+        raise RuntimeError(
+            f"Quantity {qty} "
+            f"above maximum {maximum}"
+        )
 
     return f"{qty:.{decimals_for_step(step)}f}"
 
 
-def format_price(item, price):
-    from decimal import Decimal
+def format_price(
+    item,
+    price
+):
 
-    price_filter = get_filters(item).get("PRICE_FILTER")
+    price_filter = get_filters(
+        item
+    ).get(
+        "PRICE_FILTER"
+    )
+
     if not price_filter:
-        raise RuntimeError(f"{item.get('symbol')}: PRICE_FILTER missing")
+        raise RuntimeError(
+            f"{item.get('symbol')}: "
+            f"PRICE_FILTER missing"
+        )
 
-    tick = Decimal(str(price_filter.get("tickSize", "0")))
+    tick = Decimal(
+        str(
+            price_filter.get(
+                "tickSize",
+                "0"
+            )
+        )
+    )
+
     if tick <= 0:
-        raise RuntimeError("Invalid tickSize")
+        raise RuntimeError(
+            "Invalid tickSize"
+        )
 
-    value = round_down_step(price, tick)
+    value = round_down_step(
+        price,
+        tick
+    )
+
     return f"{value:.{decimals_for_step(tick)}f}"
 
 
+# ============================================================
+# ORDER BOOK
+# ============================================================
+
 def get_mid_price(symbol):
+
+    futures_symbol = normalize_futures_symbol(
+        symbol
+    )
+
     data = public_get(
         "/r/fapi/v1/depth",
-        {"symbol": symbol, "limit": 5},
+        {
+            "symbol": futures_symbol,
+            "limit": 5,
+        },
     )
+
     bids = data.get("bids") or []
     asks = data.get("asks") or []
 
     if not bids or not asks:
-        raise RuntimeError("Order book is empty")
+        raise RuntimeError(
+            "Order book is empty"
+        )
 
-    bid, ask = float(bids[0][0]), float(asks[0][0])
-    if bid <= 0 or ask <= 0 or ask < bid:
-        raise RuntimeError("Invalid order book prices")
-    return (bid + ask) / 2
+    bid = float(bids[0][0])
+    ask = float(asks[0][0])
 
+    if (
+        bid <= 0
+        or ask <= 0
+        or ask < bid
+    ):
+        raise RuntimeError(
+            "Invalid order book prices"
+        )
+
+    return (
+        bid + ask
+    ) / 2.0
+
+
+# ============================================================
+# POSITION
+# ============================================================
 
 def get_position(symbol):
+
+    futures_symbol = normalize_futures_symbol(
+        symbol
+    )
+
     errors = []
 
-    for path in ("/fapi/v1/positionRisk", "/fapi/v1/position"):
+    routes = [
+        "/fapi/v1/positionRisk",
+        "/fapi/v1/position",
+    ]
+
+    for path in routes:
+
         try:
-            data = signed_request("GET", path, {"symbol": symbol})
-            positions = data if isinstance(data, list) else [data]
+
+            data = signed_request(
+                "GET",
+                path,
+                {
+                    "symbol":
+                        futures_symbol
+                },
+            )
+
+            positions = (
+                data
+                if isinstance(
+                    data,
+                    list
+                )
+                else [data]
+            )
 
             for position in positions:
-                if not isinstance(position, dict):
+
+                if not isinstance(
+                    position,
+                    dict
+                ):
                     continue
-                found_symbol = str(position.get("symbol", symbol)).upper()
-                if found_symbol != symbol:
+
+                found_symbol = normalize_futures_symbol(
+                    position.get(
+                        "symbol",
+                        futures_symbol
+                    )
+                )
+
+                if (
+                    found_symbol
+                    != futures_symbol
+                ):
                     continue
+
                 amount = float(
-                    position.get("positionAmt")
-                    or position.get("quantity")
-                    or position.get("qty")
+                    position.get(
+                        "positionAmt"
+                    )
+                    or position.get(
+                        "quantity"
+                    )
+                    or position.get(
+                        "qty"
+                    )
                     or 0
                 )
+
                 if abs(amount) > 0:
                     return position
 
-            if isinstance(data, list):
-                return None
-
-            if isinstance(data, dict) and any(
-                key in data for key in ("positionAmt", "quantity", "qty")
-            ):
-                return None
-
-            errors.append(f"{path}: unexpected response")
+            return None
 
         except Exception as exc:
-            errors.append(f"{path}: {exc}")
 
-    raise RuntimeError("Could not verify position: " + " | ".join(errors))
+            errors.append(
+                f"{path}: {exc}"
+            )
 
+    raise RuntimeError(
+        "Could not verify position: "
+        + " | ".join(errors)
+    )
+
+
+# ============================================================
+# LEVERAGE
+# ============================================================
 
 def set_leverage(symbol):
+
+    futures_symbol = normalize_futures_symbol(
+        symbol
+    )
+
     return signed_request(
         "POST",
         "/fapi/v1/leverage",
-        {"symbol": symbol, "leverage": LEVERAGE},
-    )
-
-
-def market_order(symbol, side, quantity):
-    return signed_request(
-        "POST",
-        "/fapi/v1/order",
         {
-            "symbol": symbol,
-            "side": side,
-            "type": "MARKET",
-            "quantity": quantity,
+            "symbol":
+                futures_symbol,
+            "leverage":
+                LEVERAGE,
         },
     )
 
 
-def protective_order(symbol, side, order_type, quantity, stop_price):
+# ============================================================
+# MARKET ORDER
+# ============================================================
+
+def market_order(
+    symbol,
+    side,
+    quantity
+):
+
+    futures_symbol = normalize_futures_symbol(
+        symbol
+    )
+
     return signed_request(
         "POST",
         "/fapi/v1/order",
         {
-            "symbol": symbol,
-            "side": side,
-            "type": order_type,
-            "quantity": quantity,
-            "stopPrice": stop_price,
-            "reduceOnly": "true",
-            "workingType": "MARK_PRICE",
+            "symbol":
+                futures_symbol,
+            "side":
+                side,
+            "type":
+                "MARKET",
+            "quantity":
+                quantity,
         },
     )
 
+
+# ============================================================
+# PROTECTIVE ORDER
+# ============================================================
+
+def protective_order(
+    symbol,
+    side,
+    order_type,
+    quantity,
+    stop_price
+):
+
+    futures_symbol = normalize_futures_symbol(
+        symbol
+    )
+
+    return signed_request(
+        "POST",
+        "/fapi/v1/order",
+        {
+            "symbol":
+                futures_symbol,
+            "side":
+                side,
+            "type":
+                order_type,
+            "quantity":
+                quantity,
+            "stopPrice":
+                stop_price,
+            "reduceOnly":
+                "true",
+            "workingType":
+                "MARK_PRICE",
+        },
+    )
+
+
+# ============================================================
+# STATE
+# ============================================================
 
 def save_record(record):
-    path = "ati_futures_state.json"
+
+    path = (
+        "ati_futures_state.json"
+    )
+
     state = {}
 
     try:
+
         if os.path.exists(path):
-            with open(path, "r", encoding="utf-8") as file:
-                loaded = json.load(file)
-                if isinstance(loaded, dict):
+
+            with open(
+                path,
+                "r",
+                encoding="utf-8"
+            ) as file:
+
+                loaded = json.load(
+                    file
+                )
+
+                if isinstance(
+                    loaded,
+                    dict
+                ):
                     state = loaded
+
     except Exception as exc:
-        log(f"State read error: {exc}")
+
+        log(
+            f"State read error: "
+            f"{exc}"
+        )
 
     state.update(record)
 
     try:
-        with open(path, "w", encoding="utf-8") as file:
-            json.dump(state, file, ensure_ascii=False, indent=2)
+
+        with open(
+            path,
+            "w",
+            encoding="utf-8"
+        ) as file:
+
+            json.dump(
+                state,
+                file,
+                ensure_ascii=False,
+                indent=2,
+            )
+
     except Exception as exc:
-        log(f"State write error: {exc}")
+
+        log(
+            f"State write error: "
+            f"{exc}"
+        )
 
 
-def execute_trade(item, signal, price, candle_time):
-    symbol = str(item.get("symbol", "")).upper()
+def get_last_signal_key():
 
+    try:
+
+        with open(
+            "ati_futures_state.json",
+            "r",
+            encoding="utf-8"
+        ) as file:
+
+            state = json.load(
+                file
+            )
+
+            if isinstance(
+                state,
+                dict
+            ):
+                return state.get(
+                    "last_signal_key"
+                )
+
+    except (
+        OSError,
+        ValueError
+    ):
+        pass
+
+    return None
+
+
+# ============================================================
+# REAL TRADE
+# ============================================================
+
+def execute_trade(
+    item,
+    signal,
+    price,
+    candle_time
+):
+
+    raw_symbol = str(
+        item.get(
+            "_raw_symbol",
+            item.get(
+                "symbol",
+                ""
+            )
+        )
+    ).upper()
+
+    symbol = normalize_futures_symbol(
+        raw_symbol
+    )
+
+    # PAPER
     if not REAL_TRADING:
+
         telegram(
             f"🟡 ATI PAPER SIGNAL\n\n"
-            f"Symbol: {symbol}\nSignal: {signal}\n"
-            f"Price: {price}\nMACD: 12/26/9\nTimeframe: 5m"
+            f"Symbol: {raw_symbol}\n"
+            f"API Symbol: {symbol}\n"
+            f"Signal: {signal}\n"
+            f"Price: {price}\n"
+            f"MACD: 12/26/9\n"
+            f"Timeframe: 5m"
         )
+
         return
 
-    if not API_KEY or not API_SECRET:
-        raise RuntimeError("Missing API credentials")
+    if not API_KEY:
+        raise RuntimeError(
+            "Missing API credentials"
+        )
 
-    # Abort if position status cannot be verified.
-    if get_position(symbol):
-        log(f"{symbol}: existing position; skip")
+    if not API_SECRET:
+        raise RuntimeError(
+            "Missing API credentials"
+        )
+
+    # NEVER trade if position cannot be checked.
+    position = get_position(
+        symbol
+    )
+
+    if position:
+        log(
+            f"{symbol}: existing "
+            f"position; skip"
+        )
         return
 
     quantity = format_quantity(
         item,
-        MARGIN_USDT * LEVERAGE / price,
+        (
+            MARGIN_USDT
+            * LEVERAGE
+            / price
+        ),
     )
 
-    set_leverage(symbol)
+    log(
+        f"{symbol}: REAL order "
+        f"pre-check passed | "
+        f"side={signal} | "
+        f"qty={quantity}"
+    )
 
-    side = "BUY" if signal == "BUY" else "SELL"
-    exit_side = "SELL" if side == "BUY" else "BUY"
+    set_leverage(
+        symbol
+    )
 
-    order = market_order(symbol, side, quantity)
-    if not isinstance(order, dict):
-        raise RuntimeError("Unexpected market order response")
+    side = (
+        "BUY"
+        if signal == "BUY"
+        else "SELL"
+    )
 
-    order_id = order.get("orderId")
+    exit_side = (
+        "SELL"
+        if side == "BUY"
+        else "BUY"
+    )
+
+    # ========================================================
+    # REAL MARKET ORDER
+    # ========================================================
+
+    order = market_order(
+        symbol,
+        side,
+        quantity
+    )
+
+    if not isinstance(
+        order,
+        dict
+    ):
+        raise RuntimeError(
+            "Unexpected market "
+            "order response"
+        )
+
+    order_id = order.get(
+        "orderId"
+    )
+
     fill_price = float(
-        order.get("avgPrice")
-        or order.get("averagePrice")
-        or order.get("price")
+        order.get(
+            "avgPrice"
+        )
+        or order.get(
+            "averagePrice"
+        )
+        or order.get(
+            "price"
+        )
         or price
     )
-    if fill_price <= 0:
-        raise RuntimeError("Invalid order fill price")
 
-    tp_price = fill_price * (1 + TP_PCT if side == "BUY" else 1 - TP_PCT)
-    sl_price = fill_price * (1 - SL_PCT if side == "BUY" else 1 + SL_PCT)
+    if fill_price <= 0:
+        raise RuntimeError(
+            "Invalid order fill price"
+        )
+
+    tp_price = (
+        fill_price
+        * (
+            1 + TP_PCT
+            if side == "BUY"
+            else 1 - TP_PCT
+        )
+    )
+
+    sl_price = (
+        fill_price
+        * (
+            1 - SL_PCT
+            if side == "BUY"
+            else 1 + SL_PCT
+        )
+    )
+
+    tp_formatted = format_price(
+        item,
+        tp_price
+    )
+
+    sl_formatted = format_price(
+        item,
+        sl_price
+    )
 
     try:
+
         tp_order = protective_order(
             symbol,
             exit_side,
             "TAKE_PROFIT_MARKET",
             quantity,
-            format_price(item, tp_price),
+            tp_formatted,
         )
+
         sl_order = protective_order(
             symbol,
             exit_side,
             "STOP_MARKET",
             quantity,
-            format_price(item, sl_price),
+            sl_formatted,
         )
+
     except Exception as exc:
-        log(f"PROTECTIVE ORDER FAILURE {symbol}: {exc}")
+
+        log(
+            f"PROTECTIVE ORDER FAILURE "
+            f"{symbol}: {exc}"
+        )
+
         telegram(
             f"🚨 PROTECTIVE ORDER FAILURE\n"
-            f"Symbol: {symbol}\nEntry order ID: {order_id}\n"
-            f"Error: {exc}\nCheck the position immediately."
+            f"Symbol: {raw_symbol}\n"
+            f"Entry order ID: {order_id}\n"
+            f"Error: {exc}\n"
+            f"CHECK POSITION IMMEDIATELY."
         )
+
         raise
 
-    save_record({
-        "last_trade": {
-            "symbol": symbol,
-            "side": signal,
-            "quantity": quantity,
-            "entry": fill_price,
-            "order_id": order_id,
-            "tp_order_id": tp_order.get("orderId"),
-            "sl_order_id": sl_order.get("orderId"),
-            "candle_time": candle_time,
-            "time": datetime.now(timezone.utc).isoformat(),
+    save_record(
+        {
+            "last_trade": {
+                "symbol":
+                    raw_symbol,
+                "api_symbol":
+                    symbol,
+                "side":
+                    signal,
+                "quantity":
+                    quantity,
+                "entry":
+                    fill_price,
+                "order_id":
+                    order_id,
+                "tp_order_id":
+                    tp_order.get(
+                        "orderId"
+                    ),
+                "sl_order_id":
+                    sl_order.get(
+                        "orderId"
+                    ),
+                "candle_time":
+                    candle_time,
+                "time":
+                    datetime.now(
+                        timezone.utc
+                    ).isoformat(),
+            }
         }
-    })
+    )
 
     telegram(
         f"🔴 ATI REAL TRADE\n\n"
-        f"Symbol: {symbol}\nSide: {signal}\n"
-        f"Entry: {fill_price}\nQuantity: {quantity}\n"
+        f"Symbol: {raw_symbol}\n"
+        f"API Symbol: {symbol}\n"
+        f"Side: {signal}\n"
+        f"Entry: {fill_price}\n"
+        f"Quantity: {quantity}\n"
         f"Leverage: {LEVERAGE}x\n"
-        f"Margin target: {MARGIN_USDT} USDT\n"
-        f"TP: {format_price(item, tp_price)}\n"
-        f"SL: {format_price(item, sl_price)}\n"
+        f"Margin: {MARGIN_USDT} USDT\n"
+        f"TP: {tp_formatted}\n"
+        f"SL: {sl_formatted}\n"
         f"Entry order ID: {order_id}\n"
-        f"TP order ID: {tp_order.get('orderId')}\n"
-        f"SL order ID: {sl_order.get('orderId')}"
+        f"TP order ID: "
+        f"{tp_order.get('orderId')}\n"
+        f"SL order ID: "
+        f"{sl_order.get('orderId')}"
     )
 
 
+# ============================================================
+# ANALYZE
+# ============================================================
+
 def analyze_market(item):
-    symbol = str(item.get("symbol", "")).upper()
-    candles = get_candles(symbol)
+
+    raw_symbol = str(
+        item.get(
+            "_raw_symbol",
+            item.get(
+                "symbol",
+                ""
+            )
+        )
+    ).upper()
+
+    symbol = normalize_futures_symbol(
+        raw_symbol
+    )
+
+    candles = get_candles(
+        symbol
+    )
 
     if not candles:
-        log(f"{symbol}: no valid candles")
-        return
 
-    closed = closed_candles(candles)
+        log(
+            f"{raw_symbol}: "
+            f"no valid candles"
+        )
+
+        return False
+
+    closed = closed_candles(
+        candles
+    )
+
     if len(closed) < 60:
-        log(f"{symbol}: only {len(closed)} closed candles")
-        return
 
-    signal = macd_cross([c["close"] for c in closed])
+        log(
+            f"{raw_symbol}: only "
+            f"{len(closed)} closed candles"
+        )
+
+        return False
+
+    closes = [
+        c["close"]
+        for c in closed
+    ]
+
+    signal = macd_cross(
+        closes
+    )
+
     if not signal:
-        return
+        return True
 
     latest = closed[-1]
-    key = f"{symbol}:{latest['time']}:{signal}"
 
-    # Skip a repeated signal from the same candle.
-    try:
-        with open("ati_futures_state.json", "r", encoding="utf-8") as file:
-            state = json.load(file)
-        if state.get("last_signal_key") == key:
-            return
-    except (OSError, ValueError):
-        pass
+    key = (
+        f"{symbol}:"
+        f"{latest['time']}:"
+        f"{signal}"
+    )
 
-    execute_trade(item, signal, latest["close"], latest["time"])
-    save_record({"last_signal_key": key})
+    if (
+        get_last_signal_key()
+        == key
+    ):
+        log(
+            f"{raw_symbol}: "
+            f"duplicate signal"
+        )
+        return True
 
+    log(
+        f"MACD SIGNAL | "
+        f"{raw_symbol} | "
+        f"{signal} | "
+        f"close={latest['close']}"
+    )
+
+    execute_trade(
+        item,
+        signal,
+        latest["close"],
+        latest["time"],
+    )
+
+    save_record(
+        {
+            "last_signal_key":
+                key
+        }
+    )
+
+    return True
+
+
+# ============================================================
+# MAIN
+# ============================================================
 
 def main():
-    log("=" * 55)
+
+    log("=" * 60)
     log(VERSION)
-    log(f"Mode: {'REAL' if REAL_TRADING else 'PAPER'}")
-    log(f"MACD: {FAST}/{SLOW}/{SIGNAL}")
-    log(f"Timeframe: 5m | Leverage: {LEVERAGE}x")
-    log(f"Margin: {MARGIN_USDT} USDT | TP: {TP_PCT} | SL: {SL_PCT}")
+    log(
+        f"Mode: "
+        f"{'REAL' if REAL_TRADING else 'PAPER'}"
+    )
+    log(
+        f"MACD: "
+        f"{FAST}/{SLOW}/{SIGNAL}"
+    )
+    log(
+        "Timeframe: 5m"
+    )
+    log(
+        f"Leverage: {LEVERAGE}x"
+    )
+    log(
+        f"Margin: {MARGIN_USDT} USDT"
+    )
+    log(
+        f"TP: {TP_PCT}"
+    )
+    log(
+        f"SL: {SL_PCT}"
+    )
 
     telegram(
         f"🤖 {VERSION}\n"
-        f"Mode: {'REAL' if REAL_TRADING else 'PAPER'}\n"
-        f"MACD: 12/26/9\nTimeframe: 5m\n"
-        f"Leverage: {LEVERAGE}x\nMargin: {MARGIN_USDT} USDT"
+        f"Mode: "
+        f"{'🔴 REAL' if REAL_TRADING else '🟡 PAPER'}\n"
+        f"MACD: 12/26/9\n"
+        f"Timeframe: 5m\n"
+        f"Leverage: {LEVERAGE}x\n"
+        f"Margin: {MARGIN_USDT} USDT"
     )
 
+    # ========================================================
+    # SERVER TIME
+    # ========================================================
+
+    sync_server_time()
+
+    # ========================================================
+    # MARKET DISCOVERY
+    # ========================================================
+
     markets = discover_markets()
-    log(f"Markets found: {len(markets)}")
 
-    if not KLINE_ROUTE:
-        for item in markets:
-            symbol = str(item.get("symbol", "")).upper()
-            if discover_kline_route(symbol):
-                break
+    log(
+        f"Markets found: "
+        f"{len(markets)}"
+    )
 
-    if not KLINE_ROUTE:
-        message = "🚨 No working candle endpoint found. No trades submitted."
-        log(message)
-        telegram(message)
-        return
+    if markets:
 
-    processed = 0
+        examples = [
+            (
+                item.get(
+                    "_raw_symbol",
+                    item.get(
+                        "symbol",
+                        ""
+                    )
+                )
+            )
+            for item in markets[:5]
+        ]
+
+        log(
+            "Examples: "
+            + ", ".join(examples)
+        )
+
+    # ========================================================
+    # CANDLE ROUTE
+    # ========================================================
 
     for item in markets:
+
+        raw_symbol = str(
+            item.get(
+                "_raw_symbol",
+                item.get(
+                    "symbol",
+                    ""
+                )
+            )
+        ).upper()
+
+        if discover_kline_route(
+            raw_symbol
+        ):
+            break
+
+    # ========================================================
+    # ABSOLUTE SAFETY:
+    # NO CANDLE = NO TRADE
+    # ========================================================
+
+    if not KLINE_ROUTE:
+
+        message = (
+            "🚨 ATI FUTURES\n\n"
+            "No working candle "
+            "endpoint found.\n\n"
+            "NO REAL ORDER WAS "
+            "SUBMITTED."
+        )
+
+        log(message)
+        telegram(message)
+
+        return
+
+    log(
+        f"Using candle route: "
+        f"{KLINE_ROUTE}"
+    )
+
+    # ========================================================
+    # SCAN
+    # ========================================================
+
+    processed = 0
+    signals = 0
+    errors = 0
+
+    for item in markets:
+
         try:
-            analyze_market(item)
-            processed += 1
+
+            success = analyze_market(
+                item
+            )
+
+            if success:
+                processed += 1
+
         except Exception as exc:
-            log(f"MARKET ERROR {item.get('symbol')}: {exc}")
+
+            errors += 1
+
+            log(
+                f"MARKET ERROR "
+                f"{item.get('symbol')}: "
+                f"{exc}"
+            )
+
+            # Do not stop the whole scan.
+            continue
 
         time.sleep(0.2)
 
-    log(f"Scan complete: {processed} markets processed")
+    log(
+        f"Scan complete | "
+        f"markets={len(markets)} | "
+        f"processed={processed} | "
+        f"errors={errors}"
+    )
+
     telegram(
-        f"📊 ATI FUTURES SCAN COMPLETE\n"
+        f"📊 ATI FUTURES SCAN\n\n"
+        f"Version: {VERSION}\n"
         f"Markets: {len(markets)}\n"
         f"Processed: {processed}\n"
-        f"Candle route: {KLINE_ROUTE}\n"
-        f"Mode: {'REAL' if REAL_TRADING else 'PAPER'}"
+        f"Errors: {errors}\n"
+        f"Candle route: "
+        f"{KLINE_ROUTE}\n"
+        f"Mode: "
+        f"{'🔴 REAL' if REAL_TRADING else '🟡 PAPER'}"
     )
 
 
+# ============================================================
+# ENTRY
+# ============================================================
+
 if __name__ == "__main__":
+
     try:
+
         main()
+
     except Exception as exc:
-        log(f"FATAL ERROR: {exc}")
-        telegram(f"🚨 {VERSION} FATAL ERROR\n{exc}")
+
+        log(
+            f"FATAL ERROR: {exc}"
+        )
+
+        telegram(
+            f"🚨 {VERSION} FATAL ERROR\n"
+            f"{exc}"
+        )
+
         raise
